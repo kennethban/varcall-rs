@@ -14,7 +14,8 @@
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd); O=$(mkdir -p "${1:-$REPO/target/selftest}" && cd "${1:-$REPO/target/selftest}" && pwd)
 D=$O/data; T=$REPO/tests/truth; A=${ALIGN_RS:-$REPO/target/release/align-rs}; V=${VARIANT_RS:-$REPO/target/release/variant-rs}
-TH=$(nproc); bad=0
+# at most 64 threads: bwa-mem2 2.2.1 crashes (segfault) above 256, and the test data are small
+TH=$(nproc); [ $TH -gt 64 ] && TH=64; bad=0
 for c in python3 bwa-mem2 samtools bgzip tabix; do command -v $c > /dev/null || { echo "missing: $c"; exit 1; }; done
 [ -x $A ] && [ -x $V ] || { echo "build first: cargo build --release"; exit 1; }
 say() { printf '  %-44s %s\n' "$1" "$2"; [[ "$2" == identical* || "$2" == ok* ]] || bad=$((bad + 1)); }
@@ -38,6 +39,7 @@ for l in $LANES; do
   if [ ! -s $O/bwa/$id.bam ]; then
     bwa-mem2 mem -t $TH -K 100000000 -Y -R "$(rg $id $sm $pu)" $D/ref.fa $D/${fq}_R1.fq.gz $D/${fq}_R2.fq.gz 2> $O/bwa/$id.log \
       | samtools sort -@ 4 -l 1 -o $O/bwa/$id.bam - 2>> $O/bwa/$id.log && samtools index $O/bwa/$id.bam
+    [ -s $O/bwa/$id.bam ] || echo "  bwa-mem2 failed on $id: see $O/bwa/$id.log"
   fi
   printf '%s\t%s\t%s\t%s\n' $O/align/$id.bam "$(rg $id $sm $pu)" $D/${fq}_R1.fq.gz $D/${fq}_R2.fq.gz >> $O/lanes.tsv
   printf '%s\t%s\t%s\t%s\n' $O/align_cpu/$id.bam "$(rg $id $sm $pu)" $D/${fq}_R1.fq.gz $D/${fq}_R2.fq.gz >> $O/lanes_cpu.tsv
