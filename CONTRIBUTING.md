@@ -59,7 +59,8 @@ Other bugs (crashes, errors, a refused command that should run) go in a **Bug re
 * [docs/architecture.md](docs/architecture.md) maps the stages to files.
 * The crate READMEs in `variant-rs/crates/` and [docs/notes/](docs/notes/) record how each GATK behaviour was
   matched and what was measured.
-* Open items: testing on GPUs other than sm_120 and on more CPUs, more GATK arguments, multi-GPU.
+* Open items: testing on GPUs other than sm_120 and on more CPUs, more GATK arguments, several GPUs in one
+  process (the pipeline already spreads tasks over GPUs, but has not run on a multi-GPU machine yet).
 
 ## License
 

@@ -88,7 +88,8 @@ varcall-rs is the wrong tool if:
 * **you need GATK tools or arguments it does not cover.** It covers each tool's defaults plus the arguments that WARP
   and nf-core/sarek pass; `variant-rs <Tool> --help` lists them. HaplotypeCaller is diploid only. Everything else is
   refused, or passed to GATK with `GATK_FALLBACK`.
-* **you run something other than Linux on x86-64**, or want one run to use several GPUs.
+* **you run something other than Linux on x86-64**, or want one align-rs or variant-rs process to use several GPUs
+  (the [pipeline](docs/how-to.md#use-several-gpus) spreads lanes and samples over them).
 
 It has been tested on one GPU model (RTX 5070 Ti, sm_120). The GPU code is built for sm_70 (sm_75 for align-rs)
 through sm_120, but has not run on other GPUs yet; reports are welcome.

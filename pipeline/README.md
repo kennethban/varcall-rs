@@ -63,9 +63,36 @@ index is indexed in memory). HaplotypeCaller runs on the normal samples, Mutect2
 | `dbsnp`, `gvcf` | HaplotypeCaller `--dbsnp`; `-ERC GVCF` (then no hard filters) |
 | `germline_resource`, `pon`, `pileup_sites` | Mutect2 / GetPileupSummaries resources |
 | `aligner`, `align_rs` | `align-rs` (default) or `bwa-mem2`; the align-rs binary |
-| `cpus`, `align_memory` | threads for the heavy steps; memory for the aligner (the ~17 GB hg38 index is mapped) |
+| `cpus`, `align_memory` | threads for each heavy step; memory for each aligner task (the ~17 GB hg38 index is mapped, and shared by aligner tasks running together) |
 | `save_lane_bams`, `save_recal_bam` | publish the lane BAMs / the somatic recalibrated BAMs |
 | `publish_dir_mode` | `link` (default: hard links into the work directory, no second copy) |
+
+## Several GPUs
+
+List the GPUs in `CUDA_VISIBLE_DEVICES` when you launch, and give each heavy step a share of the cores:
+
+```bash
+# 8 GPUs, 128 cores
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 nextflow run main.nf -params-file my.yaml --cpus 16
+```
+
+* Nextflow gives each GPU step (align-rs, HaplotypeCaller, Mutect2) one of the listed GPUs, and runs at most one GPU
+  step per GPU at a time.
+* Each sample's lanes are dealt out over one align-rs task per GPU, so one sample's alignment uses all of them. A
+  lane's BAM is the same whichever task aligns it.
+* HaplotypeCaller and Mutect2 run once per sample (or tumor), each on one GPU, so several samples call side by side.
+  One sample's calling uses one GPU.
+* Steps run side by side only while their `cpus` and memory fit the machine: 24 GB per heavy step and `align_memory`
+  per aligner task. With 8 GPUs, that is about 200 GB, or lower `align_memory`.
+
+Without `CUDA_VISIBLE_DEVICES`, every step uses the first GPU, as before, and the pipeline warns if it finds more.
+Outputs do not depend on the number of GPUs. Changing it does make `-resume` realign, because the lanes are grouped
+into different tasks.
+
+Tested (2026-11-18) on one GPU with `CUDA_VISIBLE_DEVICES=0,1,2,3`, `--cpus 8 --align_memory 6.GB`. Four align-rs
+tasks ran at once. The tasks given GPUs 1-3, which do not exist here, fell back to the CPU. The somatic test's 17
+outputs were identical, and all 38 lane BAMs had the records bwa-mem2 writes. Not yet run on a machine with several
+GPUs.
 
 Outputs: `preprocessing/<sample>/` (MarkDuplicates BAM + metrics, recal table), `germline/<sample>/` (VCF, filtered
 VCF), `somatic/<tumor>_vs_<normal>/` (Mutect2 VCF + stats, F1R2, priors, contamination, segments, filtered VCF),

@@ -9,6 +9,7 @@ Short recipes for common tasks. They assume you have built varcall-rs ([building
 * [Use variant-rs in place of `gatk`](#use-variant-rs-in-place-of-gatk)
 * [Use variant-rs in nf-core/sarek](#use-variant-rs-in-nf-coresarek)
 * [Run the FASTQ → VCF pipeline](#run-the-fastq--vcf-pipeline)
+* [Use several GPUs](#use-several-gpus)
 * [Call a whole genome in shards, in one process](#call-a-whole-genome-in-shards-in-one-process)
 * [Joint-call several samples](#joint-call-several-samples)
 * [Run without a GPU](#run-without-a-gpu)
@@ -87,6 +88,20 @@ intervals: /ref/wgs_calling_regions.hg38.interval_list
 ```
 
 All parameters: [pipeline/README.md](../pipeline/README.md).
+
+## Use several GPUs
+
+A single align-rs or variant-rs process uses one GPU. The pipeline uses several: list them when you launch, and give
+each step a share of the cores.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 nextflow run pipeline/main.nf -params-file my.yaml --cpus 16
+```
+
+Each sample's lanes are split over one align-rs task per GPU, and HaplotypeCaller and Mutect2 run one sample per GPU.
+The outputs are the same as with one GPU. Memory and other details:
+[pipeline/README.md](../pipeline/README.md#several-gpus). Outside the pipeline, run one process per GPU with
+`CUDA_VISIBLE_DEVICES=N`: per sample, per lane, or per `variant-rs plan` shard.
 
 ## Call a whole genome in shards, in one process
 

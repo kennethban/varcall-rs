@@ -10,9 +10,17 @@
 //                GetPileupSummaries -> CalculateContamination, LearnReadOrientationModel -> FilterMutectCalls
 //
 // Heavy steps take the whole machine one at a time (multi-threaded, GPU PairHMM for the callers) rather than
-// being scattered into per-interval tasks.
+// being scattered into per-interval tasks. With several GPUs, the GPU steps run side by side, one per GPU.
 
 def sh(x) { "'${x}'" }
+// GPUs: those listed in CUDA_VISIBLE_DEVICES when the pipeline is launched (e.g. CUDA_VISIBLE_DEVICES=0,1,2,3).
+// Nextflow then gives each GPU task (accelerator 1) one of them, as the task's CUDA_VISIBLE_DEVICES, and runs at most
+// one GPU task per GPU at a time. Unset: no GPU assignment, every task sees all GPUs and uses the first.
+def gpu_ids() { (System.getenv('CUDA_VISIBLE_DEVICES') ?: '').tokenize(',') }
+def gpu_task(uses_gpu) { uses_gpu && gpu_ids() ? 1 : null }
+// align-rs tasks per sample: one per GPU (each with a share of the lanes; a lane's BAM is the same whichever task
+// aligns it), one without GPUs or with bwa-mem2
+def align_groups() { params.aligner == 'align-rs' ? Math.max(1, gpu_ids().size()) : 1 }
 // The variant-rs binary's build time, written into every variant-rs command: Nextflow's task hash covers a script's text
 // and the params it references, not the binary it calls (nor what a function returns), so this is what makes
 // -resume rerun the variant-rs steps after a rebuild while the alignments stay cached.
@@ -37,9 +45,9 @@ params.hc_scatter = !params.intervals_arg ? false :
 // it references, so -resume reruns a step when they change.)
 
 process ALIGN {
-    tag "${meta.sample}"
+    tag "${meta.sample} ${lanes[0]}${lanes.size() > 1 ? " +${lanes.size() - 1} lanes" : ''}"
     label 'heavy'
-    memory params.align_memory
+    accelerator gpu_task(params.aligner == 'align-rs')
     publishDir "${params.outdir}/lanes", mode: params.publish_dir_mode, enabled: params.save_lane_bams
 
     input:
@@ -128,6 +136,7 @@ process BASERECALIBRATOR {
 process HAPLOTYPECALLER {
     tag "${meta.sample}"
     label 'heavy'
+    accelerator gpu_task(params.pairhmm != 'cpu')
     publishDir path: { "${params.outdir}/germline/${meta.sample}" }, mode: params.publish_dir_mode
 
     input:
@@ -185,6 +194,7 @@ process APPLYBQSR {
 process MUTECT2 {
     tag "${meta.id}"
     label 'heavy'
+    accelerator gpu_task(params.pairhmm != 'cpu')
     publishDir path: { "${params.outdir}/somatic/${meta.id}" }, mode: params.publish_dir_mode
 
     input:
@@ -282,6 +292,18 @@ workflow {
     if (!(params.aligner in ['align-rs', 'bwa-mem2'])) {
         error "aligner: align-rs or bwa-mem2, not ${params.aligner}"
     }
+    if (gpu_ids()) {
+        if (gpu_ids().unique(false).size() != gpu_ids().size()) {
+            error "CUDA_VISIBLE_DEVICES=${System.getenv('CUDA_VISIBLE_DEVICES')}: each GPU once"
+        }
+        log.info "GPUs: ${gpu_ids().join(', ')} (one GPU task per GPU)"
+    } else if (System.getenv('CUDA_VISIBLE_DEVICES') == null) {
+        def n = 0
+        try { n = ['nvidia-smi', '-L'].execute().text.readLines().count { it.startsWith('GPU ') } } catch (Exception e) { }
+        if (n > 1) {
+            log.warn "${n} GPUs found, but only the first is used: launch with CUDA_VISIBLE_DEVICES=${(0..<n).join(',')} to use them all"
+        }
+    }
     // samplesheet: patient,sample,status,lane,fastq_1,fastq_2 (status 0 normal, 1 tumor; as nf-core/sarek; fastq_2 empty:
     // single-end)
     // --step markduplicates: start from coordinate-sorted BAMs instead (columns patient,sample,status,bam[,bai]; one
@@ -294,18 +316,22 @@ workflow {
             tuple([patient: r.patient, sample: r.sample, status: (r.status ?: '0') as int], file(r.bam), bai ? file(bai) : null)
         }
     } else {
-        // one ALIGN task per sample, its lanes in samplesheet order
+        // one ALIGN task per sample and GPU (align_groups), the lanes dealt out in samplesheet order
         def samples = rows
             .map { r -> tuple([patient: r.patient, sample: r.sample, status: (r.status ?: '0') as int], r.lane, r.fastq_2 ? [file(r.fastq_1), file(r.fastq_2)] : [file(r.fastq_1)]) }
             .groupTuple()
-            .map { meta, lanes, reads ->
+            .flatMap { meta, lanes, reads ->
                 // a lane's BAM, its @RG ID and PU are named by sample and lane: two rows with the same pair would
                 // write one file twice
                 def dup = lanes.countBy { it }.findAll { it.value > 1 }.keySet()
                 if (dup) {
                     error "samplesheet: sample ${meta.sample} has lane ${dup.join(', ')} on more than one row (sample + lane name each lane's BAM and read group)"
                 }
-                tuple(meta, lanes, reads.collect { it.size() }, reads.flatten())
+                def n = Math.min(align_groups(), lanes.size())
+                (0..<n).collect { g ->
+                    def ix = (0..<lanes.size()).findAll { it % n == g }
+                    tuple(meta, ix.collect { lanes[it] }, ix.collect { reads[it].size() }, ix.collect { reads[it] }.flatten())
+                }
             }
         lane_bams = ALIGN(samples).flatMap { meta, bams, bais ->
             def bl = [bams].flatten()

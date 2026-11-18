@@ -16,5 +16,7 @@ named in its entry; a change of reference version is a new minor version at leas
   ReblockGVCF, MergeVcfs, SortSam, GatherBamFiles; CUDA PairHMM; GATK command lines with fallback to GATK.
 * A Nextflow FASTQ → VCF pipeline; Docker images for align-rs and for variant-rs as a drop-in `gatk` in nf-core/sarek.
 * Tests: unit tests, a self-contained test on synthetic data (CI), and a full harness on public data.
+* Pipeline: several GPUs. With `CUDA_VISIBLE_DEVICES` listing them at launch, each GPU step gets its own GPU, and a
+  sample's lanes are split over one align-rs task per GPU.
 
 [Unreleased]: https://github.com/kennethban/varcall-rs/commits/main
