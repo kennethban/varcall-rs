@@ -1,0 +1,23 @@
+# Docker build context for containers/*/Dockerfile (built from the repository root): the sources only
+*
+!Cargo.toml
+!Cargo.lock
+!align-rs/Cargo.toml
+!align-rs/build.rs
+!align-rs/src
+!align-rs/hts
+!align-rs/cuda/Makefile
+!align-rs/cuda/aln_ext.cu
+!variant-rs/Cargo.toml
+!variant-rs/build.rs
+!variant-rs/src
+!variant-rs/csrc
+!variant-rs/gatkargs
+!variant-rs/tables
+!variant-rs/crates/*/Cargo.toml
+!variant-rs/crates/*/build.rs
+!variant-rs/crates/*/src
+!variant-rs/crates/*/tables
+!variant-rs/cuda-pairhmm/Makefile
+!variant-rs/cuda-pairhmm/native
+!containers/variant-rs/gatk

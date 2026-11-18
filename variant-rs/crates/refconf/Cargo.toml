@@ -1,0 +1,27 @@
+[package]
+name = "hc-refconf"
+version = "0.1.0"
+edition = "2021"
+description = "Port of GATK 4.7 HaplotypeCaller's reference confidence model (-ERC GVCF) and GVCF writer"
+
+[lib]
+name = "hc_refconf"
+path = "src/lib.rs"
+
+[dependencies]
+hc-assembly = { path = "../assembly" }
+hc-genotype = { path = "../genotype", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+
+[[bin]]
+name = "gvcfcmp"
+path = "src/bin/gvcfcmp.rs"
+
+
+[[bin]]
+name = "refconf_fuzzcheck"
+path = "src/bin/refconf_fuzzcheck.rs"
+
+[[bin]]
+name = "gvcf_fuzzcheck"
+path = "src/bin/gvcf_fuzzcheck.rs"

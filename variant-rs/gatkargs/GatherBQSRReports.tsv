@@ -1,0 +1,15 @@
+# GatherBQSRReports: GATK 4.7 arguments from `--help` (gen.py). long	short	type	default	multi	section
+--input	-I	File	-	1	required
+--output	-O	File	-	0	required
+--arguments_file	-	File	null	1	optional
+--gatk-config-file	-	String	null	0	optional
+--gcs-max-retries	-gcs-retries	Integer	20	0	optional
+--gcs-project-for-requester-pays	-	String		0	optional
+--help	-h	Boolean	false	0	optional
+--QUIET	-	Boolean	false	0	optional
+--tmp-dir	-	GATKPath	null	0	optional
+--use-jdk-deflater	-jdk-deflater	Boolean	false	0	optional
+--use-jdk-inflater	-jdk-inflater	Boolean	false	0	optional
+--verbosity	-	LogLevel	INFO	0	optional
+--version	-	Boolean	false	0	optional
+--showHidden	-	Boolean	false	0	advanced

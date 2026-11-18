@@ -1,0 +1,35 @@
+[package]
+name = "hc-likelihood"
+version = "0.1.0"
+edition = "2021"
+description = "Port of GATK 4.7 HaplotypeCaller between assembly and genotyping: region trimming, genotyping reads, PairHMM read likelihoods (CUDA)"
+build = "build.rs"
+
+[lib]
+name = "hc_likelihood"
+path = "src/lib.rs"
+
+[features]
+default = ["validate"]
+validate = ["dep:serde", "dep:serde_json", "dep:rayon"]
+
+[dependencies]
+hc-assembly = { path = "../assembly" }
+hc-cudahmm = { path = "../cudahmm" }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true, features = ["float_roundtrip"] }
+rayon = { version = "1", optional = true }
+
+[[bin]]
+name = "likelihood-validate"
+path = "src/bin/validate.rs"
+required-features = ["validate"]
+
+
+[[bin]]
+name = "hmmcmp"
+path = "src/bin/hmmcmp.rs"
+
+[[bin]]
+name = "hmmbench"
+path = "src/bin/hmmbench.rs"

@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: "If you use varcall-rs, please cite it as below, together with bwa-mem2 and GATK, whose results it reproduces."
+title: "varcall-rs: GPU-accelerated short-read alignment and variant calling with outputs identical to bwa-mem2 and GATK"
+type: software
+authors:
+  - family-names: Ban
+    given-names: Kenneth
+version: 0.1.0
+license: MIT
+repository-code: "https://github.com/kennethban/varcall-rs"
+keywords:
+  - bioinformatics
+  - variant calling
+  - GATK
+  - bwa-mem2
+  - CUDA
+  - Rust
+references:
+  - type: conference-paper
+    title: "Efficient Architecture-Aware Acceleration of BWA-MEM for Multicore Systems"
+    authors:
+      - family-names: Vasimuddin
+        given-names: Md
+      - family-names: Misra
+        given-names: Sanchit
+      - family-names: Li
+        given-names: Heng
+      - family-names: Aluru
+        given-names: Srinivas
+    collection-title: "2019 IEEE International Parallel and Distributed Processing Symposium (IPDPS)"
+    year: 2019
+    doi: 10.1109/IPDPS.2019.00041
+  - type: book
+    title: "Genomics in the Cloud: Using Docker, GATK, and WDL in Terra"
+    authors:
+      - family-names: Van der Auwera
+        given-names: Geraldine A.
+      - family-names: O'Connor
+        given-names: Brian D.
+    publisher:
+      name: "O'Reilly Media"
+    year: 2020

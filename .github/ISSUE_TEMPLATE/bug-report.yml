@@ -1,0 +1,33 @@
+name: Bug report
+description: A crash, an error, a refused command that should work, or anything else that is wrong
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Command and output
+      description: The command line and the end of its output (with `VARIANT_RS_DRY_RUN=1` for a refused command).
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: varcall-rs version or commit
+      placeholder: "variant-rs --version, or git rev-parse HEAD"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: CPU, GPU (or none), OS, how it was built (source, Docker image), Nextflow / sarek version if used.
+    validations:
+      required: true

@@ -1,0 +1,13 @@
+# SEQC2 exome tumor/normal, chr22, from BAMs whose read-group SM (WES_FD_*) is not the samplesheet's sample name;
+# the real target BED's chr22 part (6,644 regions, with duplicated and overlapping ones). GATK truth: truth.sh somatic_bam
+input: test/somatic_bam.csv
+step: markduplicates
+outdir: test/out/somatic_bam
+tools: haplotypecaller,mutect2
+fasta: @DATA@/somatic/seqc2/data/GRCh38.d1.vd1.fa
+known_sites: @DATA@/bqsr/resources/Homo_sapiens_assembly38.dbsnp138.vcf.gz,@DATA@/bqsr/resources/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz,@DATA@/bqsr/resources/Homo_sapiens_assembly38.known_indels.vcf.gz
+intervals: test/data/wes/targets.chr22.bed
+germline_resource: @DATA@/somatic/seqc2/data/af-only-gnomad.hg38.vcf.gz
+pon: @DATA@/somatic/seqc2/data/1000g_pon.hg38.vcf.gz
+pileup_sites: @DATA@/somatic/seqc2/data/af-only-gnomad.hg38.vcf.gz
+pileup_on_intervals: true

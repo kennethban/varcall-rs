@@ -1,0 +1,20 @@
+[package]
+name = "hc-downsample"
+version = "0.1.0"
+edition = "2021"
+description = "Port of GATK 4.7 AssemblyRegionWalker read downsampling (PositionalDownsampler / ReservoirDownsampler, --max-reads-per-alignment-start) and of its sharing of GATK's global java.util.Random with the QD jitter"
+
+[lib]
+name = "hc_downsample"
+path = "src/lib.rs"
+
+[dependencies]
+
+[[bin]]
+name = "downsample-validate"
+path = "src/bin/validate.rs"
+
+[[bin]]
+name = "rngcheck"
+path = "src/bin/rngcheck.rs"
+

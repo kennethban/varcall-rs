@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["align-rs", "variant-rs", "variant-rs/crates/*"]
+# `cargo build --release` builds the two tools; the crates' validation binaries need `-p <crate>`
+default-members = ["align-rs", "variant-rs"]
+
+# One profile for the workspace (cargo ignores per-crate [profile] sections). Unwinding stays on: variant-rs
+# turns a panic inside assembly into GATK's error (catch_unwind); align-rs aborts from its panic hook instead.
+# Build with RUSTFLAGS="-C target-cpu=native" for speed (the PairHMM and SIMD paths depend on it).
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = 1

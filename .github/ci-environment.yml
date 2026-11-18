@@ -1,0 +1,11 @@
+# CI: htslib (linked by align-rs and variant-rs) and the tools tests/selftest.sh compares with. Rust comes from
+# rustup and the C compiler from the runner. The full development environment is environment.yml.
+name: ci
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - htslib=1.25           # also bgzip, tabix
+  - bwa-mem2=2.3          # the bioconda build, which reports itself as 2.2.1
+  - samtools=1.25
+  - python=3.13

@@ -1,0 +1,80 @@
+USAGE: GatherBamFiles [arguments]
+
+<p>Concatenate efficiently BAM files that resulted from a scattered parallel analysis.</p><p>This tool performs a rapid
+"gather" or concatenation on BAM files. This is often needed in operations that have been run in parallel across
+genomics regions by scattering their execution across computing nodes and cores thus resulting in smaller BAM
+files.</p><p>This tool does not support SAM files</p><h3>Inputs</h3><p>A list of BAM files to combine using the INPUT
+argument. These files must be provided in the order that they should be concatenated.</p><h3>Output</h3><p>A single BAM
+file. The header is copied from the first input file.</p><h3>Usage example:</h3><pre>java -jar picard.jar GatherBamFiles
+\
+I=input1.bam \
+I=input2.bam \
+O=gathered_files.bam</pre><h3>Notes</h3><p>Operates via copying of the gzip blocks directly for speed but also supports
+generation of an MD5 on the output and indexing of the output BAM file.</p><hr/>
+Version:4.7.0.0-SNAPSHOT
+
+
+Required Arguments:
+
+--INPUT,-I <File>             Two or more SAM/BAM/CRAM files or text files containing lists of SAM/BAM/CRAM files (one
+                              per line).  This argument must be specified at least once. Required. 
+
+--OUTPUT,-O <File>            The output SAM/BAM/CRAM file to write.  Required. 
+
+
+Optional Arguments:
+
+--arguments_file <File>       read one or more arguments files and add them to the command line  This argument may be
+                              specified 0 or more times. Default value: null. 
+
+--COMPRESSION_LEVEL <Integer> Compression level for all compressed files created (e.g. BAM and VCF).  Default value: 2. 
+
+--CREATE_INDEX <Boolean>      Whether to create an index when writing VCF or coordinate sorted BAM output.  Default
+                              value: false. Possible values: {true, false} 
+
+--CREATE_MD5_FILE <Boolean>   Whether to create an MD5 digest for any BAM or FASTQ files created.    Default value:
+                              false. Possible values: {true, false} 
+
+--help,-h <Boolean>           display the help message  Default value: false. Possible values: {true, false} 
+
+--MAX_RECORDS_IN_RAM <Integer>When writing files that need to be sorted, this will specify the number of records stored
+                              in RAM before spilling to disk. Increasing this number reduces the number of file handles
+                              needed to sort the file, and increases the amount of RAM needed.  Default value: 500000. 
+
+--QUIET <Boolean>             Whether to suppress job-summary info on System.err.  Default value: false. Possible
+                              values: {true, false} 
+
+--REFERENCE_SEQUENCE,-R <PicardHtsPath>
+                              Reference sequence file.  Default value: null. 
+
+--TMP_DIR <File>              One or more directories with space available to be used by this program for temporary
+                              storage of working files  This argument may be specified 0 or more times. Default value:
+                              null. 
+
+--USE_JDK_DEFLATER,-use_jdk_deflater <Boolean>
+                              Use the JDK Deflater instead of the Intel Deflater for writing compressed output  Default
+                              value: false. Possible values: {true, false} 
+
+--USE_JDK_INFLATER,-use_jdk_inflater <Boolean>
+                              Use the JDK Inflater instead of the Intel Inflater for reading compressed input  Default
+                              value: false. Possible values: {true, false} 
+
+--VALIDATION_STRINGENCY <ValidationStringency>
+                              Validation stringency for all SAM files read by this program.  Setting stringency to
+                              SILENT can improve performance when processing a BAM file in which variable-length data
+                              (read, qualities, tags) do not otherwise need to be decoded.  Default value: STRICT.
+                              Possible values: {STRICT, LENIENT, SILENT} 
+
+--VERBOSITY <LogLevel>        Control verbosity of logging.  Default value: INFO. Possible values: {ERROR, WARNING,
+                              INFO, DEBUG} 
+
+--version <Boolean>           display the version number for this tool  Default value: false. Possible values: {true,
+                              false} 
+
+
+Advanced Arguments:
+
+--showHidden <Boolean>        display hidden arguments  Default value: false. Possible values: {true, false} 
+
+Tool returned:
+1

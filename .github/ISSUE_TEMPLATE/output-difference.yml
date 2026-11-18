@@ -1,0 +1,66 @@
+name: Output differs from bwa-mem2 or GATK
+description: align-rs or variant-rs gives a different output from the tool it reproduces
+labels: ["output difference"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. An output difference is the most important kind of bug here. The fastest fix comes with a small
+        input that shows it: a region of a BAM (`samtools view -b in.bam chr1:1000-2000`), a few FASTQ records, or a
+        public data set and the region.
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Tool
+      options:
+        - align-rs (vs bwa-mem2 2.2.1)
+        - variant-rs HaplotypeCaller
+        - variant-rs Mutect2 or its filters
+        - variant-rs MarkDuplicates
+        - variant-rs BaseRecalibrator / ApplyBQSR
+        - variant-rs GenotypeGVCFs / ReblockGVCF
+        - variant-rs, another tool
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands
+      description: The varcall-rs command and the bwa-mem2 / GATK command it was compared with.
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: difference
+    attributes:
+      label: The difference
+      description: The first differing records from each tool (e.g. `cmp` / `diff` of the data lines).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: Input that shows it
+      description: Attach a small file, or say where the data can be downloaded and which region.
+  - type: input
+    id: version
+    attributes:
+      label: varcall-rs version or commit
+      placeholder: "variant-rs --version, or git rev-parse HEAD"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: CPU, GPU (or none), OS, how it was built (source, Docker image).
+      placeholder: "Ryzen 9 9950X3D, RTX 5070 Ti, Ubuntu 24.04, built from source"
+    validations:
+      required: true
+  - type: checkboxes
+    id: paths
+    attributes:
+      label: Paths tried
+      options:
+        - label: The CPU path gives the same difference (align-rs without --gpu; variant-rs --pairhmm cpu)

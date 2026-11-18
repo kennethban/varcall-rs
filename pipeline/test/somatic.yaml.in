@@ -1,0 +1,11 @@
+input: test/somatic.csv
+outdir: test/out/somatic
+tools: mutect2
+fasta: @DATA@/ref_hg38/Homo_sapiens_assembly38.fasta
+known_sites: @DATA@/bqsr/resources/Homo_sapiens_assembly38.dbsnp138.vcf.gz,@DATA@/bqsr/resources/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz,@DATA@/bqsr/resources/Homo_sapiens_assembly38.known_indels.vcf.gz
+intervals: @DATA@/somatic/hcc1143/data/chr17plus.interval_list
+germline_resource: @DATA@/somatic/hcc1143/data/chr17_af-only-gnomad_grch38.vcf.gz
+pon: @DATA@/somatic/hcc1143/data/chr17_m2pon.vcf.gz
+pileup_sites: @DATA@/somatic/hcc1143/data/chr17_small_exac_common_3_grch38.vcf.gz
+save_lane_bams: true
+save_recal_bam: true

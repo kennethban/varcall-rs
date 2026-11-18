@@ -1,0 +1,11 @@
+[package]
+name = "hc-cudahmm"
+version = "0.1.0"
+edition = "2021"
+description = "Rust bindings to the CUDA PairHMM (variant-rs/cuda-pairhmm) via its C ABI"
+build = "build.rs"
+
+[lib]
+name = "hc_cudahmm"
+path = "src/lib.rs"
+

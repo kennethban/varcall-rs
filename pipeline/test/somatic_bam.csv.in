@@ -1,0 +1,3 @@
+patient,sample,status,bam
+WES,FD_N_1,0,@DATA@/pipeline/nf/test/data/wes/FD_N_1.chr22.bam
+WES,FD_T_1,1,@DATA@/pipeline/nf/test/data/wes/FD_T_1.chr22.bam

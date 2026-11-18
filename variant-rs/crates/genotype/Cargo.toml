@@ -1,0 +1,28 @@
+[package]
+name = "hc-genotype"
+version = "0.1.0"
+edition = "2021"
+description = "Port of GATK 4.7 HaplotypeCaller's final stage: read realignment, genotyping, annotation and VCF record output (default arguments)"
+
+[lib]
+name = "hc_genotype"
+path = "src/lib.rs"
+
+[features]
+default = ["validate"]
+validate = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+hc-assembly = { path = "../assembly" }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true, features = ["float_roundtrip"] }
+
+[[bin]]
+name = "genotype-validate"
+path = "src/bin/validate.rs"
+required-features = ["validate"]
+
+
+[[bin]]
+name = "numcheck"
+path = "src/bin/numcheck.rs"

@@ -1,0 +1,24 @@
+# Build and test environment (conda / mamba):  conda env create -f environment.yml && conda activate varcall-rs
+# The CUDA packages are needed only for the GPU code (make -C align-rs/cuda, make -C variant-rs/cuda-pairhmm); the
+# NVIDIA driver comes from the host. bwa-mem2, samtools, bgzip/tabix and Python are what tests/selftest.sh compares
+# with; Java 17 and Nextflow run GATK (truth) and the pipeline.
+name: varcall-rs
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - rust=1.99
+  - gxx_linux-64=13
+  - make
+  - pkg-config
+  - htslib=1.25
+  - libdeflate
+  - cuda-nvcc=12.9
+  - cuda-cudart-dev=12.9
+  - cuda-version=12.9
+  - bwa-mem2=2.3          # the bioconda build, which reports itself as 2.2.1 (`bwa-mem2 version`)
+  - samtools=1.25
+  - bcftools=1.25
+  - python=3.13
+  - openjdk=17
+  - nextflow

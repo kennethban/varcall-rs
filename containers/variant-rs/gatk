@@ -1,0 +1,7 @@
+#!/bin/sh
+# `gatk` for nf-core modules and other GATK command lines: variant-rs runs what it reproduces byte for byte (see
+# `variant-rs <Tool> --help`) and hands everything else, with the original arguments, to the real GATK launcher named
+# by GATK_FALLBACK (set at image build time). `gatk --version` reports the GATK release variant-rs reproduces.
+: "${GATK_FALLBACK:=@GATK_REAL@}"
+export GATK_FALLBACK
+exec /opt/variant-rs/bin/variant-rs "$@"

@@ -1,0 +1,3 @@
+patient,sample,status,bam
+NA12878,NA12878,0,@DATA@/pipeline/nf/test/out/germline/lanes/NA12878.L1.bam
+NA12878,NA12878,0,@DATA@/pipeline/nf/test/out/germline/lanes/NA12878.L2.bam

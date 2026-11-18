@@ -1,0 +1,16 @@
+[package]
+name = "align-rs"
+description = "bwa-mem2 2.2.1 `mem` in Rust + CUDA, records identical to bwa-mem2"
+license = "MIT"
+authors = ["Kenneth Ban"]
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+rayon = "1"
+memchr = "2"
+mimalloc = { version = "0.1", default-features = false }
+
+[build-dependencies]
+cc = "1"

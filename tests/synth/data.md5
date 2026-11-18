@@ -1,0 +1,14 @@
+ff7caa2c44b4fd9fcb16c553844fb6b1  ref.fa
+705755afffac4876f75b118d28f85a02  ref.fa.fai
+3ff7060bd36f140a6874b787c3999cd4  ref.dict
+33ef124fa3acb2b9325a3714e5ee833b  germline_L1_R1.fq.gz
+fe85e7fe2f507a4c16d564b387384194  germline_L1_R2.fq.gz
+8131df1ff4178e529361a8776d99b5df  germline_L2_R1.fq.gz
+3915fdca853b5e037a5c46e57c3eda97  germline_L2_R2.fq.gz
+a185c33d6a23f8beb751224f71aac747  normal_R1.fq.gz
+c4a2f789019f6a525996e335845b1533  normal_R2.fq.gz
+730c050a7dc3c62586d5cf648baf3dd9  tumor_R1.fq.gz
+5f8d2680f44d410d1a7e0df408d66958  tumor_R2.fq.gz
+80f615ad85f762ba6c028e02b6df0198  known_sites.vcf
+29379db9b034294829bade4f96d33ee5  germline_resource.vcf
+0e140da9dc02f0d1217dc3a8b8e1a023  planted.tsv

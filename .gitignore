@@ -1,0 +1,15 @@
+/target/
+**/cuda/build/
+variant-rs/cuda-pairhmm/build/
+# test data: generated from public references by script, or linked from $VARCALL_DATA
+align-rs/tests/data/
+pipeline/test/data
+pipeline/test/truth
+pipeline/test/log
+pipeline/test/out
+pipeline/test/work
+pipeline/.nextflow*
+pipeline/work/
+*.log
+pipeline/test/*.csv
+pipeline/test/*.yaml
