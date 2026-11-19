@@ -320,3 +320,23 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     CPU). Doing that for every GPU stage, filling and reading pinned buffers in place, is the structural fix for
     such machines; not done. Kept from this round: the profile-only size sums (`mbsz`) are evaluated only when
     printed.
+
+11. **Mate SW as one thread per alignment: prototyped, not pursued (2026-11-19; PLAN.md stage 4).** `k_matesw` runs
+    bwa's striped SSE ksw_u8 with 16 threads per alignment: per target row a shuffle, a 16-lane maximum and a vote
+    (lazy F). The alternative tried: one thread per alignment, the plain recurrence over strips of the query held in
+    registers, each row's boundary values (H, F, the row's maximum and its first position, all u8) passed between
+    strips through scratch. It reproduces ksw_u8 while nothing saturates (16 x slen <= 250), with the query padded to
+    16 x slen positions scoring 0 as `ksw_qinit` pads it (those cells count in the row maxima, which feed score2); the
+    forward pass's score, te, qe, score2, te2 were identical on all 65,536 jobs of a dumped chunk (1.04e10 cells).
+    Forward pass only, kernel time:
+
+    | | RTX 5070 Ti | L40S |
+    |---|---:|---:|
+    | `k_matesw` (incl. transfers) | ~26.9 ms | ~16.5 ms |
+    | one thread, 16-column strips (96 registers) | 38.5 ms | 23.7 ms |
+    | one thread, 32-column strips (188 registers) | 22.8 ms | 12.9 ms |
+
+    The per-row work of a strip (the target base, the boundary load and store) dominates, so wide strips win, and 188
+    registers already limit the resident threads. 1.25-1.3x on mate SW is ~60-70 ms of the ~720 ms of kernel time a
+    batch on the L40S, perhaps 5-8% of an alignment on one GPU (and nothing where alignment is CPU- or copy-bound),
+    for a second kernel with its reverse pass and a fallback for long reads: not pursued.

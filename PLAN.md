@@ -76,11 +76,14 @@ for such machines, pinned buffers filled and read in place by every GPU stage, i
 
 245 GCUPS on the L40S, 169 on the RTX 5070 Ti; 8.9 M of 1.15 G pairs go to the double-precision pass.
 
-### Stage 4: align-rs kernels (machines with CPU to spare)
+### Stage 4: align-rs kernels — prototyped, not pursued (2026-11-19)
 
-Mate SW first (289 ms a batch on the L40S, ~490 G cells/s), then extension (241 ms). Helps where alignment is
-GPU-bound (the server with one GPU: GPU 75% busy); not the workstation. `align-rs/tests/cmp.sh` and
-`tests/selftest.sh` guard the outputs.
+Mate SW first (289 ms a batch on the L40S, ~490 G cells/s), then extension (241 ms). Would help only where alignment
+is GPU-bound (one GPU with CPU to spare); not the workstation (copy-bound) or several alignments per server
+(CPU-bound). A prototype of the mate-SW forward pass as one thread per alignment over 32-column strips of the query
+(exact: all 65,536 jobs of a dumped chunk) was 1.25-1.3x the current kernel (L40S 12.9 vs ~16.5 ms; RTX 5070 Ti
+22.8 vs ~26.9 ms): ~60-70 ms of ~720 ms GPU time a batch, perhaps 5-8% of a one-GPU alignment, for a new kernel with
+its reverse pass and a fallback. Not pursued; details in `docs/notes/align-rs.md` section 11.
 
 ### Stage 5: MarkDuplicates and BaseRecalibrator
 
@@ -99,4 +102,4 @@ GPU-bound (the server with one GPU: GPU 75% busy); not the workstation. `align-r
 * **M3, many samples:** the pipeline already runs samples side by side, one GPU per GPU step; to check at cohort
   scale.
 
-Order: stage 1 and M1 done, stage 2 dropped; then stages 3-5 as measured.
+Order: stage 1 and M1 done; stages 2 and 4 tried and not pursued; stages 3 and 5 open, as measured.
