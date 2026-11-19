@@ -54,6 +54,7 @@ extern "C" {
     fn aln_gpu_reads_cached(slot: i32, key: u64) -> i32;
     fn aln_gpu_extend(jobs: *const Job, n_jobs: i32, w: i32, end_bonus: i32, dir: i32, out: *mut JobOut) -> i32;
     fn aln_gpu_ext_take(out: *mut f64);
+    fn aln_gpu_msw_take(out: *mut f64);
     fn aln_gpu_load_fmi(cp: *const u8, n_cp: i64, ms: *const i8, ls: *const u32, n_sa: i64, count: *const i64, sentinel: i64, with_sa: i32, reserve: i64) -> i32;
     fn aln_gpu_free_mem() -> i64;
     fn aln_gpu_smem(r0: i32, n: i32, cap: i32, min_seed_len: i32, split_len: i32, split_width: i64, max_mem_intv: i64, cnt: *mut i32) -> i64;
@@ -234,21 +235,35 @@ impl Gpu {
             c.msw_reads.get_or_insert_with(|| reads.to_vec());
             c.msw.push(jobs.to_vec());
         });
+        let t_lock = std::time::Instant::now();
         let _g = self.msw_lock.lock().unwrap();
+        let t_up = std::time::Instant::now();
         // ok = 0: not done, the CPU aligns it
         let mut out = vec![MOut::default(); jobs.len()];
         if !self.set_reads(2, reads, key) {
             return out;
         }
+        crate::prof::tr("gmsw0", t_lock, std::time::Instant::now(), format_args!("{key}\t{}\t{}", jobs.len(), (t_up - t_lock).as_micros()));
         unsafe {
-            for (j, o) in jobs.chunks(MSW_CHUNK).zip(out.chunks_mut(MSW_CHUNK)) {
+            for (ci, (j, o)) in jobs.chunks(MSW_CHUNK).zip(out.chunks_mut(MSW_CHUNK)).enumerate() {
+                let t_prep = std::time::Instant::now();
                 let mut jj = j.to_vec();
                 let mut off = 0i64;
                 for x in jj.iter_mut() {
                     x.boff = off;
                     off += x.tlen as i64 + 1;
                 }
-                if aln_gpu_matesw(jj.as_ptr(), jj.len() as i32, off, o.as_mut_ptr()) != 0 {
+                let t_call = std::time::Instant::now();
+                let rc = aln_gpu_matesw(jj.as_ptr(), jj.len() as i32, off, o.as_mut_ptr());
+                if crate::prof::tr_on() {
+                    // CPU preparation, then the device call (upload / kernel / download by events)
+                    let mut d = [0f64; 3];
+                    aln_gpu_msw_take(d.as_mut_ptr());
+                    let t_end = std::time::Instant::now();
+                    let cells: i64 = jj.iter().map(|x| x.qlen as i64 * x.tlen as i64).sum();
+                    crate::prof::tr("gmsw", t_prep, t_end, format_args!("{key}\t{ci}\t{}\t{cells}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}", jj.len(), (t_call - t_prep).as_micros(), (t_end - t_call).as_micros(), d[0] * 1e6, d[1] * 1e6, d[2] * 1e6));
+                }
+                if rc != 0 {
                     failed(3, "mate SW");
                     o.fill(MOut::default());
                     continue;

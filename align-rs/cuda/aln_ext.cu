@@ -1008,6 +1008,7 @@ extern "C" int aln_gpu_set_reads2(const uint8_t *reads, int64_t reads_bytes, con
 static MOut *d_mout = 0;  static size_t cap_mout = 0;
 static uint32_t *d_bscr = 0; static size_t cap_bscr = 0;
 static double t_msw = 0;
+static thread_local double t_msw_call[3] = {0, 0, 0};
 
 // Mate-rescue alignments of the reads set by aln_gpu_set_reads (u8 jobs only); ok = 0: the CPU redoes the job
 // jobs[k].boff: offset of job k's per-row maxima in the scratch (sum of tlen + 1 before it); `scratch` its size
@@ -1031,7 +1032,14 @@ extern "C" int aln_gpu_matesw(const MJob *jobs, int n, int64_t scratch, MOut *ou
     cudaEventRecord(e1); cudaEventSynchronize(e1);
     float ms_; cudaEventElapsedTime(&ms_, e0, e1); t_msw += ms_ * 1e-3;
     add_kern(3, ek0, ek1);
+    float a, b, c;
+    cudaEventElapsedTime(&a, e0, ek0); cudaEventElapsedTime(&b, ek0, ek1); cudaEventElapsedTime(&c, ek1, e1);
+    t_msw_call[0] += a * 1e-3; t_msw_call[1] += b * 1e-3; t_msw_call[2] += c * 1e-3;
     return 0;
+}
+// ALIGN_RS_TRACE: this thread's mate-SW device time since the last call (s): upload, kernel, download
+extern "C" void aln_gpu_msw_take(double *out) {
+    for (int i = 0; i < 3; ++i) { out[i] = t_msw_call[i]; t_msw_call[i] = 0; }
 }
 
 extern "C" void aln_gpu_report3() {

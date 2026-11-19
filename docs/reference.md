@@ -37,7 +37,7 @@ align-rs tune [-t N] [-K N] ref.fa R1.fq[.gz] [R2.fq[.gz]]
 | `ALIGN_RS_TUNE_CACHE` | where `tune` saves (default `$XDG_CACHE_HOME/align-rs/gpu-settings.tsv` or `~/.cache/align-rs/...`) |
 | `ALIGN_RS_PROFILE=1` / `2` | per-stage timeline and counters at the end / plus per-item CPU timers |
 | `ALIGN_RS_GPU_SERIAL=1` | one GPU call at a time (kernel-only timings) |
-| `ALIGN_RS_TRACE=FILE` | a line per stage run, extension device call (upload / sort / kernel / download) and extension CPU step, on one time origin |
+| `ALIGN_RS_TRACE=FILE` | a line per stage run, extension device call (upload / sort / kernel / download), extension CPU step and mate-SW chunk (CPU preparation, upload / kernel / download), on one time origin |
 | `ALIGN_RS_EXT_POOL=0` | extension's CPU steps in the global thread pool instead of their own (for comparison) |
 | `ALIGN_RS_REPLAY_CHECK=1` | runs bwa's linear scan beside the optimized replay lookup and stops if they disagree |
 | `ALIGN_RS_GPU_FAIL_GROW=N` | test hook: device allocations after the first N fail (exercises the CPU fallback) |

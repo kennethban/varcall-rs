@@ -265,3 +265,15 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
    Tried and dropped: extension in K parts of a batch on their own threads, one device thread serving their rounds
    as they come (no lockstep wait): 2 parts as fast as the halves, 4 and 8 slower (113.1 / 117.5 / 120.6 s against
    114.1 s): smaller device calls, and more CPU loops competing with the other stages.
+
+   Mate rescue's device time, traced per chunk (64K jobs; ~898K jobs, 143 G cells a batch): 555 ms of calls a
+   batch, kernel 370 (293 alone), result download 175 (9 alone: median 0.4 ms, one chunk in ten 55-157 ms, during
+   extension's and SA lookups' large pageable copies). Tried and dropped, records identical:
+   * results through a pinned buffer: download 175 -> 1 ms, rescue 832 -> 599 ms a batch, but its kernels then
+     take the device from extension (808 -> 910 ms): 107.9 -> 114.2 s;
+   * extension on a highest-priority stream: its kernel slower (320 -> 423 ms a batch), seeding too: 115.5 s
+     (with pinned results 117.1 s).
+
+   The device is full: alone, the kernels take ~720 ms a batch (mate SW 289, extension 241, seeding 162, SA 30)
+   against 848 ms per batch in the pipeline, where they overlap and slow each other. Scheduling only moves time
+   between the stages; what is left is less device work (the mate-SW kernel: ~490 G cells/s on the L40S).
