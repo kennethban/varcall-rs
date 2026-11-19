@@ -440,15 +440,15 @@ fn main() {
         });
         // final pass of each lane's BAM (sort + write + index), one lane at a time, while the next lane aligns
         let (ftx, frx) = std::sync::mpsc::channel::<bam::BamSink>();
-        sc.spawn(move || {
+        std::thread::Builder::new().name("bam-final".into()).spawn_scoped(sc, move || {
             for b in frx {
                 let tf = std::time::Instant::now();
                 let (n, path) = (b.n_records, b.path().to_string());
-                b.finish(threads);
+                b.finish();
                 eprintln!("[align-rs] sorted BAM + index: {path}: {n} records, final pass {:.1} s", tf.elapsed().as_secs_f64());
             }
             prof::stage_done("BAM final pass");
-        });
+        }).unwrap();
         let (dropper, drop_rx) = std::sync::mpsc::channel::<Box<dyn Send>>();
         sc.spawn(move || {
             for x in drop_rx {

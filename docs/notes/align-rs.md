@@ -277,3 +277,24 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
    The device is full: alone, the kernels take ~720 ms a batch (mate SW 289, extension 241, seeding 162, SA 30)
    against 848 ms per batch in the pipeline, where they overlap and slow each other. Scheduling only moves time
    between the stages; what is left is less device work (the mate-SW kernel: ~490 G cells/s on the L40S).
+
+9. **Final pass of the sorted BAM, in parallel (2026-11-19)**. It took 24-25 s a 30x lane (22% of the run), one
+   thread busy 90% of it handing records to htslib's writer: gdb samples of it (`perf` is closed to users on the
+   server) were the copy of each 64 KB block into a compression job (38%), our copy of each record into a bam1_t
+   (26%), the index push waiting for the writer's lock (23%). Now:
+   * parsing stores each record as `bam_write1` writes it (`ondisk` in `hts/alnhts.c`; byte-identical to
+     `bam_write1` on every record of the small set and on a record of 70,000 CIGAR operations, stored with a CG
+     tag), with its end (`bam_endpos`) and mapped flag in the spill frame;
+   * the final pass cuts the sorted records into BGZF blocks as htslib's writer does (`bgzf_flush_try`: a record
+     that does not fit starts a new block), compresses them in parallel with htslib's `bgzf_compress`, and writes
+     them after the header (`bgzf_raw_write`); the `.bai` comes from htslib's `hts_idx_push` with each record's
+     virtual offset as a reader's `bgzf_tell` gives it (a record that ends a block ends at the next block's
+     start), as `samtools index` builds it;
+   * per window of 64 buckets, the sort, the cutting and compression, the write and the index run on their own
+     threads, overlapping.
+
+   One 30x lane, L40S, three runs each against main, alternating: final pass 24.6-25.2 -> **4.7-5.0 s** at 64
+   threads, lane **107.6 -> 87.6 s**; 23.0-24.5 -> 9.8-10.0 s at 16 threads, lane 193.9 -> 180.0 s; records
+   identical, `.bai` identical to `samtools index`. The BAM is 23 KB larger (each window ends its last block). With
+   several lanes a run, only the last lane's final pass is not overlapped by alignment. (`ALIGN_RS_TRACE` is not
+   free: a traced lane took 99.6 s.)
