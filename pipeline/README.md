@@ -131,6 +131,7 @@ germline whole genome as above, `pipeline/run.sh` with its defaults unless noted
 | 6 GPUs, 64 threads every step, before the HaplotypeCaller GPU engine pool | 9.9 min (593 s) | HaplotypeCaller 3.5 |
 | 1 GPU, 64 threads every step, before the engine pool | 20.9 min | ALIGN 15.3 min (12 lanes, one task), MarkDuplicates 1.3, BaseRecalibrator 0.5, HaplotypeCaller 3.5 |
 | NVIDIA Parabricks 4.8.0-1 `germline`, 4 GPUs, 64 threads (2026-11-18) | 16.3 min | its own outputs: 99.8% of its calls have the same site, alleles and genotype as GATK's, 3% are identical records |
+| somatic exome, SEQC2 tumor / normal BAMs (the defaults: 128 threads per step) | **63 s** | MarkDuplicates 11 s, BaseRecalibrator 3.5, ApplyBQSR 11-12, Mutect2 9.8, HaplotypeCaller on the normal 41.9; all 17 outputs identical to the workstation's |
 
 The sections that follow are the measurement log: how each number was taken, and what changed between runs.
 
@@ -149,6 +150,13 @@ calling intervals), GPUs 2-7. Each change was measured on the whole run, VCF dat
 
 One GPU, 64 threads (`~/projects/wgs1`, before the engine pool): 20.9 min, alignment 73% of it (GPU ~75% busy), peak
 151 GB for the 12-lane align-rs task.
+
+Somatic exome (`~/projects/seqc2`): 63 s, against 166 s on the workstation. HaplotypeCaller on the normal is the
+longest step (41.9 s, 30 s on the workstation): over an exome's targets it runs once (`scatter_intervals` auto), and
+one GATK run draws from one random generator in genome order, so its front end reads the BAM in one pass (288 of its
+summed stage seconds; the small chromosomes at the end of the file finish last). Its time follows one core's speed:
+the same 39.6-41.0 s, VCF identical, with 32 to 128 threads, 8 to 28 contig workers, 8 or 16 GPU engines (GPU 2%
+busy). `scatter_intervals true` calls each target on its own (as sarek, and GATK per interval), in parallel.
 
 ## Tests (2026-11-16)
 
