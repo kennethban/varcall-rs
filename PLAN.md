@@ -1,0 +1,96 @@
+# Speed plan: one GPU first, several as an option
+
+Most users have one GPU (a workstation, or one cloud GPU), so the stages below speed up that case first. Several
+GPUs (large servers, consortium runs) come after, built on the same pieces. Every stage keeps the outputs identical
+(the rule in [CONTRIBUTING.md](CONTRIBUTING.md)) and reports its timing and that check before the next one starts.
+
+## Where the time goes (2026-11-19)
+
+NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` at 2e455f7:
+
+| Step | Workstation, 1 RTX 5070 Ti, 32 threads (2026-11-17, before the align-rs work below) | Server, 6 L40S, 64 threads per step |
+|---|---:|---:|
+| Alignment | 36.1 min (12 lanes in one task) | 3.8-4.4 min (6 tasks of 2 lanes, side by side) |
+| MarkDuplicates | 4.1 min | 1.3 min |
+| BaseRecalibrator | 1.2 min | 0.5 min |
+| HaplotypeCaller | 7.0 min | 3.5 min |
+| Total | 48.8 min | 9.9 min |
+
+What limits each step, measured on the server:
+
+* **HaplotypeCaller is limited by how the GPU is fed.** Its 8 contig workers share one CUDA PairHMM engine behind
+  one lock (`crates/cudahmm/src/lib.rs`): one stream, one pinned buffer, and the packing of a batch on the CPU
+  (74 s in all) inside the lock, so it never overlaps another batch's GPU time (109 s; kernel 89 s at 245 GCUPS).
+  More threads do not help: 212 s at 64 threads, 218 at 128, 225 at 192, 250 at 384; GPU busy ~40%.
+* **align-rs with one GPU is GPU-bound.** Alone, its kernels take ~720 ms a batch (mate SW 289, extension 241,
+  seeding 162, SA 30) against ~850 ms per batch in the pipeline (one 30x lane in 87.6 s at 64 threads).
+  Scheduling the kernels differently only moves time between them (`docs/notes/align-rs.md` section 8).
+* **align-rs on a large server is CPU-bound**: 6 alignments fill the 384 hardware threads (a lane ~125 s against
+  88 s alone), so GPU-side gains do not show there.
+* MarkDuplicates and BaseRecalibrator scale with threads on a large server (outputs identical at every count):
+  MarkDuplicates 75 s at 64 threads, 56 at 128, 55 at 192; BaseRecalibrator 30, 19, 16.
+
+## Stages
+
+### Stage 0: single-GPU baseline (measurement only) — done 2026-11-19
+
+The full run with one GPU (same inputs; VCF data lines identical on both machines and to the 6-GPU run: 4,951,704,
+md5 741f6ebc50be):
+
+| Step | Workstation: RTX 5070 Ti, 32 threads, 30 GB | Server: one L40S, 64 threads |
+|---|---:|---:|
+| Alignment (12 lanes, one task) | 32.1 min (72%): CPU 2,667% of 3,200, GPU 48% | 15.3 min (73%): GPU 75% |
+| MarkDuplicates | 3.9 min | 1.3 min |
+| BaseRecalibrator | 1.4 min | 0.5 min |
+| HaplotypeCaller | 6.9 min (15%) | 3.5 min (17%) |
+| Total | 44.6 min | 20.9 min |
+| Alignment peak memory | 24.4 GB | 151 GB |
+
+* **On a workstation, alignment is CPU-bound** (83% of the threads busy, the GPU half idle), so the typical
+  one-GPU user gains from less CPU work per lane (stage 2), not from faster alignment kernels (stage 4).
+* **HaplotypeCaller's PairHMM path behind one lock costs on both:** on the workstation packing + GPU took 250 of its
+  453 s (kernel 169 GCUPS; pack 71 s, GPU 167 s), next to heavy CPU stages (front end, assembly), so stage 1 gains
+  less there than on the server.
+* Workstation folder: `gatk/wgs/stage0/` (run.sh, trace.tsv, gpu.csv); server: `~/projects/wgs1/`.
+
+### Stage 1: HaplotypeCaller, packing overlapped with the GPU (variant-rs `cudahmm`)
+
+A small pool of PairHMM engines, each with its own CUDA stream and pinned buffers, in place of one engine behind one
+lock: workers pack their batches in parallel and their kernels overlap. Each (read, haplotype) pair is computed on
+its own by the same kernel, so the likelihoods cannot change; checked by `tests/selftest.sh` and the 30x VCF.
+Expected on the L40S: 211 s -> ~120 s (the GPU's own 109 s becomes the floor).
+
+### Stage 2: align-rs, less CPU work per lane (the workstation's limit)
+
+In thread-seconds per 30x lane (server profile, `docs/notes/align-rs.md`): mate rescue's region dedup after every
+rescue direction (~470; exact only if bwa's introsort tie order and its order-dependent overlap test are kept),
+extension setup (834, of which reading the reference 335), chaining (779), replay + dedup (391), XA hits (318).
+Measure on the workstation first: its split may differ.
+
+### Stage 3: PairHMM kernel (if stage 1 leaves HaplotypeCaller GPU-bound)
+
+245 GCUPS on the L40S, 169 on the RTX 5070 Ti; 8.9 M of 1.15 G pairs go to the double-precision pass.
+
+### Stage 4: align-rs kernels (machines with CPU to spare)
+
+Mate SW first (289 ms a batch on the L40S, ~490 G cells/s), then extension (241 ms). Helps where alignment is
+GPU-bound (the server with one GPU: GPU 75% busy); not the workstation. `align-rs/tests/cmp.sh` and
+`tests/selftest.sh` guard the outputs.
+
+### Stage 5: MarkDuplicates and BaseRecalibrator
+
+5.3 of the workstation's 44.6 min; profile there if they matter after stages 1-2.
+
+## Several GPUs (an option, after stage 1)
+
+* **M1, HaplotypeCaller on several GPUs:** the engine pool of stage 1 spread over every visible GPU, in one process
+  and one VCF; the pipeline gives HaplotypeCaller all the run's GPUs. (The alternative, the interval list split into
+  one process per GPU and the VCFs concatenated, needs more pipeline plumbing.)
+* **M2, alignment on large servers:** CPU-bound too (6 alignments fill the 384 threads), so stage 2 serves them.
+* **M4, threads per step on large servers (pipeline setting, no code):** the steps after alignment run one sample
+  at a time, so they can take more than the alignment tasks' share: MarkDuplicates 128 threads (75 -> 56 s),
+  BaseRecalibrator 192 (30 -> 16 s); HaplotypeCaller does not gain (stage 1 first).
+* **M3, many samples:** the pipeline already runs samples side by side, one GPU per GPU step; to check at cohort
+  scale.
+
+Order: stage 1 (both machines), stage 2 (workstation alignment), M1, then stages 3-5 as measured.
