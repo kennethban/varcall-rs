@@ -4,6 +4,24 @@ Most users have one GPU (a workstation, or one cloud GPU), so the stages below s
 GPUs (large servers, consortium runs) come after, built on the same pieces. Every stage keeps the outputs identical
 (the rule in [CONTRIBUTING.md](CONTRIBUTING.md)) and reports its timing and that check before the next one starts.
 
+## Status (2026-11-19)
+
+**Alignment (align-rs): done for now.** What is in: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s),
+extension's empty redo scan skipped and its own thread pool, and the pipeline's thread split per GPU. What was tried
+and not pursued, with the measurements in `docs/notes/align-rs.md` sections 8-11: other extension schedules, GPU
+stream priorities, pinned copies, chaining and mate-rescue CPU cuts (stage 2), a one-thread-per-alignment mate-SW
+kernel (stage 4). Each machine is now held by something no small change moves:
+
+* one alignment on one L40S: the GPU (its kernels alone ~720 of ~850 ms a batch);
+* several alignments on one server: the CPU (6 x 64 threads fill the 384);
+* the workstation: the copies between host and GPU through pageable memory, slow while the CPU is busy.
+
+Going further means a larger project: pinned buffers filled and read in place by every GPU stage (the workstation),
+or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25%.
+
+**Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1) and several GPUs (M1) are in; the PairHMM
+kernel (stage 3) and MarkDuplicates / BaseRecalibrator on the workstation (stage 5) are open.
+
 ## Where the time goes (2026-11-19)
 
 NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` at 2e455f7:
@@ -94,12 +112,14 @@ its reverse pass and a fallback. Not pursued; details in `docs/notes/align-rs.md
 * **M1, HaplotypeCaller on several GPUs — done 2026-11-19:** the engine pool spread over every visible GPU, in one
   process and one VCF. 30x genome, L40S, 128 threads: 1 GPU 115 s, 2 GPUs 98, 4 GPUs 97 (the 141 Mb chr2 calling
   interval, one sequential GATK run, sets the time); the pipeline gives HaplotypeCaller up to 2 GPUs (`hc_gpus`).
-* **M2, alignment on large servers:** CPU-bound (6 alignments fill the 384 threads); stage 2's CPU cuts were
-  not measured there before being dropped.
-* **M4, threads per step on large servers (pipeline setting, no code):** the steps after alignment run one sample
-  at a time, so they can take more than the alignment tasks' share: MarkDuplicates 128 threads (75 -> 56 s),
-  BaseRecalibrator 192 (30 -> 16 s); HaplotypeCaller does not gain (stage 1 first).
+* **M2, alignment on large servers — done for now, with alignment (see Status):** CPU-bound (6 alignments fill the
+  384 threads); the alignment threads are split evenly per GPU (`align_cpus`). Stage 2's CPU cuts were not measured
+  there before being dropped.
+* **M4, threads per step on large servers — done 2026-11-19:** the steps after alignment run one sample at a time,
+  so they take the machine's threads (at most 128, `cpus`) and each alignment task its share (`align_cpus`):
+  MarkDuplicates 75 -> 56 s, BaseRecalibrator 30 -> 19 s; 6 GPUs 505 -> 484 s.
 * **M3, many samples:** the pipeline already runs samples side by side, one GPU per GPU step; to check at cohort
   scale.
 
-Order: stage 1 and M1 done; stages 2 and 4 tried and not pursued; stages 3 and 5 open, as measured.
+Order: alignment done for now (stages 2 and 4 tried and not pursued; M2); stage 1, M1 and M4 done; stages 3 and 5
+and M3 open, as measured.
