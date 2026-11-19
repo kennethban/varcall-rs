@@ -250,7 +250,8 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
      records, the lanes not reached written empty) before the error exit: release builds now abort on panic.
 
 8. **Extension on a many-core server (2026-11-19, L40S, 64 of 384 threads, one 30x lane)**. A batch every 900 ms,
-   extension busy 880 of them, mate rescue 836. `ALIGN_RS_TRACE` (one line per device call and CPU step) showed:
+   extension busy 880 of them, mate rescue 836. `ALIGN_RS_TRACE` (one line per device call, and then per extension CPU step: those events were removed once
+   used) showed:
    * the device thread's scan for jobs the kernel left to the CPU cost 80 ms a batch (a parallel loop waiting for
      the thread pool) and found none: the kernel now counts them and the scan runs only when there are some;
    * the first half's setup took 240 ms with the device idle, the same work 67 ms for the second half: it starts
@@ -298,3 +299,24 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
    identical, `.bai` identical to `samtools index`. The BAM is 23 KB larger (each window ends its last block). With
    several lanes a run, only the last lane's final pass is not overlapped by alignment. (`ALIGN_RS_TRACE` is not
    free: a traced lane took 99.6 s.)
+
+10. **Less CPU work per lane: tried and dropped (2026-11-19; PLAN.md stage 2).** On a workstation (RTX 5070 Ti, Ryzen 9
+    9950X3D, 32 threads) alignment looked CPU-bound (25 of 32 threads busy, GPU half busy). Thread-seconds per 30x
+    lane (`ALIGN_RS_PROFILE=2`, inflated by its per-item timers): chaining 910, mate rescue's CPU part 828 (mostly
+    its region dedup), CIGAR/NM/MD 587, extension setup 519. Two exact changes cut CPU but not wall clock, and were
+    dropped as not worth their code:
+    * `pos2rid` by 64 kb block (a table of the sequences per block, against bwa's binary search over ~3,300
+      sequences): `chain_seeds` 448 -> 369 thread-s, ~1.5% of the lane's CPU;
+    * mate rescue's dedup recomputing only what the region added since the last dedup changes (bwa sorts the
+      mate's whole list twice after every rescue direction, ~130 regions, 2.7 M calls per 1 M pairs): 828 -> 353
+      thread-s, user CPU -10.5%; ~150 lines with a subtle exactness argument (its check switch found one missed
+      case: bwa leaves a list of one region as it is, `n_comp` included).
+
+    Wall clock unchanged within the machine's noise (±8 s on ~2:45 a lane): the lane is paced by its four GPU
+    stages, each ~1.4-1.5 s a batch, and their GPU calls are mostly copies through pageable memory, which the
+    driver stages on the calling CPU thread: slow when the CPU is busy (in the pipeline ~1 GB/s against 16.7 GB/s
+    idle; pinned 51 GB/s on this PCIe 5 card). Pinned SA lookups (a test): their device time 54.5 -> 15.9 s a lane,
+    the lane unchanged (the other stages set the pace, and the copies into and out of the pinned buffer cost the
+    CPU). Doing that for every GPU stage, filling and reading pinned buffers in place, is the structural fix for
+    such machines; not done. Kept from this round: the profile-only size sums (`mbsz`) are evaluated only when
+    printed.

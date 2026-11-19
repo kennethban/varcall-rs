@@ -65,12 +65,12 @@ threads, up to 32). L40S, 64 threads: 190 s -> 121 s; 128 threads: 114 s. RTX 50
 (397-403 s whatever the engines or workers: its CPU stages set the pace), so its defaults are as before. VCF
 identical in every run; selftest identical. Details: `docs/notes/variant-rs.md` (Performance).
 
-### Stage 2: align-rs, less CPU work per lane (the workstation's limit)
+### Stage 2: align-rs, less CPU work per lane — tried and dropped 2026-11-19
 
-In thread-seconds per 30x lane (server profile, `docs/notes/align-rs.md`): mate rescue's region dedup after every
-rescue direction (~470; exact only if bwa's introsort tie order and its order-dependent overlap test are kept),
-extension setup (834, of which reading the reference 335), chaining (779), replay + dedup (391), XA hits (318).
-Measure on the workstation first: its split may differ.
+Chaining and mate rescue's dedup were cut (-10.5% user CPU per lane) without changing the workstation's wall
+clock: its lane is paced by GPU stages whose calls are mostly copies through pageable memory, slow when the CPU is
+busy. The changes were reverted as not worth their code (`docs/notes/align-rs.md` section 10). The structural fix
+for such machines, pinned buffers filled and read in place by every GPU stage, is not planned for now.
 
 ### Stage 3: PairHMM kernel (if stage 1 leaves HaplotypeCaller GPU-bound)
 
@@ -91,11 +91,12 @@ GPU-bound (the server with one GPU: GPU 75% busy); not the workstation. `align-r
 * **M1, HaplotypeCaller on several GPUs:** the engine pool of stage 1 spread over every visible GPU, in one process
   and one VCF; the pipeline gives HaplotypeCaller all the run's GPUs. (The alternative, the interval list split into
   one process per GPU and the VCFs concatenated, needs more pipeline plumbing.)
-* **M2, alignment on large servers:** CPU-bound too (6 alignments fill the 384 threads), so stage 2 serves them.
+* **M2, alignment on large servers:** CPU-bound (6 alignments fill the 384 threads); stage 2's CPU cuts were
+  not measured there before being dropped.
 * **M4, threads per step on large servers (pipeline setting, no code):** the steps after alignment run one sample
   at a time, so they can take more than the alignment tasks' share: MarkDuplicates 128 threads (75 -> 56 s),
   BaseRecalibrator 192 (30 -> 16 s); HaplotypeCaller does not gain (stage 1 first).
 * **M3, many samples:** the pipeline already runs samples side by side, one GPU per GPU step; to check at cohort
   scale.
 
-Order: stage 1 (both machines), stage 2 (workstation alignment), M1, then stages 3-5 as measured.
+Order: M1 next (stage 1 done; stage 2 dropped), then stages 3-5 as measured.

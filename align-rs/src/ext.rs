@@ -714,11 +714,6 @@ impl Part {
     }
 }
 
-/// ALIGN_RS_TRACE: a half's CPU step (setup, apply, finish), from `t0` to now; `next_jobs`: its next round's jobs
-fn tr_cpu(what: &str, half: usize, key: u64, t0: std::time::Instant, next_jobs: usize) {
-    crate::prof::tr("xcpu", t0, std::time::Instant::now(), format_args!("{half}\t{key}\t{what}\t{next_jobs}"));
-}
-
 /// Extension of a batch: per read, the regions after the skip replay, the purge and mem_sort_dedup_patch.
 /// `chains[i]` are read i's filtered chains. The batch goes through in two halves, alternating: while the
 /// device runs one half's round, the CPU sets up, applies or replays the other (reads are independent, so the
@@ -735,82 +730,64 @@ pub fn extend_batch(o: &ExtOpt, bns: &Bns, ex: &dyn Extender, chains: &[Vec<Chai
 fn extend_halves(o: &ExtOpt, bns: &Bns, ex: &dyn Extender, chains: &[Vec<Chain>], reads: &[Vec<u8>], key: u64) -> Vec<Vec<Reg>> {
     let n = chains.len();
     let mid = n / 2;
-    let run = |p: usize, step: usize, rd: Round, jobs: &[Job]| -> Vec<JobOut> {
+    let run = |rd: Round, jobs: &[Job]| -> Vec<JobOut> {
         if jobs.is_empty() {
             return Vec::new();
         }
         let t = std::time::Instant::now();
         let r = ex.run(o, rd, jobs, reads, key);
         eadd(2, t);
-        crate::prof::tr("xdev", t, std::time::Instant::now(), format_args!("{p}\t{key}\t{step}\t{}", jobs.len()));
         EPROF[5].fetch_add(jobs.len() as u64, std::sync::atomic::Ordering::Relaxed);
         r
     };
-    let tc = std::time::Instant::now();
     let mut a = Part::new(o, bns, chains, reads, 0, mid);
     a.jobs = a.build(o);
-    tr_cpu("setup", 0, key, tc, a.jobs.len());
-    let mut step = 0;
     let mut b: Option<Part> = None;
     let mut b_outs: Vec<JobOut> = Vec::new();
     let mut a_res: Option<Vec<Vec<Reg>>> = None;
     let mut b_res: Option<Vec<Vec<Reg>>> = None;
     loop {
         // device: a's round; CPU: b's setup, or the results of b's last round and its next jobs (or its replay)
-        let ts = std::time::Instant::now();
         let (a_outs, ()) = std::thread::scope(|sc| {
             let (a_round, a_jobs) = (a.round(o), &a.jobs);
-            let h = sc.spawn(move || run(0, step, a_round, a_jobs));
+            let h = sc.spawn(move || run(a_round, a_jobs));
             if b_res.is_none() {
-                let tc = std::time::Instant::now();
                 match b.as_mut() {
                     None => {
                         let mut p = Part::new(o, bns, chains, reads, mid, n);
                         p.jobs = p.build(o);
-                        tr_cpu("setup", 1, key, tc, p.jobs.len());
                         b = Some(p);
                     }
                     Some(p) => {
                         if !p.jobs.is_empty() {
                             p.apply(o, reads, &b_outs);
                             p.jobs = p.build(o);
-                            tr_cpu("apply", 1, key, tc, p.jobs.len());
                         }
                         if p.done {
-                            let tc = std::time::Instant::now();
                             b_res = Some(b.take().unwrap().finish(o, bns, chains, reads));
-                            tr_cpu("finish", 1, key, tc, 0);
                         }
                     }
                 }
             }
             (h.join().unwrap(), ())
         });
-        crate::prof::tr("xstep", ts, std::time::Instant::now(), format_args!("0\t{key}\t{step}"));
         // device: b's round; CPU: a's results and next jobs (or its replay)
         let b_jobs: Vec<Job> = b.as_mut().map(|p| std::mem::take(&mut p.jobs)).unwrap_or_default();
         let b_round = b.as_ref().map_or(Round { w: 0, end_bonus: 0, dir: 1 }, |p| p.round(o));
-        let ts = std::time::Instant::now();
         let (outs, ()) = std::thread::scope(|sc| {
-            let h = sc.spawn(|| run(1, step, b_round, &b_jobs));
+            let h = sc.spawn(|| run(b_round, &b_jobs));
             if a_res.is_none() {
-                let tc = std::time::Instant::now();
                 if !a.jobs.is_empty() {
                     a.apply(o, reads, &a_outs);
                     a.jobs = a.build(o);
-                    tr_cpu("apply", 0, key, tc, a.jobs.len());
                 }
                 if a.done {
-                    let tc = std::time::Instant::now();
                     let p = std::mem::replace(&mut a, Part { base: 0, sts: Vec::new(), side: 2, tr: 0, pending: Vec::new(), jobs: Vec::new(), done: true });
                     a_res = Some(p.finish(o, bns, chains, reads));
-                    tr_cpu("finish", 0, key, tc, 0);
                 }
             }
             (h.join().unwrap(), ())
         });
-        crate::prof::tr("xstep", ts, std::time::Instant::now(), format_args!("1\t{key}\t{step}"));
-        step += 1;
         b_outs = outs;
         if let Some(p) = b.as_mut() {
             p.jobs = b_jobs;

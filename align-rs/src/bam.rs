@@ -230,9 +230,7 @@ impl BamSink {
             sc.spawn(move || {
                 let nb = me.chunks.len();
                 for w0 in (0..nb).step_by(WINDOW) {
-                    let t = std::time::Instant::now();
                     let v: Vec<_> = (w0..(w0 + WINDOW).min(nb)).into_par_iter().map(sort_bucket).collect();
-                    crate::prof::tr("fsort", t, std::time::Instant::now(), format_args!("{w0}"));
                     if tx.send(v).is_err() {
                         break;
                     }
@@ -242,30 +240,23 @@ impl BamSink {
             sc.spawn(move || {
                 let w = w;
                 for z in wrx {
-                    let t = std::time::Instant::now();
                     let all = z.concat();
                     drop(z);
                     let rc = unsafe { ah_raw(w.0, all.as_ptr(), all.len()) };
                     assert_eq!(rc, 0, "{}: write failed", me.path);
-                    crate::prof::tr("fwrite", t, std::time::Instant::now(), format_args!("{}", all.len()));
                 }
             });
             // the index, record by record in file order
             sc.spawn(move || {
                 let idx = idx;
                 for e in irx {
-                    let t = std::time::Instant::now();
                     for (r, off) in e {
                         let rc = unsafe { hts_idx_push(idx.0, r.tid as i32, r.k >> 1, r.end, off, r.mapped as i32) };
                         assert!(rc >= 0, "{}: hts_idx_push failed", me.path);
                     }
-                    crate::prof::tr("findex", t, std::time::Instant::now(), format_args!(""));
                 }
             });
-            let mut t_wait = std::time::Instant::now();
             for v in rx {
-                let t0 = std::time::Instant::now();
-                crate::prof::tr("fwait", t_wait, t0, format_args!(""));
                 // the window's records cut into blocks as bgzf_write / bgzf_flush_try cut them: a record that does
                 // not fit the block's room starts a new one, a full block is flushed (a record longer than a block
                 // spans several). The window's last block is flushed with it.
@@ -297,8 +288,6 @@ impl BamSink {
                 if len > 0 {
                     blocks.push((p0, pieces.len(), len));
                 }
-                let t1 = std::time::Instant::now();
-                crate::prof::tr("flayout", t0, t1, format_args!("{}\t{}", ends.len(), blocks.len()));
                 let z: Vec<Vec<u8>> = blocks
                     .par_iter()
                     .map(|&(a, b, l)| {
@@ -314,8 +303,6 @@ impl BamSink {
                         out
                     })
                     .collect();
-                let t2 = std::time::Instant::now();
-                crate::prof::tr("fdeflate", t1, t2, format_args!(""));
                 // block addresses, then each record's virtual offset as a reader's bgzf_tell gives it after the record
                 let mut baddr = Vec::with_capacity(z.len() + 1);
                 for zb in &z {
@@ -332,8 +319,6 @@ impl BamSink {
                 drop(v);
                 wtx.send(z).unwrap();
                 itx.send(e).unwrap();
-                t_wait = std::time::Instant::now();
-                crate::prof::tr("fcut", t2, t_wait, format_args!(""));
             }
             drop(wtx);
             drop(itx);

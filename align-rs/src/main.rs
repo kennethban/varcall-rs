@@ -33,9 +33,11 @@ const PROF_NAMES: [&str; 9] = ["wall: seeding (SMEM)", "wall: SA + chaining", "w
 fn vb<T>(v: &Vec<T>) -> usize {
     v.capacity() * std::mem::size_of::<T>()
 }
-fn mbsz(what: &str, n_processed: i64, b: usize) {
+/// ALIGN_RS_PROFILE: the size of a batch's structure, printed for one batch. `b` is only called then: summing every
+/// chain's seed list on each batch cost the extension thread time it does not have.
+fn mbsz(what: &str, n_processed: i64, b: impl FnOnce() -> usize) {
     if n_processed == 2 * 666668 && std::env::var("ALIGN_RS_PROFILE").is_ok() {
-        eprintln!("[align-rs] size {what}: {} MB", b >> 20);
+        eprintln!("[align-rs] size {what}: {} MB", b() >> 20);
     }
 }
 fn padd(i: usize, t: std::time::Instant) {
@@ -613,8 +615,8 @@ fn main() {
                 drop(reads);
                 let n = seqs.len();
 { let k = DROP_PENDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1; DROP_MAX.fetch_max(k, std::sync::atomic::Ordering::Relaxed); }
-                mbsz("SAM text", n_processed, vb(&text) + text.iter().map(|t| t.capacity()).sum::<usize>());
-                mbsz("rescue pre", n_processed, vb(&pre) + pre.iter().map(vb).sum::<usize>());
+                mbsz("SAM text", n_processed, || vb(&text) + text.iter().map(|t| t.capacity()).sum::<usize>());
+                mbsz("rescue pre", n_processed, || vb(&pre) + pre.iter().map(vb).sum::<usize>());
                 dropper.send(Box::new((text, batch, seqs, pre))).unwrap();
                 eprintln!("[align-rs] batch: {} reads, {:.2}s", n, t0.elapsed().as_secs_f64());
             }
@@ -765,8 +767,8 @@ fn main() {
         padd(1, t2);
         tl(" chain", (n_processed / 666668) as usize, t2c);
 { let k = DROP_PENDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1; DROP_MAX.fetch_max(k, std::sync::atomic::Ordering::Relaxed); }
-        mbsz("smems", n_processed, vb(&smems) + smems.iter().map(vb).sum::<usize>());
-        mbsz("SA positions + coords", n_processed, vb(&flat) + vb(&coords));
+        mbsz("smems", n_processed, || vb(&smems) + smems.iter().map(vb).sum::<usize>());
+        mbsz("SA positions + coords", n_processed, || vb(&flat) + vb(&coords));
         dropper.send(Box::new((smems, flat, coords))).unwrap();
                 tl("sa+chain", (n_processed / 666668) as usize, tp);
                 if ctx.send((li, batch, seqs, chains, n_processed, tp)).is_err() {
@@ -778,10 +780,10 @@ fn main() {
         for (li, batch, seqs, chains, n_processed, tp) in crx {
             let t3 = std::time::Instant::now();
             let regs = ext::extend_batch(&sopt.e, &bns, extender, &chains, &seqs, batch_key(li, n_processed), ext_pool);
-            mbsz("fastq records", n_processed, vb(&batch) + batch.iter().map(|x| vb(&x.name) + vb(&x.comment) + vb(&x.seq) + vb(&x.qual)).sum::<usize>());
-            mbsz("seqs", n_processed, vb(&seqs) + seqs.iter().map(vb).sum::<usize>());
-            mbsz("chains", n_processed, vb(&chains) + chains.iter().map(|c| vb(c) + c.iter().map(|x| vb(&x.seeds)).sum::<usize>()).sum::<usize>());
-            mbsz("regs", n_processed, vb(&regs) + regs.iter().map(vb).sum::<usize>());
+            mbsz("fastq records", n_processed, || vb(&batch) + batch.iter().map(|x| vb(&x.name) + vb(&x.comment) + vb(&x.seq) + vb(&x.qual)).sum::<usize>());
+            mbsz("seqs", n_processed, || vb(&seqs) + seqs.iter().map(vb).sum::<usize>());
+            mbsz("chains", n_processed, || vb(&chains) + chains.iter().map(|c| vb(c) + c.iter().map(|x| vb(&x.seeds)).sum::<usize>()).sum::<usize>());
+            mbsz("regs", n_processed, || vb(&regs) + regs.iter().map(vb).sum::<usize>());
             padd(2, t3);
             tl("extend", (n_processed / 666668) as usize, t3);
 { let k = DROP_PENDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1; DROP_MAX.fetch_max(k, std::sync::atomic::Ordering::Relaxed); }
