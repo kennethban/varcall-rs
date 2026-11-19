@@ -53,6 +53,7 @@ extern "C" {
     fn aln_gpu_set_reads(slot: i32, key: u64, reads: *const u8, reads_bytes: i64, off: *const i64, n_reads: i32) -> i32;
     fn aln_gpu_reads_cached(slot: i32, key: u64) -> i32;
     fn aln_gpu_extend(jobs: *const Job, n_jobs: i32, w: i32, end_bonus: i32, dir: i32, out: *mut JobOut) -> i32;
+    fn aln_gpu_ext_take(out: *mut f64);
     fn aln_gpu_load_fmi(cp: *const u8, n_cp: i64, ms: *const i8, ls: *const u32, n_sa: i64, count: *const i64, sentinel: i64, with_sa: i32, reserve: i64) -> i32;
     fn aln_gpu_free_mem() -> i64;
     fn aln_gpu_smem(r0: i32, n: i32, cap: i32, min_seed_len: i32, split_len: i32, split_width: i64, max_mem_intv: i64, cnt: *mut i32) -> i64;
@@ -316,7 +317,7 @@ impl Gpu {
         let mut out = vec![JobOut::default(); jobs.len()];
         for (j, o) in jobs.chunks(EXT_CHUNK).zip(out.chunks_mut(EXT_CHUNK)) {
             let rc = unsafe { aln_gpu_extend(j.as_ptr(), j.len() as i32, rd.w, rd.end_bonus, rd.dir, o.as_mut_ptr()) };
-            assert_eq!(rc, 0, "GPU extension failed");
+            assert!(rc >= 0, "GPU extension failed");
         }
         out
     }
@@ -343,18 +344,29 @@ impl Extender for GpuExtender<'_> {
             c.ext.push((rd, jobs.to_vec()));
         });
         // the device orders each chunk's jobs by size (cuda/aln_ext.cu) and returns results in job order
+        let t_run = std::time::Instant::now();
         let mut out = vec![JobOut::default(); jobs.len()];
         let on_device = self.gpu.set_reads(1, reads, key);
+        let t_dev = std::time::Instant::now();
+        // jobs left for the CPU (the kernel's count, or a whole chunk when the device failed)
+        let mut left = 0usize;
         for (j, o) in jobs.chunks(EXT_CHUNK).zip(out.chunks_mut(EXT_CHUNK)) {
-            if !on_device || unsafe { aln_gpu_extend(j.as_ptr(), j.len() as i32, rd.w, rd.end_bonus, rd.dir, o.as_mut_ptr()) } != 0 {
+            let rc = if on_device { unsafe { aln_gpu_extend(j.as_ptr(), j.len() as i32, rd.w, rd.end_bonus, rd.dir, o.as_mut_ptr()) } } else { -1 };
+            if rc < 0 {
                 if on_device {
                     failed(2, "extension");
                 }
                 o.iter_mut().for_each(|x| x.score = i32::MIN);
+                left += o.len();
+            } else {
+                left += rc as usize;
             }
         }
-        // jobs the kernel left (score INT_MIN): CPU
-        let redo: Vec<usize> = (0..jobs.len()).into_par_iter().filter(|&i| out[i].score == i32::MIN).collect();
+        // jobs the kernel left (score INT_MIN): CPU. Looked for only when there are some: the scan over all the
+        // round's results (a parallel loop) waited ~80 ms a batch for the thread pool at 64 threads, finding none
+        let t_redo = std::time::Instant::now();
+        let redo: Vec<usize> = if left == 0 { Vec::new() } else { (0..jobs.len()).into_par_iter().filter(|&i| out[i].score == i32::MIN).collect() };
+        assert_eq!(redo.len(), left, "GPU extension: jobs left for the CPU");
         crate::prof::count(crate::prof::N_REDO, redo.len() as u64);
         if !redo.is_empty() {
             let sub: Vec<Job> = redo.iter().map(|&i| jobs[i]).collect();
@@ -362,6 +374,14 @@ impl Extender for GpuExtender<'_> {
             for (k, &i) in redo.iter().enumerate() {
                 out[i] = r[k];
             }
+        }
+        if crate::prof::tr_on() {
+            // reads upload, device call (and in it, upload / sort / kernel / download by events), CPU redo
+            let mut d = [0f64; 4];
+            unsafe { aln_gpu_ext_take(d.as_mut_ptr()) };
+            let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_micros();
+            let t_end = std::time::Instant::now();
+            crate::prof::tr("gext", t_run, t_end, format_args!("{key}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{}\t{}", jobs.len(), us(t_run, t_dev), us(t_dev, t_redo), d[0] * 1e6, d[1] * 1e6, d[2] * 1e6, d[3] * 1e6, redo.len(), us(t_redo, t_end)));
         }
         out
     }

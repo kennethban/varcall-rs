@@ -38,7 +38,7 @@ static int64_t *d_off = 0;    static size_t cap_off = 0;
 static Job *d_jobs = 0;       static size_t cap_jobs = 0;
 static double t_h2d = 0, t_kernel = 0, t_d2h = 0, t_smem = 0, t_sa = 0;
 static int g_n_reads = 0;
-static cudaEvent_t ev[4];
+static cudaEvent_t ev[5];
 static JobOut *d_out = 0;     static size_t cap_out = 0;
 
 #define CK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { fprintf(stderr, "[align-rs-gpu] %s: %s\n", #x, cudaGetErrorString(e_)); return -1; } } while (0)
@@ -51,14 +51,14 @@ __device__ __forceinline__ int ref_base(const uint8_t *pac, int64_t l_pac, int64
 
 // thread t runs job order[t] (jobs of similar size side by side, so that a warp's threads finish together) and
 // writes its result in the job's own slot
-__global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, JobOut *out, int jw, int jend_bonus, int jdir) {
+__global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, JobOut *out, int *nleft, int jw, int jend_bonus, int jdir) {
   // grid-stride: a fixed number of blocks per SM (aln_gpu_extend), so the threads' DP rows fit L1
   for (int t0 = blockIdx.x * blockDim.x + threadIdx.x; t0 < n; t0 += gridDim.x * blockDim.x) {
     const int t = order[t0];
     const Job jb = jobs[t];
     const int qlen = jb.qlen, tlen = (int)jb.rlen;
     JobOut r;
-    if (qlen > MAXQ) { r.score = INT_MIN; r.qle = r.tle = r.gtle = r.gscore = r.max_off = 0; out[t] = r; continue; }
+    if (qlen > MAXQ) { r.score = INT_MIN; r.qle = r.tle = r.gtle = r.gscore = r.max_off = 0; out[t] = r; atomicAdd(nleft, 1); continue; }
     const int o_del = c_par[0], e_del = c_par[1], o_ins = c_par[2], e_ins = c_par[3], zdrop = c_par[4];
     const int oe_del = o_del + e_del, oe_ins = o_ins + e_ins;
     // per column one word: H (bits 0-13), E (14-27) and the query base (28-30), so a cell is one local load
@@ -73,7 +73,7 @@ __global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const ui
     {
         int mx = 0;
         for (int i = 0; i < 25; ++i) mx = mx > c_mat[i] ? mx : c_mat[i];
-        if (jb.h0 + qlen * mx >= (1 << 14)) { r.score = INT_MIN; r.qle = r.tle = r.gtle = r.gscore = r.max_off = 0; out[t] = r; continue; }
+        if (jb.h0 + qlen * mx >= (1 << 14)) { r.score = INT_MIN; r.qle = r.tle = r.gtle = r.gscore = r.max_off = 0; out[t] = r; atomicAdd(nleft, 1); continue; }
     }
     const uint8_t *rd = reads + off[jb.read];
     for (int i = 0; i < qlen; ++i) eh[i] = (uint32_t)rd[jb.qstart + (int64_t)i * jdir] << 28;
@@ -206,7 +206,7 @@ extern "C" int aln_gpu_init(const uint8_t *pac, int64_t pac_bytes, int64_t l_pac
     CK(cudaMemcpyToSymbol(c_mat, mat, 25));
     CK(cudaMemcpyToSymbol(c_par, par, sizeof(par)));
     CK(cudaDeviceSetLimit(cudaLimitStackSize, 8192));
-    for (int i = 0; i < 4; ++i) CK(cudaEventCreate(&ev[i]));
+    for (int i = 0; i < 5; ++i) CK(cudaEventCreate(&ev[i]));
     return 0;
 }
 
@@ -265,6 +265,9 @@ __global__ void k_extkey(const Job *jobs, int n, uint32_t *key, uint32_t *idx) {
     idx[t] = t;
 }
 
+static thread_local double t_ext_call[4] = {0, 0, 0, 0};
+static int *d_nleft = 0;
+// -1 if the device failed, else the number of jobs the kernel left (score INT_MIN) for the CPU
 extern "C" int aln_gpu_extend(const Job *jobs, int n_jobs, int w, int end_bonus, int dir, JobOut *out) {
     if (n_jobs == 0) return 0;
     SERIAL;
@@ -280,20 +283,31 @@ extern "C" int aln_gpu_extend(const Job *jobs, int n_jobs, int w, int end_bonus,
     CK(cub::DeviceRadixSort::SortPairs(nullptr, tb, d_ekey, d_ekey + n_jobs, d_eidx, d_eidx + n_jobs, n_jobs, 0, 32, cudaStreamPerThread));
     if (grow(&d_etmp, &cap_etmp, tb)) return -1;
     CK(cub::DeviceRadixSort::SortPairs(d_etmp, tb, d_ekey, d_ekey + n_jobs, d_eidx, d_eidx + n_jobs, n_jobs, 0, 32, cudaStreamPerThread));
+    cudaEventRecord(ev[4]);
     // a fixed number of blocks per SM, grid-strided: each thread's DP row lives in local memory, and with more
     // threads resident the rows no longer fit L1
     if (g_ext_bpsm > 0 && nb > g_ext_bpsm * g_n_sm) nb = g_ext_bpsm * g_n_sm;
-    k_extend<<<nb, bs>>>(d_jobs, d_eidx + n_jobs, n_jobs, d_rs[1], d_os[1], d_pac, g_l_pac, d_out, w, end_bonus, dir);
+    if (!d_nleft) CK(cudaMalloc((void **)&d_nleft, sizeof(int)));
+    CK(cudaMemsetAsync(d_nleft, 0, sizeof(int), cudaStreamPerThread));
+    k_extend<<<nb, bs>>>(d_jobs, d_eidx + n_jobs, n_jobs, d_rs[1], d_os[1], d_pac, g_l_pac, d_out, d_nleft, w, end_bonus, dir);
     CK(cudaGetLastError());
     cudaEventRecord(ev[2]);
     CK(cudaMemcpy(out, d_out, (size_t)n_jobs * sizeof(JobOut), cudaMemcpyDeviceToHost));
+    int nleft = 0;
+    CK(cudaMemcpy(&nleft, d_nleft, sizeof(int), cudaMemcpyDeviceToHost));
     cudaEventRecord(ev[3]);
     cudaEventSynchronize(ev[3]);
-    float a, b, c;
+    float a, b, c, srt;
     cudaEventElapsedTime(&a, ev[0], ev[1]); cudaEventElapsedTime(&b, ev[1], ev[2]); cudaEventElapsedTime(&c, ev[2], ev[3]);
+    cudaEventElapsedTime(&srt, ev[1], ev[4]);
     t_h2d += a * 1e-3; t_kernel += b * 1e-3; t_d2h += c * 1e-3;
     t_kern[0] += b * 1e-3;
-    return 0;
+    t_ext_call[0] += a * 1e-3; t_ext_call[1] += srt * 1e-3; t_ext_call[2] += (b - srt) * 1e-3; t_ext_call[3] += c * 1e-3;
+    return nleft;
+}
+// ALIGN_RS_TRACE: this thread's extension device time since the last call (s): upload, sort, kernel, download
+extern "C" void aln_gpu_ext_take(double *out) {
+    for (int i = 0; i < 4; ++i) { out[i] = t_ext_call[i]; t_ext_call[i] = 0; }
 }
 
 extern "C" void aln_gpu_report() {

@@ -248,3 +248,34 @@ pub fn report() {
         eprintln!("[align-rs]   {:<52} {:>15}", n, tot[CPU_NAMES.len() + i]);
     }
 }
+
+/// ALIGN_RS_TRACE=FILE: one line per GPU call, per extension round and CPU step, and per stage run, for working
+/// out where the device waits. Tab-separated: event, thread, start µs, end µs (since the run started), details.
+static TRACE: OnceLock<Option<Mutex<std::io::BufWriter<std::fs::File>>>> = OnceLock::new();
+static TRACE_T0: OnceLock<std::time::Instant> = OnceLock::new();
+fn trace_file() -> Option<&'static Mutex<std::io::BufWriter<std::fs::File>>> {
+    TRACE.get_or_init(|| std::env::var_os("ALIGN_RS_TRACE").map(|p| Mutex::new(std::io::BufWriter::new(std::fs::File::create(p).expect("ALIGN_RS_TRACE: cannot create the file"))))).as_ref()
+}
+pub fn tr_on() -> bool {
+    trace_file().is_some()
+}
+/// the trace's time origin (the run's start)
+pub fn tr_start(t0: std::time::Instant) {
+    let _ = TRACE_T0.set(t0);
+}
+pub fn tr(ev: &str, t0: std::time::Instant, t1: std::time::Instant, detail: std::fmt::Arguments) {
+    if let Some(f) = trace_file() {
+        use std::io::Write;
+        let z = *TRACE_T0.get_or_init(std::time::Instant::now);
+        let us = |t: std::time::Instant| t.saturating_duration_since(z).as_micros();
+        let th = std::thread::current();
+        let line = format!("{ev}\t{}\t{}\t{}\t{detail}\n", th.name().map_or_else(|| format!("{:?}", th.id()), str::to_string), us(t0), us(t1));
+        f.lock().unwrap().write_all(line.as_bytes()).unwrap();
+    }
+}
+pub fn tr_flush() {
+    if let Some(f) = trace_file() {
+        use std::io::Write;
+        f.lock().unwrap().flush().unwrap();
+    }
+}

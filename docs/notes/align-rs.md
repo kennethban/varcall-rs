@@ -248,3 +248,20 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
      with `ALIGN_RS_REPLAY_CHECK=1` (the lookup and bwa's linear scan run side by side and must agree on every seed).
      The crash also showed that a panicking thread let the other stages finalize BAMs (lane L002 cut short at 18M
      records, the lanes not reached written empty) before the error exit: release builds now abort on panic.
+
+8. **Extension on a many-core server (2026-11-19, L40S, 64 of 384 threads, one 30x lane)**. A batch every 900 ms,
+   extension busy 880 of them, mate rescue 836. `ALIGN_RS_TRACE` (one line per device call and CPU step) showed:
+   * the device thread's scan for jobs the kernel left to the CPU cost 80 ms a batch (a parallel loop waiting for
+     the thread pool) and found none: the kernel now counts them and the scan runs only when there are some;
+   * the first half's setup took 240 ms with the device idle, the same work 67 ms for the second half: it starts
+     when the other stages start their next batch, behind SA positions' and chaining's loops in the global pool.
+     Extension's CPU steps now have their own pool, as SAM and mate rescue already did (the device calls stay
+     outside it): first setup 240 -> 203 ms (the cores are still shared with the other stages);
+   * extension's device calls overlap mate rescue's for 470 of their 503 ms: extension kernel 36.2 s on the lane
+     against 22.9 s with `ALIGN_RS_GPU_SERIAL=1`, mate SW 35.8 against 27.4 s.
+
+   Three runs each, alternating, records identical: 64 threads 113.6 -> **108.5 s** (-4.5%), 16 threads 197.2 ->
+   194.1 s. Now extension (841 ms) and rescue (836 ms) pace the batches equally; the final BAM pass is 25 s of it.
+   Tried and dropped: extension in K parts of a batch on their own threads, one device thread serving their rounds
+   as they come (no lockstep wait): 2 parts as fast as the halves, 4 and 8 slower (113.1 / 117.5 / 120.6 s against
+   114.1 s): smaller device calls, and more CPU loops competing with the other stages.

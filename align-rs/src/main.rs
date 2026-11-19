@@ -48,6 +48,7 @@ static T_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::n
 fn tl(stage: &'static str, batch: usize, start: std::time::Instant) {
     let t0 = *T_START.get().unwrap();
     TIMELINE.lock().unwrap().push((stage, batch, (start - t0).as_secs_f64(), t0.elapsed().as_secs_f64()));
+    prof::tr("stage", start, std::time::Instant::now(), format_args!("{stage}\t{batch}"));
 }
 
 const BATCH_SIZE: usize = 512;
@@ -328,6 +329,7 @@ fn main() {
     rayon::ThreadPoolBuilder::new().num_threads(args.threads).thread_name(|i| format!("aln-{i}")).build_global().unwrap();
     let t0 = std::time::Instant::now();
     T_START.set(t0).unwrap();
+    prof::tr_start(t0);
     let fmi = index::Fmi::load(&args.reference);
     let bns = index::Bns::load(&args.reference);
     let ref_map = index::Map::open(&format!("{}.0123", args.reference));
@@ -385,6 +387,11 @@ fn main() {
     let sam_pool_ = rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("sam-{i}")).build().unwrap();
     let rescue_pool_ = rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("rsc-{i}")).build().unwrap();
     let (sam_pool, sam_pool2) = (&rescue_pool_, &sam_pool_);
+    // and extension: a batch's first CPU step (setup) starts when the other stages start their next batch, and in the
+    // global pool it waited behind SA positions' and chaining's parallel loops (240 ms, against 67 ms for the same
+    // work later in the batch: one 30x lane, 64 threads). ALIGN_RS_EXT_POOL=0: the global pool (for comparison)
+    let ext_pool_ = (std::env::var("ALIGN_RS_EXT_POOL").as_deref() != Ok("0")).then(|| rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("ext-{i}")).build().unwrap());
+    let ext_pool = ext_pool_.as_ref();
     std::thread::scope(|sc| {
         // every message carries its lane: batches and read ids restart per lane, as separate runs would number them
         let (rtx, rrx) = std::sync::mpsc::sync_channel::<(usize, Vec<fastq::Seq>, Vec<Vec<u8>>, i64)>(slack("read"));
@@ -770,7 +777,7 @@ fn main() {
         });
         for (li, batch, seqs, chains, n_processed, tp) in crx {
             let t3 = std::time::Instant::now();
-            let regs = ext::extend_batch(&sopt.e, &bns, extender, &chains, &seqs, batch_key(li, n_processed));
+            let regs = ext::extend_batch(&sopt.e, &bns, extender, &chains, &seqs, batch_key(li, n_processed), ext_pool);
             mbsz("fastq records", n_processed, vb(&batch) + batch.iter().map(|x| vb(&x.name) + vb(&x.comment) + vb(&x.seq) + vb(&x.qual)).sum::<usize>());
             mbsz("seqs", n_processed, vb(&seqs) + seqs.iter().map(vb).sum::<usize>());
             mbsz("chains", n_processed, vb(&chains) + chains.iter().map(|c| vb(c) + c.iter().map(|x| vb(&x.seeds)).sum::<usize>()).sum::<usize>());
@@ -808,6 +815,7 @@ fn main() {
             std::process::exit(1);
         }
     }
+    prof::tr_flush();
     if std::env::var("ALIGN_RS_PROFILE").is_ok() {
         for (n, c) in PROF_NAMES.iter().zip(&PROF) {
             eprintln!("[align-rs] {n}: {:.1} s", c.load(std::sync::atomic::Ordering::Relaxed) as f64 * 1e-9);
