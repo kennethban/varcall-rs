@@ -34,8 +34,18 @@ in this repository):
 
 ```bash
 # in an environment with samtools/htslib, Java for Nextflow (and bwa-mem2): environment.yml at the repo root
-nextflow run main.nf -params-file my.yaml
+./run.sh -params-file my.yaml
 ```
+
+`run.sh` runs `nextflow run main.nf` with your arguments, after choosing the GPUs: unless `CUDA_VISIBLE_DEVICES` is
+set (by you, or by a scheduler such as SLURM), the GPUs no process is using (`VARCALL_GPUS=N` for at most N).
+`nextflow run main.nf` directly works too, with `CUDA_VISIBLE_DEVICES` to list the GPUs (see below).
+
+Threads follow the machine and the GPUs in use. align-rs runs one task per GPU at once, so each gets the machine's
+threads divided by the GPUs (at most 64, `--align_cpus`); the steps after it run one sample at a time, so each gets
+the machine's threads (at most 128, `--cpus`). The caps are where the measured gains stopped on a 30x genome (L40S
+server): MarkDuplicates 75 s at 64 threads, 56 at 128; BaseRecalibrator 30, 19, 16 at 64, 128, 192; HaplotypeCaller
+121, 118 at 64, 128; one alignment measured up to 64.
 
 Rerunning with `-resume <session id>` (`nextflow log` lists them; a bare `-resume` takes the last run launched from
 this directory, whichever it was) takes unchanged steps, the alignments above all, from the work directory. Each
@@ -63,17 +73,18 @@ index is indexed in memory). HaplotypeCaller runs on the normal samples, Mutect2
 | `dbsnp`, `gvcf` | HaplotypeCaller `--dbsnp`; `-ERC GVCF` (then no hard filters) |
 | `germline_resource`, `pon`, `pileup_sites` | Mutect2 / GetPileupSummaries resources |
 | `aligner`, `align_rs` | `align-rs` (default) or `bwa-mem2`; the align-rs binary |
-| `cpus`, `align_memory` | threads for each heavy step; memory for each aligner task (the ~17 GB hg38 index is mapped, and shared by aligner tasks running together) |
+| `cpus`, `align_cpus`, `align_memory` | threads for each heavy step but alignment (default the machine's, at most 128); threads for each aligner task (default the machine's / the GPUs in use, at most 64); memory for each aligner task (the ~17 GB hg38 index is mapped, and shared by aligner tasks running together) |
 | `save_lane_bams`, `save_recal_bam` | publish the lane BAMs / the somatic recalibrated BAMs |
 | `publish_dir_mode` | `link` (default: hard links into the work directory, no second copy) |
 
 ## Several GPUs
 
-List the GPUs in `CUDA_VISIBLE_DEVICES` when you launch, and give each heavy step a share of the cores:
+`run.sh` uses the idle GPUs (`VARCALL_GPUS=4 ./run.sh ...` for at most 4). To choose them yourself, list them in
+`CUDA_VISIBLE_DEVICES` when you launch. Each alignment task gets the machine's threads divided by the GPUs, so all
+GPUs align at once:
 
 ```bash
-# 8 GPUs, 128 cores
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 nextflow run main.nf -params-file my.yaml --cpus 16
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./run.sh -params-file my.yaml   # 8 GPUs, 128 threads: 16 per alignment task
 ```
 
 * Nextflow gives each GPU step (align-rs, HaplotypeCaller, Mutect2) one of the listed GPUs, and runs at most one GPU
@@ -85,7 +96,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 nextflow run main.nf -params-file my.yaml -
 * Steps run side by side only while their `cpus` and memory fit the machine: 24 GB per heavy step and `align_memory`
   per aligner task. With 8 GPUs, that is about 200 GB, or lower `align_memory`.
 
-Without `CUDA_VISIBLE_DEVICES`, every step uses the first GPU, as before, and the pipeline warns if it finds more.
+`nextflow run main.nf` without `CUDA_VISIBLE_DEVICES` uses the first GPU for every step, and warns if it finds more.
 Outputs do not depend on the number of GPUs. Changing it does make `-resume` realign, because the lanes are grouped
 into different tasks.
 

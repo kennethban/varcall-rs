@@ -301,9 +301,10 @@ workflow {
         def n = 0
         try { n = ['nvidia-smi', '-L'].execute().text.readLines().count { it.startsWith('GPU ') } } catch (Exception e) { }
         if (n > 1) {
-            log.warn "${n} GPUs found, but only the first is used: launch with CUDA_VISIBLE_DEVICES=${(0..<n).join(',')} to use them all"
+            log.warn "${n} GPUs found, but only the first is used: launch with pipeline/run.sh (up to 4 idle GPUs) or CUDA_VISIBLE_DEVICES=${(0..<n).join(',')}"
         }
     }
+    log.info "threads: ${params.align_cpus} per alignment task, ${params.cpus} per other heavy step (--align_cpus, --cpus)"
     // samplesheet: patient,sample,status,lane,fastq_1,fastq_2 (status 0 normal, 1 tumor; as nf-core/sarek; fastq_2 empty:
     // single-end)
     // --step markduplicates: start from coordinate-sorted BAMs instead (columns patient,sample,status,bam[,bai]; one

@@ -73,7 +73,7 @@ paths, with align-rs and variant-rs, and without sarek's splitting into ~350 int
 samplesheet format.
 
 ```bash
-nextflow run pipeline/main.nf -params-file my.yaml
+pipeline/run.sh -params-file my.yaml    # nextflow run pipeline/main.nf on the idle GPUs, threads from the machine
 ```
 
 ```yaml
@@ -91,11 +91,13 @@ All parameters: [pipeline/README.md](../pipeline/README.md).
 
 ## Use several GPUs
 
-A single align-rs or variant-rs process uses one GPU. The pipeline uses several: list them when you launch, and give
-each step a share of the cores.
+A single align-rs or variant-rs process uses one GPU. The pipeline uses several: `pipeline/run.sh` takes the GPUs no
+process is using (`VARCALL_GPUS=N` for at most N), or list them yourself when you launch. Each alignment task gets
+the machine's threads divided by the GPUs (`--align_cpus`), the steps after it the machine's (`--cpus`, at most 128).
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 nextflow run pipeline/main.nf -params-file my.yaml --cpus 16
+VARCALL_GPUS=4 pipeline/run.sh -params-file my.yaml
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 pipeline/run.sh -params-file my.yaml
 ```
 
 Each sample's lanes are split over one align-rs task per GPU, and HaplotypeCaller and Mutect2 run one sample per GPU.

@@ -18,5 +18,11 @@ named in its entry; a change of reference version is a new minor version at leas
 * Tests: unit tests, a self-contained test on synthetic data (CI), and a full harness on public data.
 * Pipeline: several GPUs. With `CUDA_VISIBLE_DEVICES` listing them at launch, each GPU step gets its own GPU, and a
   sample's lanes are split over one align-rs task per GPU.
+* Pipeline: `pipeline/run.sh` launches it on the idle GPUs (`VARCALL_GPUS` for at most N), unless
+  `CUDA_VISIBLE_DEVICES` is set. Threads by default from the machine and the GPUs: each alignment task the machine's
+  threads / GPUs (at most 64, `align_cpus`), each other heavy step the machine's (at most 128, `cpus`; was 16).
+* variant-rs: the GPU PairHMM serves its callers from a pool of engines (`VARIANT_RS_GPU_STREAMS`, default 8), and
+  HaplotypeCaller runs more contig workers beyond 32 threads: a 30x genome on an L40S at 64 threads 190 -> 122 s.
+* align-rs: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s); extension on its own thread pool.
 
 [Unreleased]: https://github.com/kennethban/varcall-rs/commits/main
