@@ -50,9 +50,10 @@ pub fn init(use_double: bool) -> bool {
 
 /// Computes all groups in one GPU launch. Returns, per group, a row-major (read x haplotype)
 /// matrix of log10 likelihoods (same layout GATK's VectorLoglessPairHMM uses).
+/// Callers may run at once: each takes one of the engine's streams for the whole call
+/// (VARIANT_RS_GPU_STREAMS, default 8), so one packs its batch while another's kernels run.
 pub fn compute(groups: &[HmmGroup]) -> Vec<Vec<f64>> {
-    let _g = LOCK.lock().unwrap();
-    assert!(*_g, "hc_cudahmm::init() not called or failed");
+    assert!(*LOCK.lock().unwrap(), "hc_cudahmm::init() not called or failed");
     let (mut nr, mut nh) = (Vec::with_capacity(groups.len()), Vec::with_capacity(groups.len()));
     let (mut rb, mut rq, mut ri, mut rd, mut rc, mut rl) = (vec![], vec![], vec![], vec![], vec![], vec![]);
     let (mut hb, mut hl) = (vec![], vec![]);

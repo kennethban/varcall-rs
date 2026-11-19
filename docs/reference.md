@@ -92,7 +92,8 @@ variant-rs plan -I x.bam -R ref.fa -o plan96 --pieces 96
 ```
 
 * **`--pairhmm cuda|cpu|auto`** chooses the PairHMM. Both give GATK's results.
-* **`--threads`, `--contig-workers`** size the parallelism.
+* **`--threads`, `--contig-workers`** size the parallelism (contig workers by default: half the threads up to 8, a
+  quarter of them beyond, up to 32).
 * **`-L file --scatter-intervals`** calls every interval as its own GATK run, as sarek scatters HaplotypeCaller.
 
 See [notes/variant-rs.md](notes/variant-rs.md) for the full option table and for how shards relate to GATK's
@@ -104,6 +105,7 @@ random-number streams.
 |---|---|
 | `VARIANT_RS_THREADS` | Mutect2 / contamination: worker threads (default all CPUs) |
 | `VARIANT_RS_CONTIG_THREADS`, `VARIANT_RS_DECODE_THREADS`, `VARIANT_RS_TWO_STAGE` | Mutect2 / HaplotypeCaller front-end sizing |
+| `VARIANT_RS_GPU_STREAMS` | GPU PairHMM: engines (CUDA streams with their own buffers) callers share (default 8; 1: one call at a time) |
 | `VARIANT_RS_TRACE_STAGES`, `VARIANT_RS_TRACE_CPU`, `VARIANT_RS_TRACE_FRONT`, `VARIANT_RS_TRACE_REGIONS` | timing and tracing output |
 | `VARIANT_RS_ASM_PROFILE` (with `VARIANT_RS_TRACE_CPU`), `VARIANT_RS_REBLOCK_STATS` | assembly phase timings and code-path counters; ReblockGVCF code-path counters |
 | `VARIANT_RS_NO_AVX512` | CPU PairHMM: take the path for CPUs without AVX-512 (same output) |

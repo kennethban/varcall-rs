@@ -583,6 +583,28 @@ CPU-bound overall at ~13 cores of the ~22 left by the GATK jobs):
   at 272 s in the GVCF run; the end of the run is the bulk of shard13–shard19 on CPU.
 * Downsampling over the genome: 635,682,919 reads → 632,847,114 kept, 40,524 drawing groups (VCF run).
 
+**GPU PairHMM engine pool (2026-11-19).** HaplotypeCaller's contig workers shared one PairHMM engine behind one
+lock (one CUDA stream, one pinned buffer), with the packing of a batch on the CPU inside the lock: on the L40S, 30x
+whole genome, 64 threads, the callers waited 2,543 s in all for it, and more threads made the run slower (212 s at
+64, 250 s at 384; GPU busy ~40%). Now the device setup is shared and a pool of engines (`VARIANT_RS_GPU_STREAMS`,
+default 8), each with its own stream and buffers, serves the callers; each pair is computed on its own, so the
+results cannot change (VCF identical in every run below, selftest identical with the CUDA PairHMM). With the queue
+gone, more contig workers pay off where threads are plentiful:
+
+| Machine | Contig workers | Engines | Wall | GPU busy | Peak RSS |
+|---|---:|---:|---:|---:|---:|
+| L40S, 64 threads | 8 | 1 (before) | 189.9 s | 48% | 8.4 GB |
+| L40S, 64 threads | 8 | 8 | 159.7 s | 48% | |
+| L40S, 64 threads | **16 (new default)** | 8 | **121.0 s** (defaults, 2 runs: 121.8, 122.7) | 61% | 15.0 GB |
+| L40S, 128 threads | 32 (new default) | 8 | 113.6 s | 64% | |
+| RTX 5070 Ti, 32 threads | 8 (default) | 1 (before) | 396.7 s | 34% | 8.6 GB |
+| RTX 5070 Ti, 32 threads | 8 (default) | 8 | 401.2 s | 33% | 8.2 GB |
+| RTX 5070 Ti, 32 threads | 16 | 8 | 403.3 s | 34% | 14.8 GB |
+
+On 32 threads the CPU stages set the pace (front end, assembly), so the defaults there are as before: contig
+workers are half the threads up to 8 and, beyond 32 threads, a quarter of them up to 32 (`--contig-workers`
+overrides).
+
 ## Earlier single-contig results (chr20:10–15 Mb, `$VARCALL_DATA/data`)
 
 Byte-identical to GATK: 8,064 VCF records; the 798,047-line GVCF and the 5,000,001 unbanded records

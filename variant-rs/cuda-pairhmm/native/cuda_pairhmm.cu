@@ -39,6 +39,9 @@
 #include <chrono>
 #include <algorithm>
 #include <atomic>
+#include <mutex>
+#include <condition_variable>
+#include <cstdlib>
 
 #define CUDA_CHECK(call)                                                          \
   do {                                                                            \
@@ -286,26 +289,14 @@ __global__ void pairhmm_double_kernel(Batch b, const int* pairs, int nPairs, con
 }
 
 // ---------------------------------------------------------------------------
-// Host engine: packs a batch into one pinned buffer, ships it, launches, returns.
+// The device's one-time setup (tables, kernel attributes), shared by the engines.
 // ---------------------------------------------------------------------------
-struct Engine {
+struct Device {
   bool ready = false;
   bool useDouble = false;
-  cudaStream_t stream{};
-  cudaEvent_t evStart{}, evH2D{}, evKernel{}, evEnd{};
-
-  // pinned host staging + device mirror (same layout)
-  uint8_t* hIn = nullptr; uint8_t* dIn = nullptr; size_t inCap = 0;
-  double* hOut = nullptr; double* dOut = nullptr; size_t outCap = 0;
-  int* dRedo = nullptr; int* dNRedo = nullptr; int* hNRedo = nullptr; size_t redoCap = 0;
-  unsigned char* dPath = nullptr; unsigned char* hPath = nullptr;
   float log10InitF = 0; double log10InitD = 0;
   uint8_t conv[256];
   int maxSmem = 48 * 1024;  // opt-in dynamic shared memory per block (set in init)
-
-  // statistics
-  std::atomic<long long> nsTotal{0}, nsPack{0}, nsGpu{0}, nBatches{0}, nLaunches{0}, nPairs{0}, nCells{0}, nDouble{0};
-  double msH2D = 0, msKernel = 0, msD2H = 0;
 
   bool init(bool dbl) {
     useDouble = dbl;
@@ -314,11 +305,6 @@ struct Engine {
     // block (instead of spinning) while waiting for the GPU: the host threads have CPU work to do
     cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
     CUDA_CHECK(cudaSetDevice(0));
-    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-    CUDA_CHECK(cudaEventCreate(&evStart)); CUDA_CHECK(cudaEventCreate(&evH2D));
-    CUDA_CHECK(cudaEventCreate(&evKernel)); CUDA_CHECK(cudaEventCreate(&evEnd));
-    CUDA_CHECK(cudaMallocHost(&hNRedo, sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&dNRedo, sizeof(int)));
     CUDA_CHECK(cudaDeviceGetAttribute(&maxSmem, cudaDevAttrMaxSharedMemoryPerBlockOptin, 0));
     CUDA_CHECK(cudaFuncSetAttribute(pairhmm_float_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSmem));
     CUDA_CHECK(cudaFuncSetAttribute(pairhmm_double_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSmem));
@@ -338,6 +324,39 @@ struct Engine {
     memset(conv, 0, sizeof(conv));  // GKL ConvertChar: unknown -> 0 ('A')
     conv['A'] = 0; conv['C'] = 1; conv['T'] = 2; conv['G'] = 3; conv['N'] = 4;
     ready = true;
+    return true;
+  }
+
+  // Longest haplotype one warp per block can handle (double pass: 3 rows of H + 1 doubles).
+  int max_hap_len() const { return maxSmem / (3 * (int)sizeof(double)) - 1; }
+};
+
+static Device g_dev;
+
+// ---------------------------------------------------------------------------
+// Host engine: packs a batch into its pinned buffer, ships it, launches, returns. One caller at a time per engine;
+// several engines (their own stream and buffers) let one caller pack while another's kernels run.
+// ---------------------------------------------------------------------------
+struct Engine {
+  cudaStream_t stream{};
+  cudaEvent_t evStart{}, evH2D{}, evKernel{}, evEnd{};
+
+  // pinned host staging + device mirror (same layout)
+  uint8_t* hIn = nullptr; uint8_t* dIn = nullptr; size_t inCap = 0;
+  double* hOut = nullptr; double* dOut = nullptr; size_t outCap = 0;
+  int* dRedo = nullptr; int* dNRedo = nullptr; int* hNRedo = nullptr; size_t redoCap = 0;
+  unsigned char* dPath = nullptr; unsigned char* hPath = nullptr;
+
+  // statistics (this engine's; one caller at a time)
+  long long nsPack = 0, nsGpu = 0, nBatches = 0, nLaunches = 0, nPairs = 0, nCells = 0, nDouble = 0;
+  double msH2D = 0, msKernel = 0, msD2H = 0;
+
+  bool create() {
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    CUDA_CHECK(cudaEventCreate(&evStart)); CUDA_CHECK(cudaEventCreate(&evH2D));
+    CUDA_CHECK(cudaEventCreate(&evKernel)); CUDA_CHECK(cudaEventCreate(&evEnd));
+    CUDA_CHECK(cudaMallocHost(&hNRedo, sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&dNRedo, sizeof(int)));
     return true;
   }
 
@@ -361,9 +380,6 @@ struct Engine {
   }
 
   static size_t align(size_t x) { return (x + 15) & ~size_t(15); }
-
-  // Longest haplotype one warp per block can handle (double pass: 3 rows of H + 1 doubles).
-  int max_hap_len() const { return maxSmem / (3 * (int)sizeof(double)) - 1; }
 
   // One GATK batch (one active region): R reads x H haplotypes.
   struct HostGroup {
@@ -414,7 +430,7 @@ struct Engine {
         const int L = g.rl[r];
         readOff[ri_] = (int)roff; readLen[ri_] = L;
         uint8_t* dst = hIn + o_rs + roff;
-        for (int k = 0; k < L; ++k) dst[k] = conv[(uint8_t)g.rb[r][k]];
+        for (int k = 0; k < L; ++k) dst[k] = g_dev.conv[(uint8_t)g.rb[r][k]];
         memcpy(hIn + o_q + roff, g.rq[r], L); memcpy(hIn + o_i + roff, g.ri[r], L);
         memcpy(hIn + o_d + roff, g.rd[r], L); memcpy(hIn + o_c + roff, g.rc[r], L);
         roff += L;
@@ -423,7 +439,7 @@ struct Engine {
         const int L = g.hl[h];
         hapOff[hi_] = (int)hoff; hapLen[hi_] = L;
         uint8_t* dst = hIn + o_hap + hoff;
-        for (int k = 0; k < L; ++k) dst[k] = conv[(uint8_t)g.hb[h][k]];
+        for (int k = 0; k < L; ++k) dst[k] = g_dev.conv[(uint8_t)g.hb[h][k]];
         hoff += L;
       }
     }
@@ -443,9 +459,9 @@ struct Engine {
     // block (same results: every warp computes one pair on its own); beyond one warp's limit
     // (max_hap_len()) the caller must not send the batch.
     int wpb = WARPS_PER_BLK;
-    while (wpb > 1 && (size_t)wpb * 3 * bufStride * sizeof(double) > (size_t)maxSmem) wpb /= 2;
-    if ((size_t)wpb * 3 * bufStride * sizeof(double) > (size_t)maxSmem) {
-      fprintf(stderr, "[cuda-pairhmm] haplotype of %d bases exceeds the shared-memory limit (max %d)\n", maxH, max_hap_len());
+    while (wpb > 1 && (size_t)wpb * 3 * bufStride * sizeof(double) > (size_t)g_dev.maxSmem) wpb /= 2;
+    if ((size_t)wpb * 3 * bufStride * sizeof(double) > (size_t)g_dev.maxSmem) {
+      fprintf(stderr, "[cuda-pairhmm] haplotype of %d bases exceeds the shared-memory limit (max %d)\n", maxH, g_dev.max_hap_len());
       return false;
     }
     const int blocks = (nPairsB + wpb - 1) / wpb;
@@ -455,7 +471,7 @@ struct Engine {
     CUDA_CHECK(cudaEventRecord(evStart, stream));
     CUDA_CHECK(cudaMemcpyAsync(dIn, hIn, total, cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaEventRecord(evH2D, stream));
-    if (useDouble) {
+    if (g_dev.useDouble) {
       pairhmm_double_kernel<<<blocks, wpb * WARP, smemD, stream>>>(b, nullptr, nPairsB, nullptr, dOut, dPath, bufStride);
     } else {
       CUDA_CHECK(cudaMemsetAsync(dNRedo, 0, sizeof(int), stream));
@@ -472,8 +488,8 @@ struct Engine {
     CUDA_CHECK(cudaStreamSynchronize(stream));
     // log10 on the host with glibc, exactly as GKL: (double)(log10f(f) - LOG10_INIT_F) or log10(d) - LOG10_INIT_D
     for (int p = 0; p < nPairsB; ++p) {
-      if (hPath[p] == 0) hOut[p] = (double)(log10f((float)hOut[p]) - log10InitF);
-      else if (hPath[p] == 1) hOut[p] = log10(hOut[p]) - log10InitD;
+      if (hPath[p] == 0) hOut[p] = (double)(log10f((float)hOut[p]) - g_dev.log10InitF);
+      else if (hPath[p] == 1) hOut[p] = log10(hOut[p]) - g_dev.log10InitD;
     }
     {
       size_t o = 0;
@@ -490,23 +506,54 @@ struct Engine {
     msH2D += a; msKernel += k; msD2H += d;
     nsPack += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     nsGpu += std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
-    nBatches += G; nLaunches++; nPairs += nPairsB; nCells += cells; nDouble += useDouble ? nPairsB : *hNRedo;
+    nBatches += G; nLaunches++; nPairs += nPairsB; nCells += cells; nDouble += g_dev.useDouble ? nPairsB : *hNRedo;
     return true;
   }
 
-  void report() {
-    if (nBatches == 0) return;
-    fprintf(stderr,
-            "[cuda-pairhmm] batches=%lld launches=%lld pairs=%lld cells=%.3e doubleFallback=%lld\n"
-            "[cuda-pairhmm] pack=%.3fs  GPU wall=%.3fs (H2D=%.3fs kernel=%.3fs D2H=%.3fs)  total=%.3fs\n"
-            "[cuda-pairhmm] kernel throughput=%.1f GCUPS, end-to-end throughput=%.1f GCUPS, avg pairs/launch=%.0f\n",
-            (long long)nBatches, (long long)nLaunches, (long long)nPairs, (double)nCells, (long long)nDouble,
-            nsPack * 1e-9, nsGpu * 1e-9, msH2D * 1e-3, msKernel * 1e-3, msD2H * 1e-3, nsTotal * 1e-9,
-            nCells / (msKernel * 1e-3) * 1e-9, nCells / (nsTotal * 1e-9) * 1e-9, (double)nPairs / nLaunches);
-  }
 };
 
-static Engine g_engine;
+// The engines (VARIANT_RS_GPU_STREAMS, default 8; 1: one at a time, as before): a caller takes a free one for the
+// whole call. Each pair is computed on its own, so which engine and stream run it changes nothing in the results.
+// HaplotypeCaller, 30x whole genome, L40S, 64 threads, 8 contig workers: 1 engine 190 s, 2 168, 4 168, 8 160 (the
+// callers had waited 2,543 s in all for the one engine); with 16 workers, 4 engines 124 s, 8 121.
+static std::mutex g_pool_mu;
+static std::condition_variable g_pool_cv;
+static std::vector<Engine*> g_pool, g_free;
+static std::atomic<long long> g_nsTotal{0}, g_nsWait{0};
+
+static int pool_size() {
+  const char* e = getenv("VARIANT_RS_GPU_STREAMS");
+  int n = e ? atoi(e) : 8;
+  return n < 1 ? 1 : n > 64 ? 64 : n;
+}
+static Engine* acquire() {
+  std::unique_lock<std::mutex> lk(g_pool_mu);
+  g_pool_cv.wait(lk, [] { return !g_free.empty(); });
+  Engine* e = g_free.back();
+  g_free.pop_back();
+  return e;
+}
+static void release(Engine* e) {
+  { std::lock_guard<std::mutex> lk(g_pool_mu); g_free.push_back(e); }
+  g_pool_cv.notify_one();
+}
+
+static void report_all() {
+  long long nsPack = 0, nsGpu = 0, nBatches = 0, nLaunches = 0, nPairs = 0, nCells = 0, nDouble = 0;
+  double msH2D = 0, msKernel = 0, msD2H = 0;
+  for (Engine* e : g_pool) {
+    nsPack += e->nsPack; nsGpu += e->nsGpu; nBatches += e->nBatches; nLaunches += e->nLaunches; nPairs += e->nPairs;
+    nCells += e->nCells; nDouble += e->nDouble; msH2D += e->msH2D; msKernel += e->msKernel; msD2H += e->msD2H;
+  }
+  if (nBatches == 0) return;
+  fprintf(stderr,
+          "[cuda-pairhmm] batches=%lld launches=%lld pairs=%lld cells=%.3e doubleFallback=%lld\n"
+          "[cuda-pairhmm] %d engine(s), summed over them: pack=%.3fs  GPU wall=%.3fs (H2D=%.3fs kernel=%.3fs D2H=%.3fs)  total=%.3fs; waiting for an engine %.3fs\n"
+          "[cuda-pairhmm] kernel throughput=%.1f GCUPS (summed kernel time), avg pairs/launch=%.0f\n",
+          nBatches, nLaunches, nPairs, (double)nCells, nDouble,
+          (int)g_pool.size(), nsPack * 1e-9, nsGpu * 1e-9, msH2D * 1e-3, msKernel * 1e-3, msD2H * 1e-3, g_nsTotal * 1e-9, g_nsWait * 1e-9,
+          nCells / (msKernel * 1e-3) * 1e-9, (double)nPairs / nLaunches);
+}
 
 
 // ---------------------------------------------------------------------------
@@ -518,8 +565,15 @@ static Engine g_engine;
 extern "C" {
 
 int cuda_pairhmm_init(int use_double) {
-  if (g_engine.ready) return 1;
-  return g_engine.init(use_double != 0) ? 1 : 0;
+  if (g_dev.ready) return 1;
+  if (!g_dev.init(use_double != 0)) return 0;
+  for (int i = 0, n = pool_size(); i < n; ++i) {
+    Engine* e = new Engine();
+    if (!e->create()) { g_dev.ready = false; return 0; }
+    g_pool.push_back(e);
+    g_free.push_back(e);
+  }
+  return 1;
 }
 
 int cuda_pairhmm_compute(int n_groups, const int* group_n_reads, const int* group_n_haps,
@@ -527,8 +581,7 @@ int cuda_pairhmm_compute(int n_groups, const int* group_n_reads, const int* grou
                          const uint8_t* const* read_ins, const uint8_t* const* read_del,
                          const uint8_t* const* read_gcp, const int* read_lens,
                          const uint8_t* const* hap_bases, const int* hap_lens, double* out) {
-  if (!g_engine.ready) return 0;
-  auto t0 = std::chrono::steady_clock::now();
+  if (!g_dev.ready) return 0;
   std::vector<Engine::HostGroup> groups(n_groups);
   size_t ri = 0, hi = 0, oo = 0;
   for (int g = 0; g < n_groups; ++g) {
@@ -543,15 +596,20 @@ int cuda_pairhmm_compute(int n_groups, const int* group_n_reads, const int* grou
     G.out = out + oo;
     oo += (size_t)nr * nh;
   }
-  const bool ok = g_engine.compute(groups);
-  g_engine.nsTotal += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+  auto tw = std::chrono::steady_clock::now();
+  Engine* e = acquire();
+  auto t0 = std::chrono::steady_clock::now();
+  const bool ok = e->compute(groups);
+  release(e);
+  g_nsWait += std::chrono::duration_cast<std::chrono::nanoseconds>(t0 - tw).count();
+  g_nsTotal += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
   return ok ? 1 : 0;
 }
 
-void cuda_pairhmm_report(void) { g_engine.report(); }
+void cuda_pairhmm_report(void) { report_all(); }
 
 // Longest haplotype the GPU path accepts (0 if not initialized); longer ones need the CPU PairHMM.
-int cuda_pairhmm_max_hap_len(void) { return g_engine.ready ? g_engine.max_hap_len() : 0; }
+int cuda_pairhmm_max_hap_len(void) { return g_dev.ready ? g_dev.max_hap_len() : 0; }
 
 // Debug: float pass for ONE pair, writing every DP cell (M,X,Y interleaved, (R+1) x (H+1)) to `cells`
 // and the raw float sum to `*raw`.  Reuses the production code path (pairhmm_warp<float, true>).
@@ -566,11 +624,11 @@ __global__ void pairhmm_debug_kernel(Batch b, float* cells, float* raw) {
 extern "C" {
 int cuda_pairhmm_debug_cells(const uint8_t* rb, const uint8_t* rq, const uint8_t* ri, const uint8_t* rd, const uint8_t* rc,
                              int R, const uint8_t* hb, int H, float* cells, float* raw) {
-  if (!g_engine.ready) return 0;
+  if (!g_dev.ready) return 0;
   std::vector<int> ints = {0, 1, 0, 0, 1, 0, R, 0, H};  // pairStart[2] readStart hapStart nHaps readOff readLen hapOff hapLen
   std::vector<uint8_t> bytes(5 * R + H);
-  for (int k = 0; k < R; ++k) { bytes[k] = g_engine.conv[rb[k]]; bytes[R + k] = rq[k]; bytes[2 * R + k] = ri[k]; bytes[3 * R + k] = rd[k]; bytes[4 * R + k] = rc[k]; }
-  for (int k = 0; k < H; ++k) bytes[5 * R + k] = g_engine.conv[hb[k]];
+  for (int k = 0; k < R; ++k) { bytes[k] = g_dev.conv[rb[k]]; bytes[R + k] = rq[k]; bytes[2 * R + k] = ri[k]; bytes[3 * R + k] = rd[k]; bytes[4 * R + k] = rc[k]; }
+  for (int k = 0; k < H; ++k) bytes[5 * R + k] = g_dev.conv[hb[k]];
   int* dI; uint8_t* dB; float* dC; float* dR;
   const size_t nc = 3 * (size_t)(R + 1) * (H + 1);
   cudaMalloc(&dI, ints.size() * sizeof(int)); cudaMalloc(&dB, bytes.size()); cudaMalloc(&dC, nc * sizeof(float)); cudaMalloc(&dR, sizeof(float));

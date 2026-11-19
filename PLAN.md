@@ -53,12 +53,17 @@ md5 741f6ebc50be):
   less there than on the server.
 * Workstation folder: `gatk/wgs/stage0/` (run.sh, trace.tsv, gpu.csv); server: `~/projects/wgs1/`.
 
-### Stage 1: HaplotypeCaller, packing overlapped with the GPU (variant-rs `cudahmm`)
+### Stage 1: HaplotypeCaller, packing overlapped with the GPU (variant-rs `cudahmm`) — done 2026-11-19
 
 A small pool of PairHMM engines, each with its own CUDA stream and pinned buffers, in place of one engine behind one
 lock: workers pack their batches in parallel and their kernels overlap. Each (read, haplotype) pair is computed on
 its own by the same kernel, so the likelihoods cannot change; checked by `tests/selftest.sh` and the 30x VCF.
 Expected on the L40S: 211 s -> ~120 s (the GPU's own 109 s becomes the floor).
+
+Result: a pool of 8 engines (`VARIANT_RS_GPU_STREAMS`), and more contig workers beyond 32 threads (a quarter of the
+threads, up to 32). L40S, 64 threads: 190 s -> 121 s; 128 threads: 114 s. RTX 5070 Ti, 32 threads: unchanged
+(397-403 s whatever the engines or workers: its CPU stages set the pace), so its defaults are as before. VCF
+identical in every run; selftest identical. Details: `docs/notes/variant-rs.md` (Performance).
 
 ### Stage 2: align-rs, less CPU work per lane (the workstation's limit)
 

@@ -612,7 +612,11 @@ fn main() {
     if args.pairhmm == "cuda" && !use_gpu {
         panic!("--pairhmm cuda requested but no CUDA device (use --pairhmm cpu or auto)");
     }
-    let n_workers = if args.workers > 0 { args.workers } else { (args.threads / 2).clamp(1, 8) }.min(jobs.len().max(1));
+    // contig workers: half the threads up to 8, and a quarter of them beyond (up to 32). With the GPU PairHMM's engine
+    // pool more workers keep the device busier: 30x whole genome, L40S, 64 threads: 8 workers 160 s, 16 workers 121 s
+    // (128 threads, 32 workers: 114 s); on 32 threads (RTX 5070 Ti) the CPU stages set the pace and 16 workers gain
+    // nothing (403 s against 401 s) for 6.6 GB more memory, so up to 32 threads the count is as before.
+    let n_workers = if args.workers > 0 { args.workers } else { (args.threads / 2).clamp(1, 8).max((args.threads / 4).min(32)) }.min(jobs.len().max(1));
     // two-stage front end (read stage on its own thread) when the threads allow it; VARIANT_RS_TWO_STAGE=0/1 overrides
     let two_stage = match std::env::var("VARIANT_RS_TWO_STAGE").ok().as_deref() {
         Some("0") => false,

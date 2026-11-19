@@ -4,6 +4,9 @@
 fn main() {
     let m = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let dir = std::env::var("CUDA_PAIRHMM_DIR").unwrap_or_else(|_| format!("{m}/cuda-pairhmm/build"));
+    // rerun when the library appears or changes: built before `make -C variant-rs/cuda-pairhmm`, the binaries had
+    // no rpath to it and could not start once it existed
+    println!("cargo:rerun-if-changed={dir}/libcudapairhmm.so");
     if let Ok(dir) = std::fs::canonicalize(&dir) {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
     }
