@@ -29,8 +29,8 @@ One workstation: 16-core Ryzen 9 9950X3D, 30 GB RAM, RTX 5070 Ti, Linux (WSL2). 
 
 | Whole pipeline | Data | Reference tools | varcall-rs | |
 |---|---|---|---:|---:|
-| germline: FASTQ → filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **47.8 min** | **6.5×** |
-| somatic: BAMs → filtered Mutect2 calls (+ HaplotypeCaller on the normal) | SEQC2 exome tumor / normal | nf-core/sarek with GATK: 46.5 min | **2.7 min** | **17×** |
+| germline: FASTQ → filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **44.6 min** | **7.0×** |
+| somatic: BAMs → filtered Mutect2 calls (+ HaplotypeCaller on the normal) | SEQC2 exome tumor / normal | nf-core/sarek with GATK: 46.5 min | **2.8 min** | **17×** |
 
 | Single step | Data | Reference tool | varcall-rs | |
 |---|---|---|---:|---:|
@@ -42,7 +42,8 @@ One workstation: 16-core Ryzen 9 9950X3D, 30 GB RAM, RTX 5070 Ti, Linux (WSL2). 
 | ApplyBQSR | same | GATK: 1 h 47 min | **6 min** | **18×** |
 
 The germline baseline adds up measured steps: bwa-mem2 + samtools on one lane times 12, and sarek's GATK steps on
-the same genome. How each pipeline number was measured: [pipeline/README.md](pipeline/README.md).
+the same genome. On a server with 6 L40S GPUs and 384 threads, the germline pipeline takes **8.1 min**. How each
+pipeline number was measured: [pipeline/README.md](pipeline/README.md#benchmarks).
 
 ## Getting started
 
