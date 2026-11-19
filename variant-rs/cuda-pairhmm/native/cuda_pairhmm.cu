@@ -296,29 +296,37 @@ struct Device {
   bool useDouble = false;
   float log10InitF = 0; double log10InitD = 0;
   uint8_t conv[256];
-  int maxSmem = 48 * 1024;  // opt-in dynamic shared memory per block (set in init)
+  int maxSmem = 48 * 1024;  // opt-in dynamic shared memory per block (set in init; the smallest of the devices')
+  int nDev = 0;             // devices used: the visible ones (CUDA_VISIBLE_DEVICES), at most VARIANT_RS_GPUS
 
   bool init(bool dbl) {
     useDouble = dbl;
     int n = 0;
     if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) return false;
-    // block (instead of spinning) while waiting for the GPU: the host threads have CPU work to do
-    cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
-    CUDA_CHECK(cudaSetDevice(0));
-    CUDA_CHECK(cudaDeviceGetAttribute(&maxSmem, cudaDevAttrMaxSharedMemoryPerBlockOptin, 0));
-    CUDA_CHECK(cudaFuncSetAttribute(pairhmm_float_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSmem));
-    CUDA_CHECK(cudaFuncSetAttribute(pairhmm_double_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSmem));
-
+    const char* lim = getenv("VARIANT_RS_GPUS");
+    if (lim && atoi(lim) > 0 && atoi(lim) < n) n = atoi(lim);
     static HostTables<float> tf; static HostTables<double> td;
     tf.init(true); td.init(false);
-    CUDA_CHECK(cudaMemcpyToSymbol(c_ph2pr_f, tf.ph2pr, sizeof(tf.ph2pr)));
-    CUDA_CHECK(cudaMemcpyToSymbol(c_ph2pr_d, td.ph2pr, sizeof(td.ph2pr)));
-    CUDA_CHECK(cudaMemcpyToSymbol(g_mm_f, tf.mm, sizeof(tf.mm)));
-    CUDA_CHECK(cudaMemcpyToSymbol(g_mm_d, td.mm, sizeof(td.mm)));
-    CUDA_CHECK(cudaMemcpyToSymbol(c_init_f, &tf.initialConstant, sizeof(float)));
-    CUDA_CHECK(cudaMemcpyToSymbol(c_log10init_f, &tf.log10InitialConstant, sizeof(float)));
-    CUDA_CHECK(cudaMemcpyToSymbol(c_init_d, &td.initialConstant, sizeof(double)));
-    CUDA_CHECK(cudaMemcpyToSymbol(c_log10init_d, &td.log10InitialConstant, sizeof(double)));
+    // each device has its own copy of the tables (constant memory) and its own kernel attributes
+    for (int d = 0; d < n; ++d) {
+      CUDA_CHECK(cudaSetDevice(d));
+      // block (instead of spinning) while waiting for the GPU: the host threads have CPU work to do
+      cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
+      int smem = 0;
+      CUDA_CHECK(cudaDeviceGetAttribute(&smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, d));
+      if (d == 0 || smem < maxSmem) maxSmem = smem;
+      CUDA_CHECK(cudaFuncSetAttribute(pairhmm_float_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
+      CUDA_CHECK(cudaFuncSetAttribute(pairhmm_double_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
+      CUDA_CHECK(cudaMemcpyToSymbol(c_ph2pr_f, tf.ph2pr, sizeof(tf.ph2pr)));
+      CUDA_CHECK(cudaMemcpyToSymbol(c_ph2pr_d, td.ph2pr, sizeof(td.ph2pr)));
+      CUDA_CHECK(cudaMemcpyToSymbol(g_mm_f, tf.mm, sizeof(tf.mm)));
+      CUDA_CHECK(cudaMemcpyToSymbol(g_mm_d, td.mm, sizeof(td.mm)));
+      CUDA_CHECK(cudaMemcpyToSymbol(c_init_f, &tf.initialConstant, sizeof(float)));
+      CUDA_CHECK(cudaMemcpyToSymbol(c_log10init_f, &tf.log10InitialConstant, sizeof(float)));
+      CUDA_CHECK(cudaMemcpyToSymbol(c_init_d, &td.initialConstant, sizeof(double)));
+      CUDA_CHECK(cudaMemcpyToSymbol(c_log10init_d, &td.log10InitialConstant, sizeof(double)));
+    }
+    nDev = n;
     log10InitF = tf.log10InitialConstant; log10InitD = td.log10InitialConstant;
 
     memset(conv, 0, sizeof(conv));  // GKL ConvertChar: unknown -> 0 ('A')
@@ -338,6 +346,7 @@ static Device g_dev;
 // several engines (their own stream and buffers) let one caller pack while another's kernels run.
 // ---------------------------------------------------------------------------
 struct Engine {
+  int dev = 0;  // its device: the calling thread switches to it for the call
   cudaStream_t stream{};
   cudaEvent_t evStart{}, evH2D{}, evKernel{}, evEnd{};
 
@@ -351,7 +360,9 @@ struct Engine {
   long long nsPack = 0, nsGpu = 0, nBatches = 0, nLaunches = 0, nPairs = 0, nCells = 0, nDouble = 0;
   double msH2D = 0, msKernel = 0, msD2H = 0;
 
-  bool create() {
+  bool create(int d) {
+    dev = d;
+    CUDA_CHECK(cudaSetDevice(dev));
     CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     CUDA_CHECK(cudaEventCreate(&evStart)); CUDA_CHECK(cudaEventCreate(&evH2D));
     CUDA_CHECK(cudaEventCreate(&evKernel)); CUDA_CHECK(cudaEventCreate(&evEnd));
@@ -391,6 +402,7 @@ struct Engine {
   // Computes all groups in a single GPU launch.
   bool compute(const std::vector<HostGroup>& groups) {
     auto t0 = std::chrono::steady_clock::now();
+    CUDA_CHECK(cudaSetDevice(dev));
     const int G = (int)groups.size();
     long long totR = 0, totH = 0, cells = 0; int maxH = 0, nR = 0, nH = 0, nPairsB = 0;
     for (const auto& g : groups) {
@@ -512,13 +524,15 @@ struct Engine {
 
 };
 
-// The engines (VARIANT_RS_GPU_STREAMS, default 8; 1: one at a time, as before): a caller takes a free one for the
-// whole call. Each pair is computed on its own, so which engine and stream run it changes nothing in the results.
+// The engines (VARIANT_RS_GPU_STREAMS per device, default 8; 1 on one device: one call at a time): a caller takes a
+// free one for the whole call, on the device with the fewest calls running. Each pair is computed on its own by the
+// same kernels, so which engine, stream or device runs it changes nothing in the results.
 // HaplotypeCaller, 30x whole genome, L40S, 64 threads, 8 contig workers: 1 engine 190 s, 2 168, 4 168, 8 160 (the
 // callers had waited 2,543 s in all for the one engine); with 16 workers, 4 engines 124 s, 8 121.
 static std::mutex g_pool_mu;
 static std::condition_variable g_pool_cv;
 static std::vector<Engine*> g_pool, g_free;
+static std::vector<int> g_busy;  // calls running, per device
 static std::atomic<long long> g_nsTotal{0}, g_nsWait{0};
 
 static int pool_size() {
@@ -529,12 +543,20 @@ static int pool_size() {
 static Engine* acquire() {
   std::unique_lock<std::mutex> lk(g_pool_mu);
   g_pool_cv.wait(lk, [] { return !g_free.empty(); });
-  Engine* e = g_free.back();
-  g_free.pop_back();
+  size_t best = 0;
+  for (size_t i = 1; i < g_free.size(); ++i)
+    if (g_busy[g_free[i]->dev] < g_busy[g_free[best]->dev]) best = i;
+  Engine* e = g_free[best];
+  g_free.erase(g_free.begin() + best);
+  ++g_busy[e->dev];
   return e;
 }
 static void release(Engine* e) {
-  { std::lock_guard<std::mutex> lk(g_pool_mu); g_free.push_back(e); }
+  {
+    std::lock_guard<std::mutex> lk(g_pool_mu);
+    --g_busy[e->dev];
+    g_free.push_back(e);
+  }
   g_pool_cv.notify_one();
 }
 
@@ -548,10 +570,10 @@ static void report_all() {
   if (nBatches == 0) return;
   fprintf(stderr,
           "[cuda-pairhmm] batches=%lld launches=%lld pairs=%lld cells=%.3e doubleFallback=%lld\n"
-          "[cuda-pairhmm] %d engine(s), summed over them: pack=%.3fs  GPU wall=%.3fs (H2D=%.3fs kernel=%.3fs D2H=%.3fs)  total=%.3fs; waiting for an engine %.3fs\n"
+          "[cuda-pairhmm] %d engine(s) on %d device(s), summed over them: pack=%.3fs  GPU wall=%.3fs (H2D=%.3fs kernel=%.3fs D2H=%.3fs)  total=%.3fs; waiting for an engine %.3fs\n"
           "[cuda-pairhmm] kernel throughput=%.1f GCUPS (summed kernel time), avg pairs/launch=%.0f\n",
           nBatches, nLaunches, nPairs, (double)nCells, nDouble,
-          (int)g_pool.size(), nsPack * 1e-9, nsGpu * 1e-9, msH2D * 1e-3, msKernel * 1e-3, msD2H * 1e-3, g_nsTotal * 1e-9, g_nsWait * 1e-9,
+          (int)g_pool.size(), g_dev.nDev, nsPack * 1e-9, nsGpu * 1e-9, msH2D * 1e-3, msKernel * 1e-3, msD2H * 1e-3, g_nsTotal * 1e-9, g_nsWait * 1e-9,
           nCells / (msKernel * 1e-3) * 1e-9, (double)nPairs / nLaunches);
 }
 
@@ -567,12 +589,15 @@ extern "C" {
 int cuda_pairhmm_init(int use_double) {
   if (g_dev.ready) return 1;
   if (!g_dev.init(use_double != 0)) return 0;
-  for (int i = 0, n = pool_size(); i < n; ++i) {
-    Engine* e = new Engine();
-    if (!e->create()) { g_dev.ready = false; return 0; }
-    g_pool.push_back(e);
-    g_free.push_back(e);
-  }
+  g_busy.assign(g_dev.nDev, 0);
+  for (int i = 0, n = pool_size(); i < n; ++i)
+    for (int d = 0; d < g_dev.nDev; ++d) {
+      Engine* e = new Engine();
+      if (!e->create(d)) { g_dev.ready = false; return 0; }
+      g_pool.push_back(e);
+      g_free.push_back(e);
+    }
+  if (g_dev.nDev > 1) fprintf(stderr, "[cuda-pairhmm] %d GPUs, %d engines each (VARIANT_RS_GPUS, VARIANT_RS_GPU_STREAMS)\n", g_dev.nDev, pool_size());
   return 1;
 }
 

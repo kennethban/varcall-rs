@@ -105,7 +105,8 @@ random-number streams.
 |---|---|
 | `VARIANT_RS_THREADS` | Mutect2 / contamination: worker threads (default all CPUs) |
 | `VARIANT_RS_CONTIG_THREADS`, `VARIANT_RS_DECODE_THREADS`, `VARIANT_RS_TWO_STAGE` | Mutect2 / HaplotypeCaller front-end sizing |
-| `VARIANT_RS_GPU_STREAMS` | GPU PairHMM: engines (CUDA streams with their own buffers) callers share (default 8; 1: one call at a time) |
+| `VARIANT_RS_GPU_STREAMS` | GPU PairHMM: engines (CUDA streams with their own buffers) per GPU, shared by the callers (default 8; 1 on one GPU: one call at a time) |
+| `VARIANT_RS_GPUS` | GPU PairHMM: use at most this many of the visible GPUs (default all of `CUDA_VISIBLE_DEVICES`) |
 | `VARIANT_RS_TRACE_STAGES`, `VARIANT_RS_TRACE_CPU`, `VARIANT_RS_TRACE_FRONT`, `VARIANT_RS_TRACE_REGIONS` | timing and tracing output |
 | `VARIANT_RS_ASM_PROFILE` (with `VARIANT_RS_TRACE_CPU`), `VARIANT_RS_REBLOCK_STATS` | assembly phase timings and code-path counters; ReblockGVCF code-path counters |
 | `VARIANT_RS_NO_AVX512` | CPU PairHMM: take the path for CPUs without AVX-512 (same output) |

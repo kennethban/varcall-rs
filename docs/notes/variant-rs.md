@@ -605,6 +605,22 @@ On 32 threads the CPU stages set the pace (front end, assembly), so the defaults
 workers are half the threads up to 8 and, beyond 32 threads, a quarter of them up to 32 (`--contig-workers`
 overrides).
 
+**Several GPUs in one process (2026-11-19).** The engines are spread over every visible GPU (`VARIANT_RS_GPUS` for
+at most N): each GPU gets its own copy of the tables (constant memory) and kernel attributes, each engine belongs to
+one GPU, and a call takes a free engine on the GPU with the fewest calls running. HaplotypeCaller, 30x genome, L40S,
+128 threads (32 contig workers), VCF identical in every run:
+
+| GPUs | Wall | GPU busy (mean) | Callers' wait for an engine (summed) |
+|---:|---:|---:|---:|
+| 1 | 114.9 s | 63% | 1,312 s |
+| 2 | 97.9 s | 41% | 165 s |
+| 4 | 97.3 s | 21% | 4 s |
+| 6 | 99.5 s | 15% | 6 s |
+
+Beyond 2 GPUs the longest calling interval sets the time: with `--scatter-intervals` each interval is its own GATK
+run, sequential, and the calling-regions list has one of 141 Mb (chr2:97,489,619-238,903,659, ~93 s). The pipeline
+gives HaplotypeCaller up to 2 GPUs (`hc_gpus`).
+
 ## Earlier single-contig results (chr20:10–15 Mb, `$VARCALL_DATA/data`)
 
 Byte-identical to GATK: 8,064 VCF records; the 798,047-line GVCF and the 5,000,001 unbanded records

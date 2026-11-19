@@ -74,6 +74,7 @@ index is indexed in memory). HaplotypeCaller runs on the normal samples, Mutect2
 | `germline_resource`, `pon`, `pileup_sites` | Mutect2 / GetPileupSummaries resources |
 | `aligner`, `align_rs` | `align-rs` (default) or `bwa-mem2`; the align-rs binary |
 | `cpus`, `align_cpus`, `align_memory` | threads for each heavy step but alignment (default the machine's, at most 128); threads for each aligner task (default the machine's / the GPUs in use, at most 64); memory for each aligner task (the ~17 GB hg38 index is mapped, and shared by aligner tasks running together) |
+| `hc_gpus` | GPUs for each HaplotypeCaller, of those in use (default 2) |
 | `save_lane_bams`, `save_recal_bam` | publish the lane BAMs / the somatic recalibrated BAMs |
 | `publish_dir_mode` | `link` (default: hard links into the work directory, no second copy) |
 
@@ -91,8 +92,9 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./run.sh -params-file my.yaml   # 8 GPUs, 1
   step per GPU at a time.
 * Each sample's lanes are dealt out over one align-rs task per GPU, so one sample's alignment uses all of them. A
   lane's BAM is the same whichever task aligns it.
-* HaplotypeCaller and Mutect2 run once per sample (or tumor), each on one GPU, so several samples call side by side.
-  One sample's calling uses one GPU.
+* HaplotypeCaller runs once per sample on up to 2 GPUs (`hc_gpus`): its PairHMM spreads over them (30x genome,
+  L40S: 1 GPU 115 s, 2 GPUs 98, 4 GPUs 97, where the longest calling interval, 141 Mb of chr2, sets the time).
+  Mutect2 runs once per tumor on one GPU. Several samples call side by side while GPUs and threads allow.
 * Steps run side by side only while their `cpus` and memory fit the machine: 24 GB per heavy step and `align_memory`
   per aligner task. With 8 GPUs, that is about 200 GB, or lower `align_memory`.
 
@@ -126,7 +128,8 @@ germline whole genome as above, `pipeline/run.sh` with its defaults unless noted
 
 | Run (2026-11-19 unless noted) | Wall | Steps |
 |---|---:|---|
-| 6 GPUs, 64 threads per alignment task, 128 per other step (the defaults) | **8.1 min** (484 s) | ALIGN 4.1-4.7 min (6 tasks of 2 lanes, side by side), MarkDuplicates 0.9, BaseRecalibrator 0.3, HaplotypeCaller 1.9, hard filters 0.1 |
+| 6 GPUs, 64 threads per alignment task, 128 per other step, HaplotypeCaller on 2 GPUs (the defaults) | **7.8 min** (465 s) | ALIGN 4.0-4.6 min (6 tasks of 2 lanes, side by side), MarkDuplicates 0.9, BaseRecalibrator 0.3, HaplotypeCaller 1.7, hard filters 0.1 |
+| same, HaplotypeCaller on 1 GPU | 8.1 min (484 s) | HaplotypeCaller 1.9 |
 | 6 GPUs, 64 threads every step | 8.4 min (505 s) | MarkDuplicates 1.2, BaseRecalibrator 0.5, HaplotypeCaller 2.0 |
 | 6 GPUs, 64 threads every step, before the HaplotypeCaller GPU engine pool | 9.9 min (593 s) | HaplotypeCaller 3.5 |
 | 1 GPU, 64 threads every step, before the engine pool | 20.9 min | ALIGN 15.3 min (12 lanes, one task), MarkDuplicates 1.3, BaseRecalibrator 0.5, HaplotypeCaller 3.5 |
@@ -147,6 +150,7 @@ calling intervals), GPUs 2-7. Each change was measured on the whole run, VCF dat
 * 505 s: HaplotypeCaller's GPU PairHMM engine pool and 16 contig workers: 211 -> 120 s.
 * 484 s: `run.sh`'s defaults, 128 threads for the steps after alignment: MarkDuplicates 74 -> 57 s, BaseRecalibrator
   30 -> 19 s, HaplotypeCaller 120 -> 111 s. The alignment tasks' times vary by ~±10 s between runs (4m06-4m43 here).
+* 465 s: HaplotypeCaller's PairHMM on 2 GPUs (`hc_gpus`): 111 -> 103 s.
 
 One GPU, 64 threads (`~/projects/wgs1`, before the engine pool): 20.9 min, alignment 73% of it (GPU ~75% busy), peak
 151 GB for the 12-lane align-rs task.

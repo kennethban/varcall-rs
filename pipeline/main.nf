@@ -17,7 +17,7 @@ def sh(x) { "'${x}'" }
 // Nextflow then gives each GPU task (accelerator 1) one of them, as the task's CUDA_VISIBLE_DEVICES, and runs at most
 // one GPU task per GPU at a time. Unset: no GPU assignment, every task sees all GPUs and uses the first.
 def gpu_ids() { (System.getenv('CUDA_VISIBLE_DEVICES') ?: '').tokenize(',') }
-def gpu_task(uses_gpu) { uses_gpu && gpu_ids() ? 1 : null }
+def gpu_task(uses_gpu, n = 1) { uses_gpu && gpu_ids() ? Math.min(n as int, gpu_ids().size()) : null }
 // align-rs tasks per sample: one per GPU (each with a share of the lanes; a lane's BAM is the same whichever task
 // aligns it), one without GPUs or with bwa-mem2
 def align_groups() { params.aligner == 'align-rs' ? Math.max(1, gpu_ids().size()) : 1 }
@@ -136,7 +136,7 @@ process BASERECALIBRATOR {
 process HAPLOTYPECALLER {
     tag "${meta.sample}"
     label 'heavy'
-    accelerator gpu_task(params.pairhmm != 'cpu')
+    accelerator gpu_task(params.pairhmm != 'cpu', params.hc_gpus)
     publishDir path: { "${params.outdir}/germline/${meta.sample}" }, mode: params.publish_dir_mode
 
     input:

@@ -23,6 +23,8 @@ named in its entry; a change of reference version is a new minor version at leas
   threads / GPUs (at most 64, `align_cpus`), each other heavy step the machine's (at most 128, `cpus`; was 16).
 * variant-rs: the GPU PairHMM serves its callers from a pool of engines (`VARIANT_RS_GPU_STREAMS`, default 8), and
   HaplotypeCaller runs more contig workers beyond 32 threads: a 30x genome on an L40S at 64 threads 190 -> 122 s.
+* variant-rs: the GPU PairHMM's engines spread over every visible GPU (`VARIANT_RS_GPUS` for at most N); the pipeline
+  gives HaplotypeCaller up to 2 GPUs (`hc_gpus`): a 30x genome on L40S at 128 threads 115 -> 98 s.
 * align-rs: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s); extension on its own thread pool.
 
 [Unreleased]: https://github.com/kennethban/varcall-rs/commits/main

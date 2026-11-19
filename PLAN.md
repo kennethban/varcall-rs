@@ -88,9 +88,9 @@ GPU-bound (the server with one GPU: GPU 75% busy); not the workstation. `align-r
 
 ## Several GPUs (an option, after stage 1)
 
-* **M1, HaplotypeCaller on several GPUs:** the engine pool of stage 1 spread over every visible GPU, in one process
-  and one VCF; the pipeline gives HaplotypeCaller all the run's GPUs. (The alternative, the interval list split into
-  one process per GPU and the VCFs concatenated, needs more pipeline plumbing.)
+* **M1, HaplotypeCaller on several GPUs — done 2026-11-19:** the engine pool spread over every visible GPU, in one
+  process and one VCF. 30x genome, L40S, 128 threads: 1 GPU 115 s, 2 GPUs 98, 4 GPUs 97 (the 141 Mb chr2 calling
+  interval, one sequential GATK run, sets the time); the pipeline gives HaplotypeCaller up to 2 GPUs (`hc_gpus`).
 * **M2, alignment on large servers:** CPU-bound (6 alignments fill the 384 threads); stage 2's CPU cuts were
   not measured there before being dropped.
 * **M4, threads per step on large servers (pipeline setting, no code):** the steps after alignment run one sample
@@ -99,4 +99,4 @@ GPU-bound (the server with one GPU: GPU 75% busy); not the workstation. `align-r
 * **M3, many samples:** the pipeline already runs samples side by side, one GPU per GPU step; to check at cohort
   scale.
 
-Order: M1 next (stage 1 done; stage 2 dropped), then stages 3-5 as measured.
+Order: stage 1 and M1 done, stage 2 dropped; then stages 3-5 as measured.
