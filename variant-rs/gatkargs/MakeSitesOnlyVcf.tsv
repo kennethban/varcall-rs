@@ -1,0 +1,19 @@
+# MakeSitesOnlyVcf: GATK 4.7 arguments from `--help` (gen.py). long	short	type	default	multi	section
+--INPUT	-I	File	-	0	required
+--OUTPUT	-O	File	-	0	required
+--arguments_file	-	File	null	1	optional
+--COMPRESSION_LEVEL	-	Integer	2	0	optional
+--CREATE_INDEX	-	Boolean	true	0	optional
+--CREATE_MD5_FILE	-	Boolean	false	0	optional
+--help	-h	Boolean	false	0	optional
+--MAX_RECORDS_IN_RAM	-	Integer	500000	0	optional
+--QUIET	-	Boolean	false	0	optional
+--REFERENCE_SEQUENCE	-R	PicardHtsPath	null	0	optional
+--SAMPLE	-S	String	null	1	optional
+--TMP_DIR	-	File	null	1	optional
+--USE_JDK_DEFLATER	-use_jdk_deflater	Boolean	false	0	optional
+--USE_JDK_INFLATER	-use_jdk_inflater	Boolean	false	0	optional
+--VALIDATION_STRINGENCY	-	ValidationStringency	STRICT	0	optional
+--VERBOSITY	-	LogLevel	INFO	0	optional
+--version	-	Boolean	false	0	optional
+--showHidden	-	Boolean	false	0	advanced

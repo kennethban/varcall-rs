@@ -108,7 +108,7 @@ pub(crate) fn allele(a: &str) -> String {
 }
 
 /// One record line re-encoded as htsjdk's `VCFEncoder` writes it after `VCFCodec` decoded it.
-fn reencode(line: &str) -> String {
+fn reencode(line: &str, declared: &HashMap<String, bool>) -> String {
     let mut f: Vec<&str> = line.splitn(9, '\t').collect();
     assert!(f.len() >= 8, "VCF record with fewer than 8 columns: {line}");
     let mut out = String::with_capacity(line.len() + 8);
@@ -138,18 +138,14 @@ fn reencode(line: &str) -> String {
         out.push_str(&v.join(";"));
     }
     out.push('\t');
-    // INFO: TreeMap of key -> value (a later duplicate key replaces the value)
-    if f[7] == "." || f[7].is_empty() {
-        out.push('.');
-    } else {
-        let mut m: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
-        for kv in f[7].split(';').filter(|s| !s.is_empty()) {
-            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-            m.insert(k, v);
-        }
-        let s: Vec<String> = m.iter().map(|(k, v)| if v.is_empty() { k.to_string() } else { format!("{k}={v}") }).collect();
-        out.push_str(&s.join(";"));
-    }
+    // INFO as htsjdk decodes and writes it (keys sorted; an undeclared key fails, as in Picard)
+    let mut info = Vec::new();
+    let at = format!("{}:{}", f[0], f[1]);
+    crate::vcfinfo::write(&crate::vcfinfo::parse(f[7], declared), declared, &at, &mut info).unwrap_or_else(|e| {
+        eprintln!("variant-rs MergeVcfs: {e}");
+        std::process::exit(1)
+    });
+    out.push_str(std::str::from_utf8(&info).unwrap());
     if f.len() == 9 {
         out.push('\t');
         out.push_str(f.remove(8));
@@ -285,6 +281,7 @@ pub fn run(argv: &[String]) {
         };
         // the sample columns must match the first input's
         let samples: Vec<&str> = chrom.split('\t').skip(9).collect();
+        crate::vcfheader::require_sorted_samples(&samples.iter().map(|s| s.to_string()).collect::<Vec<_>>(), p);
         match &samples_line {
             None => samples_line = Some(chrom.clone()),
             Some(s) => {
@@ -329,6 +326,7 @@ pub fn run(argv: &[String]) {
         inputs.push(Input { lines, path: p.clone() });
     }
     // the writer: ##fileformat first, then the merged lines sorted (contig lines in their order)
+    let declared = crate::vcfinfo::declared(&merged.iter().map(|(_, l)| l.clone()).collect::<Vec<_>>());
     let mut lines: Vec<&String> = merged.iter().map(|(_, l)| l).collect();
     let sort_key = |l: &String| if l.starts_with("##contig=<") { "##contig=<".to_string() } else { l.to_string() };
     lines.sort_by_key(|l| sort_key(l));
@@ -368,7 +366,7 @@ pub fn run(argv: &[String]) {
             }
         }
         last = Some((h.contig, h.start));
-        buf.push_str(&reencode(&h.line));
+        buf.push_str(&reencode(&h.line, &declared));
         buf.push('\n');
         n += 1;
         if buf.len() >= 4 << 20 {
@@ -396,8 +394,9 @@ mod tests {
     use super::*;
     #[test]
     fn encoder() {
-        assert_eq!(reencode("c\t5\t.\tac\tG,<NON_REF>\t30.5\tb;a\tZ=1;A;K=\tGT\t0/1"), "c\t5\t.\tAC\tG,<NON_REF>\t30.50\ta;b\tA;K;Z=1\tGT\t0/1");
-        assert_eq!(reencode("c\t5\t.\tA\t.\t30.00\t.\t."), "c\t5\t.\tA\t.\t30\t.\t.");
+        let d: HashMap<String, bool> = [("Z", false), ("A", true), ("K", false)].iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        assert_eq!(reencode("c\t5\t.\tac\tG,<NON_REF>\t30.5\tb;a\tZ=1;A;K=\tGT\t0/1", &d), "c\t5\t.\tAC\tG,<NON_REF>\t30.50\ta;b\tA;K=.;Z=1\tGT\t0/1");
+        assert_eq!(reencode("c\t5\t.\tA\t.\t30.00\t.\t.", &d), "c\t5\t.\tA\t.\t30\t.\t.");
         assert_eq!(merge_key("##GATKCommandLine=<ID=HaplotypeCaller,CommandLine=\"x\">"), "GATKCommandLine");
         assert_eq!(merge_key("##INFO=<ID=DP,Number=1,Type=Integer,Description=\"d\">"), "INFO-DP");
         assert_eq!(merge_key("##contig=<ID=chr1,length=5>"), "contig-chr1");

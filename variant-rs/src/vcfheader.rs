@@ -67,6 +67,96 @@ pub fn repair_standard_line(line: String) -> String {
     }
 }
 
+/// htsjdk's `samplesWereAlreadySorted`. When a VCF's sample names are not in sorted order, htsjdk's reader decodes
+/// every genotype and its writer re-encodes them (FORMAT keys recomputed, values reformatted), which the tools here
+/// do not reproduce: they write the genotype columns as read, so they refuse such inputs.
+pub fn samples_sorted(samples: &[String]) -> bool {
+    samples.windows(2).all(|w| w[0].encode_utf16().cmp(w[1].encode_utf16()) != std::cmp::Ordering::Greater)
+}
+
+/// Refuses an input whose samples are not sorted (see `samples_sorted`).
+pub fn require_sorted_samples(samples: &[String], path: &str) {
+    if !samples_sorted(samples) {
+        crate::gatk_cli::refuse(&format!(
+            "{path}: the sample columns are not in sorted order; htsjdk then re-encodes every genotype, which is not supported"
+        ));
+    }
+}
+
+/// The output header as htsjdk's VCF writer prints it: `##fileformat=VCFv4.2`, then the input's lines and `extra`
+/// (exact duplicates once) sorted as text, the contig lines as one block in their order where the first sorts, and
+/// our command line where GATK's `##GATKCommandLine` would sort; then the #CHROM line with `samples`.
+pub fn write_header(input_meta: &[String], extra: Vec<String>, samples: &[String]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for l in input_meta.iter().cloned().chain(extra) {
+        if l.starts_with("##fileformat=") {
+            continue;
+        }
+        if seen.insert(l.clone()) {
+            lines.push(l);
+        }
+    }
+    let key = |l: &String| -> String {
+        if l.starts_with("##contig=<") {
+            "##contig=<".into()
+        } else {
+            l.strip_prefix("##variant-rsCommandLine").map(|r| format!("##GATKCommandLine{r}")).unwrap_or_else(|| l.clone())
+        }
+    };
+    lines.sort_by_key(key);
+    let mut out = String::from("##fileformat=VCFv4.2\n");
+    for l in lines {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out.push_str("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO");
+    if !samples.is_empty() {
+        out.push_str("\tFORMAT");
+        for s in samples {
+            out.push('\t');
+            out.push_str(s);
+        }
+    }
+    out.push('\n');
+    out
+}
+
+/// htsjdk's `escapeQuotes` for a quoted header value: a '"' not preceded by a backslash gets one (as
+/// `replaceAll("([^\\\\])\"", ...)`, so a leading quote, or the second of two, is left alone).
+fn escape_quotes(v: &str) -> String {
+    let c: Vec<char> = v.chars().collect();
+    let mut out = String::with_capacity(v.len() + 4);
+    let mut i = 0;
+    while i < c.len() {
+        if i + 1 < c.len() && c[i] != '\\' && c[i + 1] == '"' {
+            out.push(c[i]);
+            out.push_str("\\\"");
+            i += 2;
+        } else {
+            out.push(c[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// A `##FILTER` line as `VCFFilterHeaderLine` writes it.
+pub fn filter_line(id: &str, description: &str) -> String {
+    format!("##FILTER=<ID={id},Description=\"{}\">", escape_quotes(description))
+}
+
+/// This run's command line, written where GATK writes `##GATKCommandLine` (see `write_header`).
+pub fn command_line(tool: &str) -> String {
+    let cmdline: Vec<String> = std::env::args().collect();
+    format!(
+        "##variant-rsCommandLine=<ID={tool},CommandLine=\"{}\",Version=\"{}\",Date=\"{}\">",
+        cmdline.join(" ").replace('"', "\\\""),
+        env!("CARGO_PKG_VERSION"),
+        crate::now_string()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +176,13 @@ mod tests {
         assert_eq!(repair_standard_line(qd.into()), qd);
         let gq = "##INFO=<ID=GQ,Number=.,Type=String,Description=\"x\">";
         assert_eq!(repair_standard_line(gq.into()), gq);
+    }
+
+    #[test]
+    fn quotes() {
+        assert_eq!(escape_quotes(r#"TYPE == "SNP""#), r#"TYPE == \"SNP\""#);
+        assert_eq!(escape_quotes(r#""a" x"#), r#""a\" x"#);
+        assert_eq!(escape_quotes(r#"a "" b"#), r#"a \"" b"#);
+        assert_eq!(escape_quotes(r#"a \" b"#), r#"a \" b"#);
     }
 }

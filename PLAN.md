@@ -23,7 +23,7 @@ or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25
 kernel (stage 3) and MarkDuplicates / BaseRecalibrator on the workstation (stage 5) are open.
 
 **Coverage:** the next GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next) (C1
-VQSR done; next C2 VariantFiltration, C3 GenomicsDBImport, C4 CreateSomaticPanelOfNormals).
+VQSR and C2 VariantFiltration done; next C3 GenomicsDBImport, C4 CreateSomaticPanelOfNormals).
 
 ## Where the time goes (2026-11-19)
 
@@ -162,7 +162,13 @@ Steps, in order, each validated against GATK 4.7.0.0 before the next:
   `DoubleStream.sum` (Kahan), `%.4f` VQSLOD and tranche formatting, stable sorts. Refuse `--rscript-file` (its PDF
   is not reproducible). Test data: a cohort large enough for VQSR (WGS, or tens of exomes, e.g. 1000 Genomes /
   GIAB trios) with the hg38 HapMap, Omni, 1000G and dbSNP resources, SNP and INDEL modes as sarek and WARP run them.
-* **C2, VariantFiltration with expressions.** Extend `filter.rs`: identifiers, numeric literals, comparisons,
+* **C2, VariantFiltration: done (2026-11-20).** `src/vfilter/` (JEXL 2.1.1's semantics in `jexl.rs`), plus Picard
+  MakeSitesOnlyVcf, which WARP runs next. Identical to GATK on `tests/harness/vfilter` (NA12878 30x, the 1000 Genomes
+  cohort slice, 11-sample joint calls; WARP's ExcessHet / exome mask / DRAGEN filters, GATK's examples, the
+  language's edge cases; GATK's own failures reproduced). Found on the way: htsjdk re-encodes every genotype of a VCF
+  whose samples are not sorted (refused now, also in ApplyVQSR and MergeVcfs); `KEY=` is written `KEY=.`. Not done:
+  genotype filters, SNP clusters, `-L`; `variant-rs filter` stays as it is. The plan as written:
+  Extend `filter.rs`: identifiers, numeric literals, comparisons,
   `&& || !`, parentheses, JEXL's string-to-number coercion, and a missing attribute aborting the whole expression as
   htsjdk's `JEXLMap` does; genotype filters (`GQ`, `DP`) through the genotype context. Refuse method calls
   (`vc.isSNP()`) and multi-valued attributes. Covers WARP's ExcessHet and DRAGEN QUAL filters.

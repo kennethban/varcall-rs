@@ -27,9 +27,17 @@ named in its entry; a change of reference version is a new minor version at leas
   gives HaplotypeCaller up to 2 GPUs (`hc_gpus`): a 30x genome on L40S at 128 threads 115 -> 98 s.
 * variant-rs: VariantRecalibrator and ApplyVQSR (GATK 4.7.0.0), identical to GATK on a 30x genome and a
   1000 Genomes cohort with WARP's, sarek's and best-practice settings; a 30x genome's SNP model in ~1 min (GATK ~11).
+* variant-rs: VariantFiltration (filter expressions, masks) and Picard MakeSitesOnlyVcf, identical to GATK on WARP's
+  joint-calling, exome-mask and DRAGEN filters, GATK's hard-filtering examples and the expression language's edge
+  cases.
 * align-rs: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s); extension on its own thread pool.
 
 ### Fixed
+
+* variant-rs ApplyVQSR, MergeVcfs: INFO decoded and written as htsjdk does (`src/vcfinfo.rs`): an empty value
+  (`KEY=`) is written `KEY=.`, a declared flag given as `FLAG=0` is dropped, and a key the header does not declare
+  fails the run, as in GATK and Picard. Inputs whose samples are not in sorted order are refused (htsjdk re-encodes
+  their genotypes; ApplyVQSR reordered them as read).
 
 * variant-rs MergeVcfs: standard INFO / FORMAT header lines with a non-standard Number or Type (e.g. `AD` with
   `Number=.`, as in the 1000 Genomes calls) are repaired as htsjdk does on reading, as Picard's output has them.

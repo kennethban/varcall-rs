@@ -11,7 +11,7 @@ pub mod applyvqsr;
 mod gmm;
 mod jama;
 mod tranche;
-mod vcfio;
+pub mod vcfio;
 
 use crate::intervals::Dict;
 use hc_assembly::jmath;

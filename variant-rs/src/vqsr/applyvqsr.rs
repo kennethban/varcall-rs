@@ -3,12 +3,13 @@
 //! htsjdk prints a Double: `formatVCFDouble`), culprit and training labels, and a FILTER from the tranches (or the
 //! `--lod-score-cutoff`). Every record is re-encoded as htsjdk's writer does (INFO keys sorted, QUAL, alleles,
 //! FILTER). The recal file is read alongside the input; both are in dictionary order.
-//! Not supported (refused): allele-specific mode (`-AS`).
+//! Not supported (refused): allele-specific mode (`-AS`); inputs whose samples are not sorted.
 
 use super::tranche::{read_tranches, Tranche};
 use super::vcfio::{self, Lines};
 use super::Mode;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use crate::vcfinfo::{self, Info};
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 const USAGE: &str = "usage: variant-rs applyvqsr -V in.vcf.gz --recal-file x.recal.vcf.gz [--tranches-file x.tranches \
@@ -231,51 +232,9 @@ impl RecalReader {
     }
 }
 
-/// htsjdk's header for the output: the input's lines, the VQSR lines and this run's filters, `##source` and the
-/// command line; sorted as text with the contigs as one block (input order), samples sorted.
-fn header(input_meta: &[String], extra: Vec<String>, samples: &[String]) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    let mut seen = HashSet::new();
-    for l in input_meta.iter().cloned().chain(extra) {
-        if l.starts_with("##fileformat=") {
-            continue;
-        }
-        if seen.insert(l.clone()) {
-            lines.push(l);
-        }
-    }
-    let key = |l: &String| -> String {
-        if l.starts_with("##contig=<") {
-            "##contig=<".into()
-        } else {
-            l.strip_prefix("##variant-rsCommandLine").map(|r| format!("##GATKCommandLine{r}")).unwrap_or_else(|| l.clone())
-        }
-    };
-    lines.sort_by_key(key);
-    let mut out = String::from("##fileformat=VCFv4.2\n");
-    for l in lines {
-        out.push_str(&l);
-        out.push('\n');
-    }
-    out.push_str("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO");
-    if !samples.is_empty() {
-        out.push_str("\tFORMAT");
-        for s in samples {
-            out.push('\t');
-            out.push_str(s);
-        }
-    }
-    out.push('\n');
-    out
-}
-
-fn filter_line(id: &str, description: &str) -> String {
-    format!("##FILTER=<ID={id},Description=\"{}\">", description.replace('"', "\\\""))
-}
-
 /// One record re-encoded as htsjdk writes it: `filter` replaces FILTER when Some, `add` adds or replaces INFO
-/// keys (a None value is a flag), `order` permutes the sample columns.
-fn reencode(cols: &[&str], filter: Option<&str>, add: &[(&str, Option<String>)], order: &Option<Vec<usize>>, out: &mut Vec<u8>) {
+/// keys (a None value is a flag; `vcfinfo`, with the keys the output header declares); the genotype columns as read.
+fn reencode(cols: &[&str], filter: Option<&str>, add: &[(&str, Option<String>)], declared: &HashMap<String, bool>, out: &mut Vec<u8>) {
     use crate::mergevcfs::{allele, format_qual};
     write!(out, "{}\t{}\t{}\t{}\t", cols[0], cols[1], cols[2], allele(cols[3])).unwrap();
     if cols[4] == "." {
@@ -298,44 +257,20 @@ fn reencode(cols: &[&str], filter: Option<&str>, add: &[(&str, Option<String>)],
         }
     }
     out.push(b'\t');
-    let mut m: BTreeMap<&str, Option<&str>> = BTreeMap::new();
-    if cols[7] != "." && !cols[7].is_empty() {
-        for kv in cols[7].split(';').filter(|s| !s.is_empty()) {
-            match kv.split_once('=') {
-                Some((k, v)) if !v.is_empty() => m.insert(k, Some(v)),
-                Some((k, _)) => m.insert(k, None),
-                None => m.insert(kv, None),
-            };
-        }
-    }
+    let mut info = vcfinfo::parse(cols[7], declared);
     for (k, v) in add {
-        m.insert(k, v.as_deref());
+        info.insert(k, v.as_ref().map_or(Info::Flag, |v| Info::Str(v.clone())));
     }
-    if m.is_empty() {
-        out.push(b'.');
-    } else {
-        let s: Vec<String> = m.iter().map(|(k, v)| match v {
-            Some(v) => format!("{k}={v}"),
-            None => k.to_string(),
-        }).collect();
-        out.extend_from_slice(s.join(";").as_bytes());
-    }
+    vcfinfo::write(&info, declared, &format!("{}:{}", cols[0], cols[1]), out).unwrap_or_else(|e| {
+        eprintln!("variant-rs ApplyVQSR: {e}");
+        std::process::exit(1)
+    });
     if cols.len() > 8 {
         out.push(b'\t');
         out.extend_from_slice(cols[8].as_bytes());
-        match order {
-            None => {
-                for s in &cols[9..] {
-                    out.push(b'\t');
-                    out.extend_from_slice(s.as_bytes());
-                }
-            }
-            Some(o) => {
-                for &k in o {
-                    out.push(b'\t');
-                    out.extend_from_slice(cols[9 + k].as_bytes());
-                }
-            }
+        for s in &cols[9..] {
+            out.push(b'\t');
+            out.extend_from_slice(s.as_bytes());
         }
     }
     out.push(b'\n');
@@ -365,25 +300,19 @@ pub fn run(argv: &[String]) {
         }
         for i in 0..tranches.len().saturating_sub(1) {
             let t = &tranches[i];
-            extra.push(filter_line(
+            extra.push(crate::vcfheader::filter_line(
                 &t.filter_name,
                 &format!("Truth sensitivity tranche level for {} model at VQS Lod: {} <= x < {}", t.model, d2s(t.min_vqslod), d2s(tranches[i + 1].min_vqslod)),
             ));
         }
-        extra.push(filter_line(&format!("{}+", tranches[0].filter_name), &format!("Truth sensitivity tranche level for {} model at VQS Lod < {}", tranches[0].model, d2s(tranches[0].min_vqslod))));
+        extra.push(crate::vcfheader::filter_line(&format!("{}+", tranches[0].filter_name), &format!("Truth sensitivity tranche level for {} model at VQS Lod < {}", tranches[0].model, d2s(tranches[0].min_vqslod))));
     } else {
         let c = cutoff.unwrap_or(0.0);
         cutoff = Some(c);
-        extra.push(filter_line("LOW_VQSLOD", &format!("VQSLOD < {}", d2s(c))));
+        extra.push(crate::vcfheader::filter_line("LOW_VQSLOD", &format!("VQSLOD < {}", d2s(c))));
     }
     extra.push("##source=ApplyVQSR".into());
-    let cmdline: Vec<String> = std::env::args().collect();
-    extra.push(format!(
-        "##variant-rsCommandLine=<ID=ApplyVQSR,CommandLine=\"{}\",Version=\"{}\",Date=\"{}\">",
-        cmdline.join(" ").replace('"', "\\\""),
-        env!("CARGO_PKG_VERSION"),
-        crate::now_string()
-    ));
+    extra.push(crate::vcfheader::command_line("ApplyVQSR"));
 
     let mut lines = Lines::open(&a.input);
     let mut line = Vec::new();
@@ -401,12 +330,10 @@ pub fn run(argv: &[String]) {
             break;
         }
     }
-    // samples in sorted order (htsjdk writes the header's TreeSet order)
     let samples: Vec<String> = chrom_line.split('\t').skip(9).map(|s| s.to_string()).collect();
-    let mut sorted = samples.clone();
-    sorted.sort();
-    let order: Option<Vec<usize>> = if sorted == samples { None } else { Some(sorted.iter().map(|s| samples.iter().position(|x| x == s).unwrap()).collect()) };
-    let hdr = header(&meta, extra, &sorted);
+    crate::vcfheader::require_sorted_samples(&samples, &a.input);
+    let declared = vcfinfo::declared(&meta.iter().chain(&extra).cloned().collect::<Vec<_>>());
+    let hdr = crate::vcfheader::write_header(&meta, extra, &samples);
     let level = if crate::output::block_compressed(&a.output) { Some(a.compression_level) } else { None };
     let mut of = crate::output::OutFile::create(&a.output, &hdr, level).unwrap_or_else(|e| refuse(&format!("{}: {e}", a.output)));
 
@@ -430,7 +357,7 @@ pub fn run(argv: &[String]) {
             || vcfio::filters(cols[6].as_bytes()).is_none()
             || (!ignore.is_empty() && cols[6].split(';').all(|f| ignore.contains(f)));
         if !(evaluate && not_filtered) {
-            reencode(&cols, None, &[], &order, &mut buf);
+            reencode(&cols, None, &[], &declared, &mut buf);
         } else {
             n_eval += 1;
             let start: i64 = cols[1].parse().unwrap_or_else(|_| refuse(&format!("{}: bad POS", a.input)));
@@ -466,7 +393,7 @@ pub fn run(argv: &[String]) {
             if a.exclude_filtered && f != "PASS" && f != "." {
                 continue;
             }
-            reencode(&cols, Some(&f), &add, &order, &mut buf);
+            reencode(&cols, Some(&f), &add, &declared, &mut buf);
         }
         if buf.len() >= 8 << 20 {
             of.add_text(&buf).unwrap();

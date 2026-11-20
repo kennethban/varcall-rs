@@ -53,6 +53,7 @@ run fmc_nan          bash $HARNESS/somatic/fmcnan/cmp.sh $O/fmcnan
 run fmc_dup_tables   bash $HARNESS/somatic/fmcdup/run.sh $O/fmcdup
 run mergevcfs_qual   bash $HARNESS/mergevcfs/qual/run.sh $O/mvqual
 run vqsr             bash $HARNESS/vqsr/cmp.sh $O/vqsr
+run vfilter          bash $HARNESS/vfilter/cmp.sh $O/vfilter
 run plan_edge        bash $HARNESS/plan_edge/run.sh $O/plan_edge
 run aln_alt          bash $REPO/align-rs/tests/alt.sh ${ALIGN_RS:-$REPO/target/release/align-rs} $O/aln_alt
 # sarek whole-genome GatherBQSRReports (356 tables, both runs' input orders) vs GATK's own gather

@@ -34,12 +34,18 @@ variant_steps() {
                          --truth-sensitivity-filter-level 99.0 -mode SNP -O GERM.vqsr_snp.vcf.gz
   run applyvqsr_indel $X ApplyVQSR -R ref.fa -V GERM.vqsr_snp.vcf.gz --recal-file GERM.indel.recal.vcf.gz \
                          --tranches-file GERM.indel.tranches --truth-sensitivity-filter-level 99.0 -mode INDEL -O GERM.vqsr.vcf.gz
+  # hard filters as GATK's examples and WARP write them, then WARP's sites-only step
+  run vfilter $X VariantFiltration -V GERM.vcf.gz -O GERM.vf.vcf.gz \
+                 --filter-expression "QD < 2.0 || FS > 30.0 || SOR > 3.0 || MQ < 40.0 || MQRankSum < -3.0 || ReadPosRankSum < -3.0" \
+                 --filter-name HardFiltered --filter-expression "QUAL < 30.0" --filter-name QUAL30 \
+                 --filter-expression 'TYPE == "INDEL" && FS > 10.0' --filter-name IndelFS
+  run sitesonly $X MakeSitesOnlyVcf -I GERM.vf.vcf.gz -O GERM.sites.vcf.gz
 }
 
 # What is compared, and how: BAM records (bamdigest.py), VCF data lines, metrics without '#' lines, files as they are
 VARIANT_BAMS="GERM.md.bam TUMOR.md.bam NORMAL.md.bam GERM.recal.bam TUMOR.recal.bam NORMAL.recal.bam"
 VARIANT_VCFS="GERM.vcf.gz GERM.g.vcf.gz GERM.gg.vcf.gz somatic.vcf.gz somatic.filtered.vcf.gz GERM.snp.recal.vcf.gz
-  GERM.indel.recal.vcf.gz GERM.vqsr.vcf.gz"
+  GERM.indel.recal.vcf.gz GERM.vqsr.vcf.gz GERM.vf.vcf.gz GERM.sites.vcf.gz"
 VARIANT_METRICS="GERM.md.metrics TUMOR.md.metrics NORMAL.md.metrics"
 VARIANT_FILES="GERM.recal.table TUMOR.recal.table NORMAL.recal.table somatic.vcf.gz.stats TUMOR.pileups.table
   NORMAL.pileups.table contamination.table segments.table somatic.filtered.vcf.gz.filteringStats.tsv GERM.snp.tranches
