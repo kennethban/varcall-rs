@@ -2,7 +2,7 @@
 name = "align-rs"
 description = "bwa-mem2 2.2.1 `mem` in Rust + CUDA, records identical to bwa-mem2"
 license = "MIT"
-authors = ["Kenneth Ban"]
+authors = ["Kenneth Ban", "Claude (Anthropic)"]
 version = "0.1.0"
 edition = "2021"
 

@@ -1,7 +1,7 @@
 [package]
 name = "variant-rs"
 license = "MIT"
-authors = ["Kenneth Ban"]
+authors = ["Kenneth Ban", "Claude (Anthropic)"]
 build = "build.rs"
 version = "0.1.0"
 edition = "2021"

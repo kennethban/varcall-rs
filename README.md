@@ -102,6 +102,13 @@ Bug reports and pull requests are welcome. An output that differs from bwa-mem2'
 [report it](CONTRIBUTING.md#reporting-a-difference) with an input that shows it. [CONTRIBUTING.md](CONTRIBUTING.md)
 describes the tests a change needs.
 
+## Authors
+
+varcall-rs is written by Kenneth Ban, with Claude (Anthropic's AI model, through Claude Code) as a contributor.
+Much of the code, tests and documentation was written with Claude's assistance; commits it helped with carry a
+`Co-Authored-By: Claude` trailer. All outputs are checked against bwa-mem2 and GATK as described in
+[validation.md](docs/validation.md).
+
 ## Citing
 
 If you use varcall-rs, please cite this repository ([CITATION.cff](CITATION.cff); GitHub's "Cite this repository"
