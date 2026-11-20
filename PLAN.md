@@ -1,4 +1,4 @@
-# Speed plan: one GPU first, several as an option
+# Plan: speed (one GPU first, several as an option), then GATK coverage
 
 Most users have one GPU (a workstation, or one cloud GPU), so the stages below speed up that case first. Several
 GPUs (large servers, consortium runs) come after, built on the same pieces. Every stage keeps the outputs identical
@@ -21,6 +21,9 @@ or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25
 
 **Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1) and several GPUs (M1) are in; the PairHMM
 kernel (stage 3) and MarkDuplicates / BaseRecalibrator on the workstation (stage 5) are open.
+
+**Coverage:** the next GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next) (C1
+VQSR, C2 VariantFiltration, C3 GenomicsDBImport, C4 CreateSomaticPanelOfNormals).
 
 ## Where the time goes (2026-11-19)
 
@@ -123,3 +126,47 @@ its reverse pass and a fallback. Not pursued; details in `docs/notes/align-rs.md
 
 Order: alignment done for now (stages 2 and 4 tried and not pursued; M2); stage 1, M1 and M4 done; stages 3 and 5
 and M3 open, as measured.
+
+## Coverage: GATK tools to add next
+
+Researched 2026-11-20 against nf-core/sarek 3.12.0 (`~/project/gatk/sarek/src`), Broad's WARP (develop: JointGenotyping
+1.7.4, Whole-Genome / Exome Germline Single Sample 3.3.9 / 3.2.9) and the GATK 4.7.0.0 source. What the pipelines run
+by default, and whether GATK's output can be reproduced byte for byte:
+
+| Tool | Default in | Exact port | Effort |
+|---|---|---|---|
+| VariantRecalibrator + ApplyVQSR | joint germline in sarek (`--joint_germline`, any cohort size) and WARP (`run_vets = false`) | yes | medium-large |
+| VariantFiltration, general expressions | WARP joint calling (`ExcessHet > 54.69`); sarek only the hard filters (`variant-rs filter`) | yes, for a whitelisted expression subset | small-medium |
+| GenomicsDBImport | joint germline in sarek and WARP; GATK's `mutect2_pon.wdl` | same content (GATK's own bytes vary run to run) | medium |
+| CreateSomaticPanelOfNormals | GATK's `mutect2_pon.wdl` only (beta); sarek takes a PoN, Broad's 1000G one by default | yes | small |
+| FilterVariantTranches | sarek single-sample, after CNNScoreVariants | yes | small, but little value alone |
+| CNNScoreVariants / NVScoreVariants | sarek single-sample (pinned to a GATK 4.5.0.0 image: removed in 4.6.1) | no: PyTorch, GATK's own output varies by hardware, VCF written by pysam | leave to GATK |
+| VETS (Extract / Train / ScoreVariantAnnotations) | opt-in in WARP; beta | no: Python scikit-learn model, pickle and HDF5 outputs | leave to GATK |
+| CombineGVCFs, SelectVariants, Funcotator, gCNV | not a default step in sarek or WARP | mostly | skip unless asked |
+
+Steps, in order, each validated against GATK 4.7.0.0 before the next:
+
+* **C1, VQSR.** VariantRecalibrator (~3.4k Java lines: VariantDataManager, GaussianMixtureModel,
+  MultivariateGaussian, VariantRecalibratorEngine, TrancheManager, tranches; plus Jama's LU / inverse / det) and
+  ApplyVQSR (small). Deterministic: sequential, one `java.util.Random(47382911)` (`Utils.java:52`) for the whole run.
+  The risk is that stream: the datums' number and order (multi-input merging, same-start queueing, AS mode, training
+  overlaps), the decode-time jitter, the k-means initialization and the marginalization draws must all happen in
+  GATK's order, or every later draw differs. Exact pieces needed: Jama LU, commons-math `digamma`, jmath,
+  `DoubleStream.sum` (Kahan), `%.4f` VQSLOD and tranche formatting, stable sorts. Refuse `--rscript-file` (its PDF
+  is not reproducible). Test data: a cohort large enough for VQSR (WGS, or tens of exomes, e.g. 1000 Genomes /
+  GIAB trios) with the hg38 HapMap, Omni, 1000G and dbSNP resources, SNP and INDEL modes as sarek and WARP run them.
+* **C2, VariantFiltration with expressions.** Extend `filter.rs`: identifiers, numeric literals, comparisons,
+  `&& || !`, parentheses, JEXL's string-to-number coercion, and a missing attribute aborting the whole expression as
+  htsjdk's `JEXLMap` does; genotype filters (`GQ`, `DP`) through the genotype context. Refuse method calls
+  (`vc.isSNP()`) and multi-valued attributes. Covers WARP's ExcessHet and DRAGEN QUAL filters.
+* **C3, GenomicsDBImport, content-equivalent.** A workspace whose GenotypeGVCFs output (GATK's and variant-rs's)
+  equals that from GATK's workspace: htsjdk parse, BCF2 round trip (floats to f32), the vidmap combine operations,
+  callset order, fragments per batch. Or skip the workspace inside the pipeline and feed `gdb_merge` directly. Check
+  the clipping of records that start before an interval empirically.
+* **C4, CreateSomaticPanelOfNormals.** Small: the commons-math binomial / beta-binomial and Brent fit already ported
+  for FilterMutectCalls (`src/mutect/fmc_math.rs`). Validate the GenomicsDB merge on Mutect2 VCFs (no `<NON_REF>`,
+  no-call samples without AD) first.
+
+With C1-C3 the pipeline can run joint germline calling as sarek and WARP do; C4 completes GATK's PoN workflow.
+Also seen, not planned: WARP's default Picard QC metrics (CollectWgsMetrics, CollectHsMetrics,
+CollectMultipleMetrics), medium; sarek uses mosdepth and samtools instead.
