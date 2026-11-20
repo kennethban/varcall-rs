@@ -20,9 +20,9 @@ align-rs tune -t 32 -K 100000000 ref.fa R1.fq.gz R2.fq.gz                # measu
 | `src/smem.rs`, `src/chain.rs`, `src/ksort.rs` | seeding, chaining (klib B-tree and introsort ported) |
 | `src/ext.rs`, `src/ksw.rs` | seed extension, bwa's skip replay, dedup; banded and global SW |
 | `src/sam.rs` | insert sizes, mate rescue, pairing, MAPQ, CIGAR / MD / XA / SA, SAM text |
-| `src/bam.rs`, `hts/alnhts.c` | sorted BAM + index through htslib |
+| `src/bam.rs`, `hts/alnhts.c` | sorted BAM + index: htslib's record encoding, BGZF blocks and index, the final pass in parallel |
 | `src/gpu.rs`, `cuda/aln_ext.cu` | device memory, kernels (`k_smem_g`, `k_sa`, `k_extend`, `k_matesw`), CPU fallback |
-| `src/tune.rs`, `src/prof.rs` | `align-rs tune`, profiling counters |
+| `src/tune.rs`, `src/prof.rs` | `align-rs tune`, profiling counters, the `ALIGN_RS_TRACE` timeline |
 | `tests/` | edge cases vs bwa-mem2 (`badfq.sh`, `alt.sh`, `gpufail.sh`, `big_bucket.sh`, `cmp.sh`) |
 | `tools/` | timing scripts, lane digests |
 

@@ -113,6 +113,7 @@ What the review found, by kind:
   hash-keyed maps but not in others.
 * Inputs or arguments outside what is listed in [reference.md](reference.md) are refused, or handed to GATK under
   `GATK_FALLBACK`. They never silently give a different result.
-* The full harness has run on one GPU model (RTX 5070 Ti, sm_120) and one CPU (16-core Zen 5, with AVX-512). The
-  CPU PairHMM without AVX-512 is checked by the self-contained test (`VARIANT_RS_NO_AVX512=1`, and CI runners
+* The full harness has run on one GPU model (RTX 5070 Ti, sm_120) and one CPU (16-core Zen 5, with AVX-512). On a
+  server with L40S GPUs (sm_89) and EPYC 9654 CPUs, the pipeline's tests, NA12878 30x from FASTQ on 1 and 6 GPUs, and
+  the SEQC2 exome pair gave the same outputs as on the workstation. The CPU PairHMM without AVX-512 is checked by the self-contained test (`VARIANT_RS_NO_AVX512=1`, and CI runners
   without AVX-512).

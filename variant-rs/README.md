@@ -21,7 +21,7 @@ MarkDuplicates, GenotypeGVCFs (files and GenomicsDB), ReblockGVCF, MergeVcfs, So
 | `src/gatk_cli.rs`, `gatkargs/` | GATK command lines: argument tables, translation, refusals, fallback |
 | `src/main.rs`, `frontend.rs`, `active.rs`, `backend.rs`, `rng.rs`, `plan.rs` | HaplotypeCaller driver: contigs in parallel, regions, RNG domains, shard planner |
 | `crates/` | HaplotypeCaller stages: preproc, assembly, likelihood, cudahmm, genotype, refconf, downsample ([README](crates/README.md)) |
-| `cuda-pairhmm/` | the CUDA PairHMM, bit-exact with GATK's (GKL) AVX-512 kernel |
+| `cuda-pairhmm/` | the CUDA PairHMM, bit-exact with GATK's (GKL) AVX-512 kernel; a pool of engines over every visible GPU |
 | `src/mutect/` | Mutect2, FilterMutectCalls, contamination, orientation model |
 | `src/markdup/`, `src/bqsr/` | MarkDuplicates; BaseRecalibrator, ApplyBQSR, GatherBQSRReports |
 | `src/genotypegvcfs.rs`, `gdb_store.rs`, `gdb_merge.rs`, `reblock.rs` | joint genotyping, GenomicsDB reader, ReblockGVCF |

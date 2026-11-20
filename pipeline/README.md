@@ -102,10 +102,10 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./run.sh -params-file my.yaml   # 8 GPUs, 1
 Outputs do not depend on the number of GPUs. Changing it does make `-resume` realign, because the lanes are grouped
 into different tasks.
 
-Tested (2026-11-18) on one GPU with `CUDA_VISIBLE_DEVICES=0,1,2,3`, `--cpus 8 --align_memory 6.GB`. Four align-rs
-tasks ran at once. The tasks given GPUs 1-3, which do not exist here, fell back to the CPU. The somatic test's 17
-outputs were identical, and all 38 lane BAMs had the records bwa-mem2 writes. Not yet run on a machine with several
-GPUs.
+Tested (2026-11-19) on a server with 8 L40S GPUs, 6 of them free: NA12878 30x from FASTQ on 6 GPUs with the VCF
+identical to the one-GPU run's, and the SEQC2 exome pair identical to the workstation's (see
+[Benchmarks](#benchmarks)). On a machine with one GPU, listing more (`CUDA_VISIBLE_DEVICES=0,1,2,3`) is harmless: the
+tasks given GPUs that do not exist fall back to the CPU, with the same outputs.
 
 Outputs: `preprocessing/<sample>/` (MarkDuplicates BAM + metrics, recal table), `germline/<sample>/` (VCF, filtered
 VCF), `somatic/<tumor>_vs_<normal>/` (Mutect2 VCF + stats, F1R2, priors, contamination, segments, filtered VCF),

@@ -91,7 +91,9 @@ All parameters: [pipeline/README.md](../pipeline/README.md).
 
 ## Use several GPUs
 
-A single align-rs or variant-rs process uses one GPU. The pipeline uses several: `pipeline/run.sh` takes the GPUs no
+An align-rs process uses one GPU. A variant-rs process spreads its PairHMM over every visible GPU
+(`VARIANT_RS_GPUS=N` for at most N), though HaplotypeCaller on one sample gains little beyond 2. The pipeline uses
+several: `pipeline/run.sh` takes the GPUs no
 process is using (`VARCALL_GPUS=N` for at most N), or list them yourself when you launch. Each alignment task gets
 the machine's threads divided by the GPUs (`--align_cpus`), the steps after it the machine's (`--cpus`, at most 128).
 
@@ -100,10 +102,10 @@ VARCALL_GPUS=4 pipeline/run.sh -params-file my.yaml
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 pipeline/run.sh -params-file my.yaml
 ```
 
-Each sample's lanes are split over one align-rs task per GPU, and HaplotypeCaller and Mutect2 run one sample per GPU.
-The outputs are the same as with one GPU. Memory and other details:
-[pipeline/README.md](../pipeline/README.md#several-gpus). Outside the pipeline, run one process per GPU with
-`CUDA_VISIBLE_DEVICES=N`: per sample, per lane, or per `variant-rs plan` shard.
+Each sample's lanes are split over one align-rs task per GPU; HaplotypeCaller runs each sample on up to 2 GPUs
+(`--hc_gpus`) and Mutect2 each tumor on one. The outputs are the same as with one GPU. Memory and other details:
+[pipeline/README.md](../pipeline/README.md#several-gpus). Outside the pipeline, run one align-rs process per GPU
+with `CUDA_VISIBLE_DEVICES=N` (per lane or per sample), and give variant-rs the GPUs it should share.
 
 ## Call a whole genome in shards, in one process
 

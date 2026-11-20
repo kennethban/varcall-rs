@@ -33,12 +33,16 @@ lane FASTQs ──> read + gunzip (one thread per file; kseq_read ported byte fo
                 bwa's skip replay, dedup, patch              CPU                             ext.rs
             ──> insert-size stats; mate rescue (ksw_align2)  GPU k_matesw   (CPU: SSE2)      sam.rs, ksw.rs
             ──> pairing, primary, MAPQ, CIGAR, XA/SA, SAM    CPU (rayon)                     sam.rs
-            ──> BAM: records to 1024 genome buckets, spilled; at the end each bucket sorted   bam.rs, hts/alnhts.c
-                and written through htslib's BGZF writer + index
+            ──> BAM: records to 1024 genome buckets, spilled; at the end, per window of buckets:  bam.rs, hts/alnhts.c
+                sort -> cut into BGZF blocks as htslib does, compress in parallel -> write -> index
 ```
 
-* **Stages** (`main.rs`): one thread per stage, batches handed over through `sync_channel`. Pairing / SAM and
-  mate rescue get their own rayon pools, so that they overlap instead of taking turns.
+* **Stages** (`main.rs`): one thread per stage, batches handed over through `sync_channel`. Extension, pairing /
+  SAM and mate rescue get their own rayon pools, so that they overlap instead of taking turns.
+* **Final pass** (`bam.rs`): the sort, the compression, the write and the `.bai` run on their own threads, window
+  by window. Records are stored as `bam_write1` writes them, blocks are cut by htslib's rule and compressed with
+  its `bgzf_compress`, and the index comes from `hts_idx_push`: the records are `samtools sort`'s, and the `.bai` is
+  the one `samtools index` builds for the BAM (each window ends its last block, so block boundaries differ). With `--lanes`, a lane's final pass overlaps the next lane's alignment.
 * **GPU** (`gpu.rs`, `cuda/aln_ext.cu`): what the reference index puts on the device depends on free memory. The
   2-bit `.pac` is needed for extension and mate rescue, the FM-index checkpoints for seeding, and the SA samples
   for SA lookups. Each batch's reads go to the device once and are shared by the kernels.
@@ -83,6 +87,9 @@ per contig (one GATK read shard), several contigs at a time:
   domains in one process, so one run reproduces many separate GATK runs (as WARP and sarek scatter).
 * **Scheduling:** longest job first, estimated from the BAM index alone (`plan.rs`, which also writes
   load-balanced shard files).
+* **GPU PairHMM** (`crates/cudahmm`, `cuda-pairhmm/`): the contig workers share a pool of engines, each a CUDA
+  stream with its own buffers (`VARIANT_RS_GPU_STREAMS` per GPU), spread over every visible GPU (`VARIANT_RS_GPUS`
+  caps them). A call takes a free engine on the least busy GPU; results do not depend on which.
 
 ### Other tools
 

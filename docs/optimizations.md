@@ -8,8 +8,9 @@ Every optimization here keeps the output identical to the reference tool. The pa
    data that exercises the path.
 
 Measured first, every time: `ALIGN_RS_PROFILE=1` / `VARIANT_RS_TRACE_STAGES=1` give per-stage times, thread CPU
-time and counters. The numbers below are from one 16-core machine with an RTX 5070 Ti (details in
-[notes/](notes/)).
+time and counters; `ALIGN_RS_TRACE=file` writes a per-batch timeline of align-rs's stages and GPU calls. The
+numbers below are from one 16-core machine with an RTX 5070 Ti unless they name an L40S (a 2 × EPYC 9654 server;
+details in [notes/](notes/)).
 
 ## align-rs
 
@@ -119,13 +120,27 @@ resident warps decide its speed. These changes took it from 164 to 306 GCUPS, wi
 * **BAM output** (bam.rs): instead of SAM → `samtools sort`, records go per batch into 1024 genome buckets and are
   spilled compressed. At the end, each bucket is sorted stably by (tid, pos, strand), which is samtools sort's
   order, and written with htslib.
+* **Final pass in parallel** (bam.rs, hts/alnhts.c): one thread handing records to htslib's writer took 25 s of a
+  30x lane. Now records are stored as `bam_write1` writes them, cut into BGZF blocks by htslib's own rule
+  (`bgzf_flush_try`), compressed in parallel with `bgzf_compress`, and indexed with `hts_idx_push` at the virtual
+  offsets a reader sees; sort, compression, write and index overlap window by window. The records are unchanged,
+  and the `.bai` is byte for byte what `samtools index` builds for the BAM. L40S, 64 threads: final pass 25 → 5 s, lane 108 → 88 s.
+* **Extension on many cores:** extension's CPU steps get their own rayon pool, like SAM and rescue, so they no
+  longer queue behind the other stages' loops in the global pool (`ALIGN_RS_EXT_POOL=0` to compare); the kernel
+  counts the jobs it leaves to the CPU, so the scan for them runs only when there are some. L40S, 64 threads:
+  lane 113.6 → 108.5 s.
 
 **Measured and dropped:**
 
 * running only the extensions bwa's replay keeps (73% of jobs);
 * de-duplicating SA lookups;
 * pinned staging buffers (slower under WSL2);
-* stage slack (more memory, no gain).
+* stage slack (more memory, no gain);
+* less CPU work per lane (`pos2rid` by block, incremental rescue dedup): CPU down, wall clock unchanged, since the
+  lane is paced by its GPU stages;
+* mate SW as one thread per alignment: 1.25-1.3× on that kernel, ~5% of a lane, for a second kernel.
+
+Details of each: [notes/align-rs.md](notes/align-rs.md).
 
 ## variant-rs
 
@@ -203,6 +218,11 @@ __device__ __forceinline__ double MUL(double a, double b) { return FZ(__dmul_rn(
 
 Each warp computes one (read, haplotype) pair, and pairs are batched across regions into one launch. Whole genome:
 23/23 shards identical, GPU busy ~220 s of a ~12 min run.
+
+The contig workers share a pool of engines (a CUDA stream and buffers each, 8 per GPU by default) instead of one
+engine behind a lock, so one worker's copies overlap another's kernels; the engines spread over every visible GPU.
+30x genome on an L40S at 64 threads: 190 → 122 s; on 2 GPUs 115 → 98 s (the longest calling interval, 141 Mb of
+chr2, sets the floor).
 
 ### Java semantics as small, shared functions
 
