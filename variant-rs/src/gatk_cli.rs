@@ -347,6 +347,68 @@ const TOOLS: &[Tool] = &[
         picard: true,
         intervals: Iv::Lists,
     },
+    Tool {
+        name: "VariantRecalibrator",
+        tsv: include_str!("../gatkargs/VariantRecalibrator.tsv"),
+        sub: &["vqsr"],
+        map: &[
+            m("--variant", "-V", 1),
+            m("--output", "-O", 1),
+            m("--tranches-file", "--tranches-file", 1),
+            m("--reference", "-R", 1),
+            // tagged: --resource:<name>,known=..,training=..,truth=..,prior=.. <file>
+            m("--resource", "--resource", MANY),
+            m("--use-annotation", "-an", MANY),
+            m("--mode", "-mode", 1),
+            m("--truth-sensitivity-tranche", "-tranche", MANY),
+            m("--ignore-filter", "--ignore-filter", MANY),
+            m("--ignore-all-filters", "--ignore-all-filters", 1),
+            m("--trust-all-polymorphic", "--trust-all-polymorphic", 1),
+            m("--max-gaussians", "--max-gaussians", 1),
+            m("--max-negative-gaussians", "--max-negative-gaussians", 1),
+            m("--max-iterations", "--max-iterations", 1),
+            m("--k-means-iterations", "--k-means-iterations", 1),
+            m("--standard-deviation-threshold", "-std", 1),
+            m("--shrinkage", "--shrinkage", 1),
+            m("--dirichlet", "--dirichlet", 1),
+            m("--prior-counts", "--prior-counts", 1),
+            m("--maximum-training-variants", "--maximum-training-variants", 1),
+            m("--minimum-bad-variants", "--minimum-bad-variants", 1),
+            m("--bad-lod-score-cutoff", "--bad-lod-score-cutoff", 1),
+            m("--mq-cap-for-logit-jitter-transform", "-mq-cap", 1),
+            m("--mq-jitter", "--mq-jitter", 1),
+        ],
+        // plots and logging only (no R plots are made); the recal file is sites-only anyway; the command-line
+        // header line is variant-rs' own
+        ignore: &["--target-titv", "--dont-run-rscript", "--debug-stdev-thresholding", "--sites-only-vcf-output", "--add-output-vcf-command-line", "--tmp-dir"],
+        extras: &[("--compression-level", true)],
+        threads: false,
+        picard: false,
+        intervals: Iv::Lists,
+    },
+    Tool {
+        name: "ApplyVQSR",
+        tsv: include_str!("../gatkargs/ApplyVQSR.tsv"),
+        sub: &["applyvqsr"],
+        map: &[
+            m("--variant", "-V", 1),
+            m("--output", "-O", 1),
+            m("--recal-file", "--recal-file", 1),
+            m("--tranches-file", "--tranches-file", 1),
+            m("--truth-sensitivity-filter-level", "--truth-sensitivity-filter-level", 1),
+            m("--lod-score-cutoff", "--lod-score-cutoff", 1),
+            m("--mode", "-mode", 1),
+            m("--ignore-filter", "--ignore-filter", MANY),
+            m("--ignore-all-filters", "--ignore-all-filters", 1),
+            m("--exclude-filtered", "--exclude-filtered", 1),
+            m("--reference", "-R", 1),
+        ],
+        ignore: &["--add-output-vcf-command-line", "--tmp-dir"],
+        extras: &[("--compression-level", true)],
+        threads: false,
+        picard: false,
+        intervals: Iv::Lists,
+    },
     // The Mutect2 family. Mutect2 and GetPileupSummaries use all cores (env VARIANT_RS_THREADS overrides); outputs do
     // not depend on it.
     Tool {
@@ -498,7 +560,8 @@ fn default_list(d: &str) -> Vec<String> {
 }
 
 /// Splits the arguments into (name, optional value) pairs following GATK's grammar.
-fn tokenize(args: &[String], picard: bool, is_bool: &dyn Fn(&str) -> bool) -> Result<Vec<(String, Option<String>)>, String> {
+/// Tokens: (name, value, GATK tag from `--name:tag value`).
+fn tokenize(args: &[String], picard: bool, is_bool: &dyn Fn(&str) -> bool) -> Result<Vec<(String, Option<String>, Option<String>)>, String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -517,27 +580,34 @@ fn tokenize(args: &[String], picard: bool, is_bool: &dyn Fn(&str) -> bool) -> Re
             // Picard's legacy NAME=value
             if picard {
                 if let Some((k, v)) = a.split_once('=') {
-                    out.push((format!("--{k}"), Some(v.to_string())));
+                    out.push((format!("--{k}"), Some(v.to_string()), None));
                     i += 1;
                     continue;
                 }
             }
             return Err(format!("unexpected positional argument `{a}`"));
         }
+        let next = args.get(i + 1);
+        // a tagged argument: `--resource:hapmap,known=false,prior=15 file`
+        if let Some((k, tag)) = a.split_once(':').filter(|(k, _)| k.starts_with('-') && !k.contains('=')) {
+            let v = next.ok_or_else(|| format!("{a} needs a value"))?;
+            out.push((k.to_string(), Some(v.clone()), Some(tag.to_string())));
+            i += 2;
+            continue;
+        }
         if let Some((k, v)) = a.split_once('=').filter(|(k, _)| k.starts_with("--")) {
-            out.push((k.to_string(), Some(v.to_string())));
+            out.push((k.to_string(), Some(v.to_string()), None));
             i += 1;
             continue;
         }
-        let next = args.get(i + 1);
         if is_bool(a) {
             match next {
                 Some(v) if v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("false") => {
-                    out.push((a.clone(), Some(v.clone())));
+                    out.push((a.clone(), Some(v.clone()), None));
                     i += 2;
                 }
                 _ => {
-                    out.push((a.clone(), Some("true".into())));
+                    out.push((a.clone(), Some("true".into()), None));
                     i += 1;
                 }
             }
@@ -545,7 +615,7 @@ fn tokenize(args: &[String], picard: bool, is_bool: &dyn Fn(&str) -> bool) -> Re
         }
         match next {
             Some(v) => {
-                out.push((a.clone(), Some(v.clone())));
+                out.push((a.clone(), Some(v.clone()), None));
                 i += 2;
             }
             None => return Err(format!("{a} needs a value")),
@@ -591,7 +661,7 @@ pub fn translate(tool_name: &str, args: &[String], cpus: usize) -> Result<Transl
     let mut lists: HashMap<&str, Vec<String>> = HashMap::new();
     let mut problems: Vec<String> = Vec::new();
     let mut threads_given = false;
-    for (name, val) in &toks {
+    for (name, val, tag) in &toks {
         let val = val.clone().unwrap_or_default();
         if let Some((e, takes)) = extra(name) {
             threads_given |= *e == "--threads";
@@ -609,6 +679,15 @@ pub fn translate(tool_name: &str, args: &[String], cpus: usize) -> Result<Transl
             if same_value("Boolean", &val, "true") {
                 return Ok(Translation::Info(help_text(tool, &gatk)));
             }
+            continue;
+        }
+        if let Some(t) = tag {
+            if a.long != "--resource" {
+                problems.push(format!("{name}:{t}: tagged arguments are supported for --resource only"));
+                continue;
+            }
+        } else if a.long == "--resource" {
+            problems.push(format!("{name}: a resource needs its tags (--resource:name,known=..,training=..,truth=..,prior=..)"));
             continue;
         }
         if let Some(mp) = tool.map.iter().find(|mp| mp.gatk == a.long) {
@@ -654,7 +733,10 @@ pub fn translate(tool_name: &str, args: &[String], cpus: usize) -> Result<Transl
                 }
                 continue;
             }
-            out.push(mp.target.to_string());
+            match tag {
+                Some(t) => out.push(format!("{}:{t}", mp.target)),
+                None => out.push(mp.target.to_string()),
+            }
             out.push(val);
             continue;
         }
@@ -670,9 +752,9 @@ pub fn translate(tool_name: &str, args: &[String], cpus: usize) -> Result<Transl
         }
     }
     // --mitochondria-mode overrides these unless they are given; given (even at GATK's default), GATK keeps them
-    let mito = toks.iter().any(|(n, v)| lookup(n).is_some_and(|a| a.long == "--mitochondria-mode") && same_value("Boolean", v.as_deref().unwrap_or("true"), "true"));
+    let mito = toks.iter().any(|(n, v, _)| lookup(n).is_some_and(|a| a.long == "--mitochondria-mode") && same_value("Boolean", v.as_deref().unwrap_or("true"), "true"));
     if mito {
-        for (n, _) in &toks {
+        for (n, _, _) in &toks {
             if let Some(a) = lookup(n) {
                 if ["--tumor-lod-to-emit", "--initial-tumor-lod", "--recover-all-dangling-branches", "--pruning-lod-threshold"].contains(&a.long) {
                     problems.push(format!("{} with --mitochondria-mode: not supported (the mode's value would be replaced)", a.long));

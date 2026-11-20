@@ -41,6 +41,8 @@ mod reference;
 mod rng;
 mod sortsam;
 mod tabix;
+mod vcfheader;
+mod vqsr;
 
 use active::{FilterCounts, Region, Tables};
 use frontend::{FilledRegion, RefSeq};
@@ -353,6 +355,14 @@ fn main() {
     }
     if argv.get(1).map(|s| s.as_str()) == Some("mergevcfs") {
         mergevcfs::run(&argv[2..]);
+        return;
+    }
+    if argv.get(1).map(|s| s.as_str()) == Some("vqsr") {
+        vqsr::run(&argv[2..]);
+        return;
+    }
+    if argv.get(1).map(|s| s.as_str()) == Some("applyvqsr") {
+        vqsr::applyvqsr::run(&argv[2..]);
         return;
     }
     if argv.get(1).map(|s| s.as_str()) == Some("reblockgvcf") {

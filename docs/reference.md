@@ -63,6 +63,7 @@ variant-rs <Tool> --help                   # which arguments are mapped, ignored
 | BaseRecalibrator, ApplyBQSR, GatherBQSRReports | default covariates; WARP's `-OQ`, `--static-quantized-quals` |
 | MarkDuplicates | coordinate or query-grouped input, several inputs, WARP's and sarek's arguments, Picard `KEY=value` syntax |
 | GenotypeGVCFs | a GVCF file or a GenomicsDB workspace (`-V gendb://`); default or WARP annotations |
+| VariantRecalibrator, ApplyVQSR | SNP, INDEL and BOTH modes; WARP's and sarek's arguments (`--resource:name,known=...,training=...,truth=...,prior=...`, tranches, `--max-gaussians`, `--trust-all-polymorphic`) |
 | ReblockGVCF, MergeVcfs, SortSam (coordinate), GatherBamFiles | |
 
 Every GATK argument of a tool is in one of three groups:
@@ -139,10 +140,11 @@ Each item below is refused with the reason, never run differently. A refused var
 
 ### variant-rs: GATK tools it does not have
 
-It has the 17 tools in the [table above](#gatk-command-lines). Notable tools it does not have:
+It has the 19 tools in the [table above](#gatk-command-lines). Notable tools it does not have:
 
 * **GenomicsDBImport.** GenotypeGVCFs reads an existing GenomicsDB workspace, but variant-rs cannot create one.
-* **VQSR and model-based filtering:** VariantRecalibrator, ApplyVQSR, CNNScoreVariants, FilterVariantTranches.
+* **Model-based filtering other than VQSR:** CNNScoreVariants / NVScoreVariants, FilterVariantTranches, VETS
+  (ExtractVariantAnnotations, TrainVariantAnnotationsModel, ScoreVariantAnnotations).
 * **VariantFiltration and SelectVariants** as general tools. `variant-rs filter` (the pipeline's HARDFILTER step)
   applies GATK's Best Practices single-sample hard filters only, with the result of SelectVariants →
   VariantFiltration → MergeVcfs.
@@ -160,4 +162,7 @@ Each tool covers GATK's defaults plus the arguments that WARP and nf-core/sarek 
   `--min-base-quality-score`; extra read filters (`-RF`) or single annotations (`-A`; annotation groups `-G` are
   supported); `-bamout` (Mutect2 supports it); the same read in two inputs.
 * **BaseRecalibrator:** covariates other than the default ones (`-cov`).
+* **VariantRecalibrator / ApplyVQSR:** allele-specific mode (`-AS`), `--aggregate` inputs, saving or reading the
+  model (`--output-model`, `--input-model`), scattered tranches (`--output-tranches-for-scatter`), the R plots
+  (`--rscript-file`), intervals (`-L`) and more than one `-V`.
 * **SortSam:** sort orders other than `coordinate`.

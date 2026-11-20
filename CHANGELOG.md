@@ -25,6 +25,13 @@ named in its entry; a change of reference version is a new minor version at leas
   HaplotypeCaller runs more contig workers beyond 32 threads: a 30x genome on an L40S at 64 threads 190 -> 122 s.
 * variant-rs: the GPU PairHMM's engines spread over every visible GPU (`VARIANT_RS_GPUS` for at most N); the pipeline
   gives HaplotypeCaller up to 2 GPUs (`hc_gpus`): a 30x genome on L40S at 128 threads 115 -> 98 s.
+* variant-rs: VariantRecalibrator and ApplyVQSR (GATK 4.7.0.0), identical to GATK on a 30x genome and a
+  1000 Genomes cohort with WARP's, sarek's and best-practice settings; a 30x genome's SNP model in ~1 min (GATK ~11).
 * align-rs: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s); extension on its own thread pool.
+
+### Fixed
+
+* variant-rs MergeVcfs: standard INFO / FORMAT header lines with a non-standard Number or Type (e.g. `AD` with
+  `Number=.`, as in the 1000 Genomes calls) are repaired as htsjdk does on reading, as Picard's output has them.
 
 [Unreleased]: https://github.com/kennethban/varcall-rs/commits/main

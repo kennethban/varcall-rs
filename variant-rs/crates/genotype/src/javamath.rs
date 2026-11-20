@@ -319,6 +319,36 @@ impl JavaRandom {
         let b = self.next(27) as i64;
         (a + b) as f64 * (1.0f64 / (1u64 << 53) as f64)
     }
+    /// `Random.nextBoolean`
+    pub fn next_boolean(&mut self) -> bool {
+        self.next(1) != 0
+    }
+    /// `Random.nextInt(bound)`
+    pub fn next_int(&mut self, bound: i32) -> i32 {
+        assert!(bound > 0, "bound must be positive");
+        let mut r = self.next(31);
+        let m = bound - 1;
+        if bound & m == 0 {
+            r = ((bound as i64 * r as i64) >> 31) as i32;
+        } else {
+            let mut u = r;
+            loop {
+                r = u % bound;
+                if u.wrapping_sub(r).wrapping_add(m) >= 0 {
+                    break;
+                }
+                u = self.next(31);
+            }
+        }
+        r
+    }
+    /// `Collections.shuffle(list, rnd)`: swaps from the end.
+    pub fn shuffle<T>(&mut self, v: &mut [T]) {
+        for i in (2..=v.len()).rev() {
+            let j = self.next_int(i as i32) as usize;
+            v.swap(i - 1, j);
+        }
+    }
     pub fn next_gaussian(&mut self) -> f64 {
         if self.have_next_next_gaussian {
             self.have_next_next_gaussian = false;

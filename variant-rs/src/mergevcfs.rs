@@ -97,7 +97,7 @@ pub(crate) fn format_qual(q: &str) -> String {
 }
 
 /// `Allele.getDisplayString` after `Allele.create`: bases upper-cased, symbolic alleles as they are.
-fn allele(a: &str) -> String {
+pub(crate) fn allele(a: &str) -> String {
     let b = a.as_bytes();
     let symbolic = a.len() > 1 && (b[0] == b'<' || b[b.len() - 1] == b'>' || a.contains('[') || a.contains(']') || b[0] == b'.' || b[b.len() - 1] == b'.');
     if symbolic || a == "*" || a == "." {
@@ -276,7 +276,7 @@ pub fn run(argv: &[String]) {
         let chrom = loop {
             let l = lines.next().unwrap_or_else(|| panic!("{p}: no #CHROM line"));
             if l.starts_with("##") {
-                hdr.push(l);
+                hdr.push(crate::vcfheader::repair_standard_line(l));
             } else if l.starts_with("#CHROM") {
                 break l;
             } else {

@@ -23,11 +23,24 @@ variant_steps() {
                  -O contamination.table --tumor-segmentation segments.table
   run fmc     $X FilterMutectCalls -R ref.fa -V somatic.vcf.gz --contamination-table contamination.table \
                  --tumor-segmentation segments.table --ob-priors priors.tar.gz -O somatic.filtered.vcf.gz
+  # VQSR on the germline calls, the known sites as the training / truth resource (small: 2 / 1 Gaussians)
+  run vqsr_snp   $X VariantRecalibrator -R ref.fa -V GERM.vcf.gz -O GERM.snp.recal.vcf.gz --tranches-file GERM.snp.tranches \
+                    -an QD -an FS -an SOR -an ReadPosRankSum -mode SNP --max-gaussians 2 \
+                    --resource:known,known=true,training=true,truth=true,prior=12 known_sites.vcf.gz
+  run vqsr_indel $X VariantRecalibrator -R ref.fa -V GERM.vcf.gz -O GERM.indel.recal.vcf.gz --tranches-file GERM.indel.tranches \
+                    -an QD -an FS -an SOR -mode INDEL --max-gaussians 1 \
+                    --resource:known,known=true,training=true,truth=true,prior=12 known_sites.vcf.gz
+  run applyvqsr_snp   $X ApplyVQSR -R ref.fa -V GERM.vcf.gz --recal-file GERM.snp.recal.vcf.gz --tranches-file GERM.snp.tranches \
+                         --truth-sensitivity-filter-level 99.0 -mode SNP -O GERM.vqsr_snp.vcf.gz
+  run applyvqsr_indel $X ApplyVQSR -R ref.fa -V GERM.vqsr_snp.vcf.gz --recal-file GERM.indel.recal.vcf.gz \
+                         --tranches-file GERM.indel.tranches --truth-sensitivity-filter-level 99.0 -mode INDEL -O GERM.vqsr.vcf.gz
 }
 
 # What is compared, and how: BAM records (bamdigest.py), VCF data lines, metrics without '#' lines, files as they are
 VARIANT_BAMS="GERM.md.bam TUMOR.md.bam NORMAL.md.bam GERM.recal.bam TUMOR.recal.bam NORMAL.recal.bam"
-VARIANT_VCFS="GERM.vcf.gz GERM.g.vcf.gz GERM.gg.vcf.gz somatic.vcf.gz somatic.filtered.vcf.gz"
+VARIANT_VCFS="GERM.vcf.gz GERM.g.vcf.gz GERM.gg.vcf.gz somatic.vcf.gz somatic.filtered.vcf.gz GERM.snp.recal.vcf.gz
+  GERM.indel.recal.vcf.gz GERM.vqsr.vcf.gz"
 VARIANT_METRICS="GERM.md.metrics TUMOR.md.metrics NORMAL.md.metrics"
 VARIANT_FILES="GERM.recal.table TUMOR.recal.table NORMAL.recal.table somatic.vcf.gz.stats TUMOR.pileups.table
-  NORMAL.pileups.table contamination.table segments.table somatic.filtered.vcf.gz.filteringStats.tsv"
+  NORMAL.pileups.table contamination.table segments.table somatic.filtered.vcf.gz.filteringStats.tsv GERM.snp.tranches
+  GERM.indel.tranches"

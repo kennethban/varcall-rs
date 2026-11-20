@@ -13,7 +13,7 @@ A refused command exits with status 2, or runs the real GATK under `GATK_FALLBAC
 `VARIANT_RS_DRY_RUN=1 variant-rs <Tool> ...` shows which would happen. `variant-rs <Tool> --help` prints the same
 lists. What variant-rs does not cover at all: [reference.md](reference.md#what-it-does-not-cover).
 
-[HaplotypeCaller](#haplotypecaller) · [BaseRecalibrator](#baserecalibrator) · [ApplyBQSR](#applybqsr) · [MarkDuplicates](#markduplicates) · [GatherBQSRReports](#gatherbqsrreports) · [MergeMutectStats](#mergemutectstats) · [GatherPileupSummaries](#gatherpileupsummaries) · [GatherBamFiles](#gatherbamfiles) · [MergeVcfs](#mergevcfs) · [GenotypeGVCFs](#genotypegvcfs) · [ReblockGVCF](#reblockgvcf) · [SortSam](#sortsam) · [Mutect2](#mutect2) · [FilterMutectCalls](#filtermutectcalls) · [GetPileupSummaries](#getpileupsummaries) · [CalculateContamination](#calculatecontamination) · [LearnReadOrientationModel](#learnreadorientationmodel)
+[HaplotypeCaller](#haplotypecaller) · [BaseRecalibrator](#baserecalibrator) · [ApplyBQSR](#applybqsr) · [MarkDuplicates](#markduplicates) · [GatherBQSRReports](#gatherbqsrreports) · [MergeMutectStats](#mergemutectstats) · [GatherPileupSummaries](#gatherpileupsummaries) · [GatherBamFiles](#gatherbamfiles) · [MergeVcfs](#mergevcfs) · [GenotypeGVCFs](#genotypegvcfs) · [ReblockGVCF](#reblockgvcf) · [SortSam](#sortsam) · [VariantRecalibrator](#variantrecalibrator) · [ApplyVQSR](#applyvqsr) · [Mutect2](#mutect2) · [FilterMutectCalls](#filtermutectcalls) · [GetPileupSummaries](#getpileupsummaries) · [CalculateContamination](#calculatecontamination) · [LearnReadOrientationModel](#learnreadorientationmodel)
 
 ## HaplotypeCaller
 
@@ -86,6 +86,18 @@ lists. What variant-rs does not cover at all: [reference.md](reference.md#what-i
 * **Mapped:** `--INPUT` / `-I`, `--OUTPUT` / `-O`, `--SORT_ORDER` / `-SO`, `--CREATE_INDEX`, `--CREATE_MD5_FILE`, `--TMP_DIR`, `--COMPRESSION_LEVEL`
 * **Ignored:** `--QUIET`, `--VERBOSITY`, `--USE_JDK_DEFLATER`, `--USE_JDK_INFLATER`, `--MAX_RECORDS_IN_RAM`, `--VALIDATION_STRINGENCY`
 * **variant-rs's own options:** `--threads`, `--sort-buffer-mb`
+
+## VariantRecalibrator
+
+* **Mapped:** `--variant` / `-V`, `--output` / `-O`, `--tranches-file`, `--reference` / `-R`, `--resource`, `--use-annotation` / `-an`, `--mode`, `--truth-sensitivity-tranche` / `-tranche`, `--ignore-filter`, `--ignore-all-filters`, `--trust-all-polymorphic`, `--max-gaussians`, `--max-negative-gaussians`, `--max-iterations`, `--k-means-iterations`, `--standard-deviation-threshold` / `-std`, `--shrinkage`, `--dirichlet`, `--prior-counts`, `--maximum-training-variants`, `--minimum-bad-variants`, `--bad-lod-score-cutoff` / `-bad-lod-cutoff`, `--mq-cap-for-logit-jitter-transform` / `-mq-cap`, `--mq-jitter`
+* **Ignored:** `--verbosity`, `--QUIET`, `--seconds-between-progress-updates`, `--use-jdk-deflater`, `--use-jdk-inflater`, `--cloud-prefetch-buffer`, `--cloud-index-prefetch-buffer`, `--gcs-max-retries`, `--gcs-project-for-requester-pays`, `--disable-bam-index-caching`, `--create-output-variant-index`, `--create-output-bam-index`, `--max-variants-per-shard`, `--target-titv`, `--dont-run-rscript`, `--debug-stdev-thresholding`, `--sites-only-vcf-output`, `--add-output-vcf-command-line`, `--tmp-dir`
+* **variant-rs's own options:** `--compression-level`
+
+## ApplyVQSR
+
+* **Mapped:** `--variant` / `-V`, `--output` / `-O`, `--recal-file`, `--tranches-file`, `--truth-sensitivity-filter-level` / `-ts-filter-level`, `--lod-score-cutoff`, `--mode`, `--ignore-filter`, `--ignore-all-filters`, `--exclude-filtered`, `--reference` / `-R`
+* **Ignored:** `--verbosity`, `--QUIET`, `--seconds-between-progress-updates`, `--use-jdk-deflater`, `--use-jdk-inflater`, `--cloud-prefetch-buffer`, `--cloud-index-prefetch-buffer`, `--gcs-max-retries`, `--gcs-project-for-requester-pays`, `--disable-bam-index-caching`, `--create-output-variant-index`, `--create-output-bam-index`, `--max-variants-per-shard`, `--add-output-vcf-command-line`, `--tmp-dir`
+* **variant-rs's own options:** `--compression-level`
 
 ## Mutect2
 

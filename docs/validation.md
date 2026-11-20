@@ -31,8 +31,8 @@ on every push and pull request: CPU only, as GitHub's runners have no GPU.
 * Illumina-like quality profiles, adapters, and PCR and optical duplicates.
 
 It is aligned by bwa-mem2 and by align-rs (4 lanes; GPU and CPU paths). Then variant-rs runs GATK's command lines
-for MarkDuplicates, BQSR, HaplotypeCaller (VCF and GVCF), GenotypeGVCFs, Mutect2 and its filters, with the CPU
-and the GPU PairHMM. 23 outputs per PairHMM are compared with GATK's. The truth in `tests/truth` comes from GATK's
+for MarkDuplicates, BQSR, HaplotypeCaller (VCF and GVCF), GenotypeGVCFs, Mutect2 and its filters, and VQSR
+(VariantRecalibrator, ApplyVQSR), with the CPU and the GPU PairHMM. 29 outputs per PairHMM are compared with GATK's. The truth in `tests/truth` comes from GATK's
 release jar (`gatk-package-4.7.0.0-local.jar` from `gatk-4.7.0.0.zip` on GitHub, SHA-256 `882e1807…3861365`);
 `tests/make_truth.sh` regenerates it.
 
@@ -48,6 +48,7 @@ release jar (`gatk-package-4.7.0.0-local.jar` from `gatk-4.7.0.0.zip` on GitHub,
 | MarkDuplicates | HG002 PCR+ 30x WGS, 12-lane inputs, query-grouped (WARP), CRAM, edge cases | records and metrics identical |
 | Mutect2 + filters | DREAM synthetic tumors 1-4, HCC1143, SEQC2 WES; tumor-only, PoN, mitochondria mode, `--bam-output` | VCF, stats, filtering stats identical |
 | GenotypeGVCFs, ReblockGVCF | HG002 whole-genome GVCF (47 shards), 3 and 11 samples, GenomicsDB workspaces | identical |
+| VariantRecalibrator / ApplyVQSR | NA12878 30x VCF (5.06 M records); 1000 Genomes 30x joint calls chr20:5-17 Mb (50 of 3202 samples, 500 k records); WARP's, sarek's and best-practice (InbreedingCoeff) settings, SNP / INDEL / BOTH, ApplyVQSR chained | tranches, recal VCF and filtered VCF identical (27 outputs) |
 | MergeVcfs, SortSam, GatherBamFiles, GatherBQSRReports | WARP's and sarek's command lines | identical |
 | Pipeline | NA12878 chr20 slice (2 lanes), HCC1143 tumor / normal, SEQC2 WES; each step vs GATK | identical |
 

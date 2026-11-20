@@ -23,7 +23,7 @@ or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25
 kernel (stage 3) and MarkDuplicates / BaseRecalibrator on the workstation (stage 5) are open.
 
 **Coverage:** the next GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next) (C1
-VQSR, C2 VariantFiltration, C3 GenomicsDBImport, C4 CreateSomaticPanelOfNormals).
+VQSR done; next C2 VariantFiltration, C3 GenomicsDBImport, C4 CreateSomaticPanelOfNormals).
 
 ## Where the time goes (2026-11-19)
 
@@ -146,7 +146,14 @@ by default, and whether GATK's output can be reproduced byte for byte:
 
 Steps, in order, each validated against GATK 4.7.0.0 before the next:
 
-* **C1, VQSR.** VariantRecalibrator (~3.4k Java lines: VariantDataManager, GaussianMixtureModel,
+* **C1, VQSR: done (2026-11-20).** Identical to GATK 4.7.0.0 on 27 outputs (`tests/harness/vqsr`): NA12878 30x
+  (5.06M records) and a 1000 Genomes cohort slice (50 of 3202 samples, chr20:5-17 Mb, 500k records, InbreedingCoeff),
+  WARP / sarek / best-practice settings, SNP, INDEL and BOTH, ApplyVQSR chained as the pipelines run it. A 30x
+  genome's SNP model ~1 min (GATK ~11). Found on the way: htsjdk repairs standard INFO / FORMAT header lines on
+  reading (`AD` `Number=.` -> `R`, `src/vcfheader.rs`), now done in ApplyVQSR and MergeVcfs (it only shows on VCFs GATK
+  did not write, such as the 1000 Genomes calls). Not done: `-AS`, `--aggregate`, model in / out, scattered
+  tranches; the pipeline's joint calling waits for C3. The plan as written:
+  VariantRecalibrator (~3.4k Java lines: VariantDataManager, GaussianMixtureModel,
   MultivariateGaussian, VariantRecalibratorEngine, TrancheManager, tranches; plus Jama's LU / inverse / det) and
   ApplyVQSR (small). Deterministic: sequential, one `java.util.Random(47382911)` (`Utils.java:52`) for the whole run.
   The risk is that stream: the datums' number and order (multi-input merging, same-start queueing, AS mode, training
