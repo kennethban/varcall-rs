@@ -31,8 +31,8 @@ on every push and pull request: CPU only, as GitHub's runners have no GPU.
 * Illumina-like quality profiles, adapters, and PCR and optical duplicates.
 
 It is aligned by bwa-mem2 and by align-rs (4 lanes; GPU and CPU paths). Then variant-rs runs GATK's command lines
-for MarkDuplicates, BQSR, HaplotypeCaller (VCF and GVCF), GenotypeGVCFs, Mutect2 and its filters, VQSR
-(VariantRecalibrator, ApplyVQSR) and VariantFiltration / MakeSitesOnlyVcf, with the CPU and the GPU PairHMM. 31
+for MarkDuplicates, BQSR, HaplotypeCaller (VCF and GVCF), GenotypeGVCFs (from a GVCF and through a GenomicsDB workspace), Mutect2 and its filters, VQSR
+(VariantRecalibrator, ApplyVQSR) and VariantFiltration / MakeSitesOnlyVcf, with the CPU and the GPU PairHMM. 32
 outputs per PairHMM are compared with GATK's. The truth in `tests/truth` comes from GATK's release jar
 (`gatk-package-4.7.0.0-local.jar` from `gatk-4.7.0.0.zip` on GitHub, SHA-256 `882e1807…3861365`);
 `tests/make_truth.sh` regenerates it.
@@ -49,6 +49,7 @@ outputs per PairHMM are compared with GATK's. The truth in `tests/truth` comes f
 | MarkDuplicates | HG002 PCR+ 30x WGS, 12-lane inputs, query-grouped (WARP), CRAM, edge cases | records and metrics identical |
 | Mutect2 + filters | DREAM synthetic tumors 1-4, HCC1143, SEQC2 WES; tumor-only, PoN, mitochondria mode, `--bam-output` | VCF, stats, filtering stats identical |
 | GenotypeGVCFs, ReblockGVCF | HG002 whole-genome GVCF (47 shards), 3 and 11 samples, GenomicsDB workspaces | identical |
+| GenomicsDBImport | 3 and 11 samples (raw and reblocked GVCFs), whole-genome GVCF (three arrays, an array starting mid-contig); WARP's sample-map commands (batch 1 and 50, `--consolidate`), sarek's (`-V`, BED intervals, `--merge-input-intervals`, `--bypass-feature-reader`) | every cell, `vidmap.json`, `callset.json` identical (10 workspaces); GenotypeGVCFs (GATK's and variant-rs's) on them gives GATK's output |
 | VariantRecalibrator / ApplyVQSR | NA12878 30x VCF (5.06 M records); 1000 Genomes 30x joint calls chr20:5-17 Mb (50 of 3202 samples, 500 k records); WARP's, sarek's and best-practice (InbreedingCoeff) settings, SNP / INDEL / BOTH, ApplyVQSR chained | tranches, recal VCF and filtered VCF identical (27 outputs) |
 | VariantFiltration / MakeSitesOnlyVcf | NA12878 30x VCF, the 1000 Genomes cohort slice, 11-sample joint calls; WARP's ExcessHet, exome-mask and DRAGEN filters, GATK's hard-filtering examples, the expression language's edge cases (missing values, lists, strings, inversion, previous filters, masks) | identical; where GATK fails, variant-rs fails |
 | MergeVcfs, SortSam, GatherBamFiles, GatherBQSRReports | WARP's and sarek's command lines | identical |

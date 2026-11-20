@@ -20,6 +20,21 @@ fn is_bgzf(path: &str) -> bool {
 }
 
 impl Lines {
+    /// A BGZF file's lines from a virtual offset (a `.tbi` seek): the block at `voff >> 16`, from byte `voff & 0xffff`.
+    pub fn open_at(path: &str, voff: u64) -> Lines {
+        let f = File::open(path).unwrap_or_else(|e| crate::gatk_cli::refuse(&format!("{path}: {e}")));
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let (coff, uoff) = (voff >> 16, (voff & 0xffff) as usize);
+        let rx = crate::bgzf::spawn_block_reader(Arc::new(f), vec![(coff, len.saturating_sub(1))], true, Arc::new(Default::default()));
+        let mut cur = Vec::new();
+        if let Ok(Some(blocks)) = rx.recv() {
+            for b in blocks {
+                cur.extend_from_slice(&b.data);
+            }
+        }
+        Lines::Bgzf { rx, pos: uoff.min(cur.len()), cur, done: false }
+    }
+
     pub fn open(path: &str) -> Lines {
         let f = File::open(path).unwrap_or_else(|e| crate::gatk_cli::refuse(&format!("{path}: {e}")));
         if is_bgzf(path) {
@@ -72,6 +87,48 @@ impl Lines {
         }
         true
     }
+}
+
+/// The virtual offset to read a contig from `start` (1-based) on, by a tabix index's linear index: its entry for the
+/// 16 kb window of `start` is at or before every record that overlaps the window. None: no record of the contig
+/// reaches `start`. Panics on a malformed index.
+pub fn tbi_seek(tbi: &str, contig: &str, start: i64) -> Option<u64> {
+    let mut raw = Vec::new();
+    flate2::read::MultiGzDecoder::new(File::open(tbi).unwrap_or_else(|e| crate::gatk_cli::refuse(&format!("{tbi}: {e}")))).read_to_end(&mut raw).expect("tabix index");
+    let mut o = 0usize;
+    let i32_ = |o: &mut usize| -> i32 {
+        let v = i32::from_le_bytes(raw[*o..*o + 4].try_into().unwrap());
+        *o += 4;
+        v
+    };
+    assert_eq!(&raw[0..4], b"TBI\x01", "{tbi}: not a tabix index");
+    o += 4;
+    let n_ref = i32_(&mut o) as usize;
+    o += 24; // format, col_seq, col_beg, col_end, meta, skip
+    let l_nm = i32_(&mut o) as usize;
+    let names: Vec<&[u8]> = raw[o..o + l_nm].split(|&c| c == 0).filter(|n| !n.is_empty()).collect();
+    let tid = names.iter().position(|n| *n == contig.as_bytes());
+    o += l_nm;
+    for r in 0..n_ref {
+        let n_bin = i32_(&mut o);
+        for _ in 0..n_bin {
+            o += 4; // bin
+            let n_chunk = i32_(&mut o) as usize;
+            o += n_chunk * 16;
+        }
+        let n_intv = i32_(&mut o) as usize;
+        if Some(r) == tid {
+            let lin: Vec<u64> = (0..n_intv).map(|k| u64::from_le_bytes(raw[o + 8 * k..o + 8 * k + 8].try_into().unwrap())).collect();
+            let w = ((start - 1).max(0) >> 14) as usize;
+            if w >= lin.len() {
+                return None;
+            }
+            // an empty window holds 0: the closest earlier window's offset is at or before it
+            return Some(lin[..=w].iter().rev().copied().find(|&x| x != 0).unwrap_or(0));
+        }
+        o += n_intv * 8;
+    }
+    None
 }
 
 /// `VariantContext.Type`

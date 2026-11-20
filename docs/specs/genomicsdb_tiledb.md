@@ -275,7 +275,8 @@ MBRs/bounding coords allow skipping tiles by column range without inflating anyt
 
 ## 5. GVCF record → cell: overview
 
-GATK streams each sample's `VariantContext`s (htsjdk → BCF2 in memory) to GenomicsDB; the C++
+GATK streams each sample's `VariantContext`s to GenomicsDB as VCF text (htsjdk's VCF writer; htslib parses it
+again: `genomicsdb_import.md` 6.2; with `--bypass-feature-reader` htslib reads the file itself); the C++
 loader (`src/main/cpp/src/vcf/vcf2binary.cc`) converts each BCF record into one *cell*
 (`convert_VCF_to_binary_for_callset`), and `LoaderArrayWriter` (`src/loader/load_operators.cc`)
 writes cells in (column,row) order, adding END-copy cells.  Every record of every sample that

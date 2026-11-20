@@ -88,7 +88,7 @@ varcall-rs is the wrong tool if:
   and bwa-mem2 2.2.1. Other versions can give other outputs.
 * **you need GATK tools or arguments it does not cover.** It covers each tool's defaults plus the arguments that WARP
   and nf-core/sarek pass ([tool by tool](docs/gatk-arguments.md)). HaplotypeCaller is diploid only; there is no
-  GenomicsDBImport, CNN filtering, CNV / SV calling or RNA-seq ([what it does not cover](docs/reference.md#what-it-does-not-cover)).
+  CNN filtering, CNV / SV calling or RNA-seq ([what it does not cover](docs/reference.md#what-it-does-not-cover)).
   Everything else is refused, or passed to GATK with `GATK_FALLBACK`.
 * **you run something other than Linux on x86-64**, or want one align-rs process to use several GPUs (the
   [pipeline](docs/how-to.md#use-several-gpus) spreads a sample's lanes over them; variant-rs's PairHMM uses every

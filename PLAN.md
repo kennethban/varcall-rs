@@ -23,7 +23,7 @@ or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25
 kernel (stage 3) and MarkDuplicates / BaseRecalibrator on the workstation (stage 5) are open.
 
 **Coverage:** the next GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next) (C1
-VQSR and C2 VariantFiltration done; next C3 GenomicsDBImport, C4 CreateSomaticPanelOfNormals).
+VQSR, C2 VariantFiltration and C3 GenomicsDBImport done; next C4 CreateSomaticPanelOfNormals).
 
 ## Where the time goes (2026-11-19)
 
@@ -172,7 +172,14 @@ Steps, in order, each validated against GATK 4.7.0.0 before the next:
   `&& || !`, parentheses, JEXL's string-to-number coercion, and a missing attribute aborting the whole expression as
   htsjdk's `JEXLMap` does; genotype filters (`GQ`, `DP`) through the genotype context. Refuse method calls
   (`vc.isSNP()`) and multi-valued attributes. Covers WARP's ExcessHet and DRAGEN QUAL filters.
-* **C3, GenomicsDBImport, content-equivalent.** A workspace whose GenotypeGVCFs output (GATK's and variant-rs's)
+* **C3, GenomicsDBImport: done (2026-11-21).** `src/gdb_import.rs` (cells, vidmap / callset JSON, arrays, batches),
+  `src/gdb_write.rs` (TileDB schema and fragments). On the 10 GATK workspaces of `tests/harness/genomicsdb` (WARP's
+  sample-map imports, batch 1 and 50, three arrays, an array starting mid-contig, sarek's `-V` + BED form with and
+  without `--merge-input-intervals`, `--bypass-feature-reader`): every cell identical, `vidmap.json` and
+  `callset.json` byte-identical, the header identical but for the command line; GATK's and variant-rs's
+  GenotypeGVCFs on them give GATK's output. Specs: `docs/specs/genomicsdb_import.md`. Not done: incremental import,
+  `--merge-contigs-into-num-partitions`, filtered or multi-sample GVCFs; the pipeline does not run joint calling yet.
+  The plan as written: A workspace whose GenotypeGVCFs output (GATK's and variant-rs's)
   equals that from GATK's workspace: htsjdk parse, BCF2 round trip (floats to f32), the vidmap combine operations,
   callset order, fragments per batch. Or skip the workspace inside the pipeline and feed `gdb_merge` directly. Check
   the clipping of records that start before an interval empirically.

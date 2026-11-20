@@ -37,7 +37,7 @@ pub(crate) fn open_lines(path: &str) -> Box<dyn Iterator<Item = String>> {
 }
 
 /// A `##` header line as htsjdk keys it in `smartMergeHeaders`.
-fn merge_key(l: &str) -> String {
+pub(crate) fn merge_key(l: &str) -> String {
     let body = &l[2..];
     let key = body.split('=').next().unwrap_or(body);
     const ID_LINES: [&str; 8] = ["INFO", "FILTER", "FORMAT", "contig", "ALT", "PEDIGREE", "META", "SAMPLE"];

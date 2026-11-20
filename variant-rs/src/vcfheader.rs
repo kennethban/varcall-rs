@@ -23,19 +23,9 @@ const STANDARD_LINES: &[(bool, &str, &str, &str, &str)] = &[
     (false, "SOMATIC", "0", "Flag", "Somatic event"),
 ];
 
-/// `VCFStandardHeaderLines.repairStandardHeaderLines`, which htsjdk's VCF reader applies to every header it reads: an
-/// INFO / FORMAT line for a standard field whose Number (count type, or count when fixed) or Type differs from the
-/// standard is replaced by the standard line (e.g. `AD` with `Number=.` becomes `Number=R`). Other lines are kept.
-pub fn repair_standard_line(line: String) -> String {
-    let (format, inner) = if let Some(r) = line.strip_prefix("##FORMAT=<") {
-        (true, r)
-    } else if let Some(r) = line.strip_prefix("##INFO=<") {
-        (false, r)
-    } else {
-        return line;
-    };
+/// The `key=value` items of a `##KEY=<...>` line's body (after `<`; a final `>` dropped), commas inside quotes kept.
+pub fn compound_fields(inner: &str) -> Vec<String> {
     let inner = inner.strip_suffix('>').unwrap_or(inner);
-    // key=value pairs, commas inside quotes kept
     let (mut fields, mut cur, mut quoted, mut escaped) = (Vec::new(), String::new(), false, false);
     for c in inner.chars() {
         match c {
@@ -51,6 +41,30 @@ pub fn repair_standard_line(line: String) -> String {
         cur.push(c);
     }
     fields.push(cur);
+    fields
+}
+
+/// (key, ID, Number, Type) of an `##INFO` / `##FORMAT` / `##FILTER` / `##contig` style line (`None` for other lines).
+pub fn compound(line: &str) -> Option<(String, String, Option<String>, Option<String>, Vec<String>)> {
+    let body = line.strip_prefix("##")?;
+    let (key, rest) = body.split_once("=<")?;
+    let fields = compound_fields(rest);
+    let get = |k: &str| fields.iter().find_map(|f| f.strip_prefix(k).and_then(|r| r.strip_prefix('='))).map(|s| s.to_string());
+    Some((key.to_string(), get("ID")?, get("Number"), get("Type"), fields))
+}
+
+/// `VCFStandardHeaderLines.repairStandardHeaderLines`, which htsjdk's VCF reader applies to every header it reads: an
+/// INFO / FORMAT line for a standard field whose Number (count type, or count when fixed) or Type differs from the
+/// standard is replaced by the standard line (e.g. `AD` with `Number=.` becomes `Number=R`). Other lines are kept.
+pub fn repair_standard_line(line: String) -> String {
+    let (format, inner) = if let Some(r) = line.strip_prefix("##FORMAT=<") {
+        (true, r)
+    } else if let Some(r) = line.strip_prefix("##INFO=<") {
+        (false, r)
+    } else {
+        return line;
+    };
+    let fields = compound_fields(inner);
     let get = |k: &str| fields.iter().find_map(|f| f.strip_prefix(k).and_then(|r| r.strip_prefix('=')));
     let (Some(id), Some(number), Some(typ)) = (get("ID"), get("Number"), get("Type")) else { return line };
     let Some(&(_, _, std_number, std_type, desc)) = STANDARD_LINES.iter().find(|s| s.0 == format && s.1 == id) else { return line };

@@ -13,6 +13,10 @@ variant_steps() {
   run hc      $X HaplotypeCaller -R ref.fa -I GERM.recal.bam -O GERM.vcf.gz $HMM
   run hc_gvcf $X HaplotypeCaller -R ref.fa -I GERM.recal.bam -O GERM.g.vcf.gz -ERC GVCF $HMM
   run gg      $X GenotypeGVCFs -R ref.fa -V GERM.g.vcf.gz -O GERM.gg.vcf.gz
+  # the same through a GenomicsDB workspace, as GATK's joint calling does
+  run gdbimport $X GenomicsDBImport -V GERM.g.vcf.gz --genomicsdb-workspace-path GERM.gdb -L chr1 -L chr2 -L chr3 \
+                   --batch-size 50 --consolidate --overwrite-existing-genomicsdb-workspace
+  run gg_gdb  $X GenotypeGVCFs -R ref.fa -V gendb://GERM.gdb -O GERM.gdb.vcf.gz
   run m2      $X Mutect2 -R ref.fa -I TUMOR.recal.bam -I NORMAL.recal.bam -normal NORMAL \
                  --germline-resource germline_resource.vcf.gz --f1r2-tar-gz f1r2.tar.gz -O somatic.vcf.gz $HMM
   run lrom    $X LearnReadOrientationModel -I f1r2.tar.gz -O priors.tar.gz
@@ -44,7 +48,7 @@ variant_steps() {
 
 # What is compared, and how: BAM records (bamdigest.py), VCF data lines, metrics without '#' lines, files as they are
 VARIANT_BAMS="GERM.md.bam TUMOR.md.bam NORMAL.md.bam GERM.recal.bam TUMOR.recal.bam NORMAL.recal.bam"
-VARIANT_VCFS="GERM.vcf.gz GERM.g.vcf.gz GERM.gg.vcf.gz somatic.vcf.gz somatic.filtered.vcf.gz GERM.snp.recal.vcf.gz
+VARIANT_VCFS="GERM.vcf.gz GERM.g.vcf.gz GERM.gg.vcf.gz GERM.gdb.vcf.gz somatic.vcf.gz somatic.filtered.vcf.gz GERM.snp.recal.vcf.gz
   GERM.indel.recal.vcf.gz GERM.vqsr.vcf.gz GERM.vf.vcf.gz GERM.sites.vcf.gz"
 VARIANT_METRICS="GERM.md.metrics TUMOR.md.metrics NORMAL.md.metrics"
 VARIANT_FILES="GERM.recal.table TUMOR.recal.table NORMAL.recal.table somatic.vcf.gz.stats TUMOR.pileups.table

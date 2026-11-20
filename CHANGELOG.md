@@ -30,6 +30,9 @@ named in its entry; a change of reference version is a new minor version at leas
 * variant-rs: VariantFiltration (filter expressions, masks) and Picard MakeSitesOnlyVcf, identical to GATK on WARP's
   joint-calling, exome-mask and DRAGEN filters, GATK's hard-filtering examples and the expression language's edge
   cases.
+* variant-rs: GenomicsDBImport (GenomicsDB 1.5.5 workspaces): the same cells, `vidmap.json`, `callset.json`, header
+  and arrays as GATK's workspace, which GATK's GenotypeGVCFs reads too; WARP's and sarek's commands (sample map or
+  `-V`, intervals, batches, `--consolidate`, `--bypass-feature-reader`).
 * align-rs: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s); extension on its own thread pool.
 
 ### Fixed

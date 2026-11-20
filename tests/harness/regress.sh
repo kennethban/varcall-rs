@@ -22,6 +22,7 @@ run hc_multisample   bash $HARNESS/hg002/group4/ms/cmp.sh $O/hc_ms
 run genotypegvcfs    bash $HARNESS/genotypegvcfs/cmp.sh $O/gg
 run reblock          bash $HARNESS/reblock/cmp.sh $O/rb
 run genomicsdb       bash $HARNESS/genomicsdb/cmp.sh $O/gdb
+run genomicsdb_import bash $HARNESS/genomicsdb/import_cmp.sh $O/gdbimport
 run markdup_multi    bash $HARNESS/markdup/multi/cmp.sh $O/md_multi
 run markdup_warp     bash $HARNESS/markdup/cmp_warp.sh
 run markdup_edge     bash $HARNESS/markdup/edge/run.sh

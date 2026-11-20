@@ -127,10 +127,12 @@ As with GATK: a GVCF per sample, then GenotypeGVCFs on a combined GVCF or a Geno
 
 ```bash
 variant-rs HaplotypeCaller -R ref.fa -I S1.bam -O S1.g.vcf.gz -ERC GVCF
+variant-rs GenomicsDBImport --genomicsdb-workspace-path my_workspace --sample-name-map samples.map -L chr20 \
+  --batch-size 50 --consolidate
 variant-rs GenotypeGVCFs -R ref.fa -V gendb://my_workspace -O cohort.vcf.gz
 ```
 
-The GenomicsDB workspace is made by GATK's `GenomicsDBImport`, which variant-rs does not reimplement.
+The workspace has the same cells and metadata as GATK's (GATK's GenotypeGVCFs reads it too).
 
 ## Run without a GPU
 

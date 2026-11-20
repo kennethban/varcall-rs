@@ -63,6 +63,7 @@ variant-rs <Tool> --help                   # which arguments are mapped, ignored
 | BaseRecalibrator, ApplyBQSR, GatherBQSRReports | default covariates; WARP's `-OQ`, `--static-quantized-quals` |
 | MarkDuplicates | coordinate or query-grouped input, several inputs, WARP's and sarek's arguments, Picard `KEY=value` syntax |
 | GenotypeGVCFs | a GVCF file or a GenomicsDB workspace (`-V gendb://`); default or WARP annotations |
+| GenomicsDBImport | `--sample-name-map` or `-V` per GVCF, `-L` (strings or files), `--merge-input-intervals`, `--batch-size`, `--consolidate`, `--bypass-feature-reader` (WARP's and sarek's commands): the same cells, `vidmap.json`, `callset.json` and header as GATK's workspace |
 | VariantFiltration, MakeSitesOnlyVcf | INFO-level filter expressions (GATK's JEXL: comparisons, `&&` / `||` / `!`, strings, flags, `QUAL`, `TYPE`, `CHROM`, `POS`, `N_ALLELES`, `FILTER`), `--missing-values-evaluate-as-failing`, `--invert-filter-expression`, `--invalidate-previous-filters`, masks (BED, interval list, VCF); WARP's joint-calling and DRAGEN hard filters |
 | VariantRecalibrator, ApplyVQSR | SNP, INDEL and BOTH modes; WARP's and sarek's arguments (`--resource:name,known=...,training=...,truth=...,prior=...`, tranches, `--max-gaussians`, `--trust-all-polymorphic`) |
 | ReblockGVCF, MergeVcfs, SortSam (coordinate), GatherBamFiles | |
@@ -141,9 +142,8 @@ Each item below is refused with the reason, never run differently. A refused var
 
 ### variant-rs: GATK tools it does not have
 
-It has the 21 tools in the [table above](#gatk-command-lines). Notable tools it does not have:
+It has the 22 tools in the [table above](#gatk-command-lines). Notable tools it does not have:
 
-* **GenomicsDBImport.** GenotypeGVCFs reads an existing GenomicsDB workspace, but variant-rs cannot create one.
 * **Model-based filtering other than VQSR:** CNNScoreVariants / NVScoreVariants, FilterVariantTranches, VETS
   (ExtractVariantAnnotations, TrainVariantAnnotationsModel, ScoreVariantAnnotations).
 * **SelectVariants.** `variant-rs filter` (the pipeline's HARDFILTER step) gives the result of GATK's Best Practices
@@ -162,6 +162,10 @@ Each tool covers GATK's defaults plus the arguments that WARP and nf-core/sarek 
   `--min-base-quality-score`; extra read filters (`-RF`) or single annotations (`-A`; annotation groups `-G` are
   supported); `-bamout` (Mutect2 supports it); the same read in two inputs.
 * **BaseRecalibrator:** covariates other than the default ones (`-cov`).
+* **GenomicsDBImport:** adding samples to a workspace (`--genomicsdb-update-workspace-path`),
+  `--merge-contigs-into-num-partitions`, `--header`, `--avoid-nio`, sample maps with index files; GVCFs with several
+  samples, with FILTER values (GATK's have none) or with flag INFO fields; `-V` headers that disagree on a field's
+  Number or Type (GATK promotes the line).
 * **VariantFiltration:** genotype filters (`--genotype-filter-expression`, `--set-filtered-genotype-to-no-call`), SNP
   clusters (`--cluster-window-size`), `--apply-allele-specific-filters`, intervals (`-L`); in expressions, arithmetic,
   method calls (`vc.isSNP()`), regular expressions, the `vc` / `g` / `ALLELES` / genotype-count variables, and

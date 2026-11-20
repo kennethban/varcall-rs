@@ -23,8 +23,10 @@ mod dbsnp;
 mod filter;
 mod frontend;
 mod gatherbam;
+mod gdb_import;
 mod gdb_merge;
 mod gdb_store;
+mod gdb_write;
 mod genotypegvcfs;
 mod gatk_cli;
 mod input;
@@ -392,6 +394,64 @@ fn main() {
                 let h: Vec<String> = c.vals.iter().map(|v| v.iter().map(|b| format!("{b:02x}")).collect()).collect();
                 writeln!(out, "{} {} {}", c.row, c.col, h.join(" ")).unwrap();
             });
+        }
+        return;
+    }
+    if argv.get(1).map(|s| s.as_str()) == Some("gdbrewrite") {
+        // debugging: a GenomicsDB workspace copied through gdb_write (same cells, one fragment per array)
+        let (src, dst) = (std::path::Path::new(&argv[2]), std::path::Path::new(&argv[3]));
+        std::fs::create_dir_all(dst).unwrap();
+        for e in std::fs::read_dir(src).unwrap() {
+            let p = e.unwrap().path();
+            let name = p.file_name().unwrap().to_owned();
+            if p.is_file() {
+                std::fs::copy(&p, dst.join(&name)).unwrap();
+            } else if p.join("__array_schema.tdb").exists() {
+                let arr = gdb_store::open_array(&p);
+                let d = dst.join(&name);
+                std::fs::create_dir_all(d.join("genomicsdb_meta_dir")).unwrap();
+                for m in std::fs::read_dir(p.join("genomicsdb_meta_dir")).unwrap() {
+                    let m = m.unwrap().path();
+                    std::fs::copy(&m, d.join("genomicsdb_meta_dir").join(m.file_name().unwrap())).unwrap();
+                }
+                std::fs::File::create(d.join(".__consolidation_lock")).unwrap();
+                let label = format!("{}/{}", dst.display(), name.to_string_lossy());
+                gdb_write::write_schema(&d.join("__array_schema.tdb"), &label, &arr.schema.attrs).unwrap();
+                let mut w = gdb_write::FragmentWriter::create(&d, &arr.schema.attrs).unwrap();
+                gdb_store::for_each_cell(&arr, i64::MIN, i64::MAX, |c| w.push(c.row, c.col, c.vals).unwrap());
+                eprintln!("{}: {} cells", label, w.finish().unwrap());
+            }
+        }
+        return;
+    }
+    if argv.get(1).map(|s| s.as_str()) == Some("genomicsdbimport") {
+        gdb_import::run(&argv[2..]);
+        return;
+    }
+    if argv.get(1).map(|s| s.as_str()) == Some("gdbcells") {
+        // debugging: a GATK workspace's cells rebuilt from its GVCFs (sample map) with its own metadata
+        let (src, map, dst) = (std::path::Path::new(&argv[2]), &argv[3], std::path::Path::new(&argv[4]));
+        let vid = gdb_import::Vid::from_json(&serde_json::from_str(&std::fs::read_to_string(src.join("vidmap.json")).unwrap()).unwrap());
+        let attrs = vid.attrs();
+        let ws = gdb_store::Workspace::open(src);
+        let paths: std::collections::HashMap<String, String> =
+            std::fs::read_to_string(map).unwrap().lines().filter_map(|l| l.split_once('\t')).map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let rows: Vec<(i64, String)> = ws.samples.iter().enumerate().map(|(r, s)| (r as i64, paths[s].clone())).collect();
+        std::fs::create_dir_all(dst).unwrap();
+        for a in &ws.arrays {
+            let name = a.file_name().unwrap().to_string_lossy().into_owned();
+            let schema = gdb_store::read_schema(&a.join("__array_schema.tdb"));
+            let same = schema.attrs.len() == attrs.len() && schema.attrs.iter().zip(&attrs).all(|(x, y)| format!("{x:?}") == format!("{y:?}"));
+            eprintln!("{name}: schema attributes {}", if same { "identical" } else { "DIFFERENT" });
+            let d = dst.join(&name);
+            std::fs::create_dir_all(&d).unwrap();
+            gdb_write::write_schema(&d.join("__array_schema.tdb"), &name, &attrs).unwrap();
+            let p: Vec<&str> = name.split('$').collect();
+            let n = gdb_import::write_fragment(&d, &vid, &attrs, &rows, p[0], p[1].parse().unwrap(), p[2].parse().unwrap(), true);
+            eprintln!("{name}: {n} cells");
+        }
+        for f in ["callset.json", "vidmap.json", "vcfheader.vcf"] {
+            std::fs::copy(src.join(f), dst.join(f)).unwrap();
         }
         return;
     }
