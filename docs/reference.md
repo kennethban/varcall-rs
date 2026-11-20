@@ -15,7 +15,8 @@ align-rs mem [-t N] [-K N] [-Y] [-l level] [--gpu] --lanes LANES.tsv ref.fa
 align-rs tune [-t N] [-K N] ref.fa R1.fq[.gz] [R2.fq[.gz]]
 ```
 
-* **`mem`** takes bwa-mem2 `mem`'s options and gives its records. `-o x.bam` writes a coordinate-sorted BAM and its
+* **`mem`** takes these of bwa-mem2 `mem`'s options (the others stay at bwa-mem2's defaults: see
+  [what it does not cover](#what-it-does-not-cover)) and gives its records. `-o x.bam` writes a coordinate-sorted BAM and its
   `.bai`: records as `samtools sort` orders them, the index byte-identical to `samtools index`. `-o x.sam` (or no
   `-o`) writes bwa-mem2's SAM. `--gpu` runs seeding, SA lookups, extension and mate rescue on the GPU (the CPU when
   there is none). The index is bwa-mem2's (`bwa-mem2 index ref.fa`).
@@ -72,7 +73,8 @@ Every GATK argument of a tool is in one of three groups:
 * **accepted at GATK's default value only.**
 
 Everything else is refused with the reason, exit status 2: other values, unknown arguments, inputs variant-rs
-cannot reproduce. The tables are in `variant-rs/gatkargs/`, generated from GATK 4.7's `--help`.
+cannot reproduce. The tables are in `variant-rs/gatkargs/`, generated from GATK 4.7's `--help`; the three groups of
+every tool are listed in [gatk-arguments.md](gatk-arguments.md).
 
 * `GATK_FALLBACK=/path/to/gatk`: a refused command runs the real GATK instead, with the original arguments. This is
   what makes the variant-rs image a drop-in `gatk` ([containers/variant-rs](../containers/variant-rs/README.md)).
@@ -119,3 +121,43 @@ random-number streams.
 | 0 | success |
 | 2 | refused: a tool, argument value or input variant-rs does not reproduce exactly (the message says which); with `GATK_FALLBACK` set, GATK runs instead |
 | other | an error: unreadable or malformed input, a failed assembly (as in GATK), ... (101 for errors raised as Rust panics); no output is finalized |
+
+## What it does not cover
+
+Each item below is refused with the reason, never run differently. A refused variant-rs command exits with status
+2, or runs the real GATK under `GATK_FALLBACK`. Only the reference versions are reproduced: bwa-mem2 2.2.1, GATK
+4.7.0.0, Picard 3.5.0, htsjdk 5.0.0.
+
+### align-rs
+
+* **Other `bwa-mem2 mem` options.** align-rs takes `-t`, `-K`, `-R`, `-Y` and its own output options; any other
+  (scoring `-A -B -O -E -L -U`, `-k`, `-w`, `-r`, `-c`, `-T`, `-M`, `-a`, `-C`, `-p`, `-I`, `-x` presets, ...)
+  stops it with "unsupported option". Without them it runs bwa-mem2's defaults, as GATK's and nf-core's pipelines
+  do.
+* **Other bwa-mem2 commands.** Build the index with `bwa-mem2 index`.
+* **Reads over 65,535 bases** (the run stops with the read's name).
+
+### variant-rs: GATK tools it does not have
+
+It has the 17 tools in the [table above](#gatk-command-lines). Notable tools it does not have:
+
+* **GenomicsDBImport.** GenotypeGVCFs reads an existing GenomicsDB workspace, but variant-rs cannot create one.
+* **VQSR and model-based filtering:** VariantRecalibrator, ApplyVQSR, CNNScoreVariants, FilterVariantTranches.
+* **VariantFiltration and SelectVariants** as general tools. `variant-rs filter` (the pipeline's HARDFILTER step)
+  applies GATK's Best Practices single-sample hard filters only, with the result of SelectVariants →
+  VariantFiltration → MergeVcfs.
+* **CreateSomaticPanelOfNormals.** Mutect2 takes a panel of normals; making one needs GATK.
+* **RNA-seq** (SplitNCigarReads), **annotation** (Funcotator), **copy number and structural variants**, and
+  **Picard's metrics** tools (CollectWgsMetrics, ...).
+
+### variant-rs: modes of the tools it has
+
+Each tool covers GATK's defaults plus the arguments that WARP and nf-core/sarek pass; every tool's list is in
+[gatk-arguments.md](gatk-arguments.md). Notable modes it refuses:
+
+* **HaplotypeCaller:** ploidy other than 2 (`-ploidy`); `--dragen-mode`; flow-based calling (`--flow-mode`);
+  `--linked-de-bruijn-graph`; force-calling given alleles (`--alleles`); a non-default `--pcr-indel-model` or
+  `--min-base-quality-score`; extra read filters (`-RF`) or single annotations (`-A`; annotation groups `-G` are
+  supported); `-bamout` (Mutect2 supports it); the same read in two inputs.
+* **BaseRecalibrator:** covariates other than the default ones (`-cov`).
+* **SortSam:** sort orders other than `coordinate`.

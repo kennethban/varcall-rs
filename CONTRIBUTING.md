@@ -41,8 +41,9 @@ Other bugs (crashes, errors, a refused command that should run) go in a **Bug re
    tool's own `time:` line. Where the fast path relies on an invariant, add a check switch that runs the plain
    version beside it ([docs/optimizations.md](docs/optimizations.md) has examples).
 5. **New GATK behaviour:** name the GATK / htsjdk / Picard source it follows (class and method). Map the
-   argument in `variant-rs/src/gatk_cli.rs` (`variant-rs/gatkargs/` lists every GATK argument of each tool). Produce truth with the
-   GATK 4.7.0.0 release jar.
+   argument in `variant-rs/src/gatk_cli.rs` (`variant-rs/gatkargs/` lists every GATK argument of each tool), then
+   regenerate [docs/gatk-arguments.md](docs/gatk-arguments.md) with `python3 variant-rs/gatkargs/doc.py` (CI checks
+   it is current). Produce truth with the GATK 4.7.0.0 release jar.
 
 ## Code
 

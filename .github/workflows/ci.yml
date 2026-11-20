@@ -50,6 +50,9 @@ jobs:
       - name: Unit tests
         run: cargo test --release --workspace --locked
 
+      - name: GATK argument page up to date
+        run: python3 variant-rs/gatkargs/doc.py && git diff --exit-code docs/gatk-arguments.md
+
       - name: Self-contained test
         run: tests/selftest.sh
 

@@ -19,7 +19,9 @@ The pages are sorted by what you want to do: learn, get a task done, look someth
 ## Reference
 
 * [Reference](reference.md): align-rs and variant-rs commands, supported GATK tools and arguments, environment
-  variables, exit status.
+  variables, exit status, [what it does not cover](reference.md#what-it-does-not-cover).
+* [GATK arguments, tool by tool](gatk-arguments.md): which of each tool's GATK arguments are implemented, ignored,
+  or accepted at their default only (generated from `variant-rs <Tool> --help`).
 * [Changelog](../CHANGELOG.md).
 
 ## Explanation

@@ -713,7 +713,13 @@ fn help_text(tool: &Tool, gatk: &[GatkArg]) -> String {
         s.push_str(&format!("  {}{short}\n", mp.gatk));
     }
     s.push_str("\nIgnored (no effect on the output):\n  ");
-    let ign: Vec<&str> = COMMON_IGNORED.iter().chain(tool.ignore).copied().filter(|n| gatk.iter().any(|a| a.long == *n)).collect();
+    // GATK's arguments of this tool not mapped above, each once
+    let mut ign: Vec<&str> = Vec::new();
+    for n in COMMON_IGNORED.iter().chain(tool.ignore).copied() {
+        if gatk.iter().any(|a| a.long == n) && !tool.map.iter().any(|mp| mp.gatk == n) && !ign.contains(&n) {
+            ign.push(n);
+        }
+    }
     s.push_str(&ign.join(" "));
     s.push_str("\n\nEvery other GATK argument is accepted only at its default value.\n\nvariant-rs options:\n  ");
     let ex: Vec<&str> = tool.extras.iter().map(|(e, _)| *e).collect();
