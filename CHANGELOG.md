@@ -35,9 +35,14 @@ named in its entry; a change of reference version is a new minor version at leas
   `-V`, intervals, batches, `--consolidate`, `--bypass-feature-reader`).
 * variant-rs: CreateSomaticPanelOfNormals, with GenomicsDBImport of Mutect2 VCFs (flag INFO fields): GATK's
   `mutect2_pon.wdl` chain identical to GATK on the DREAM normals.
+* Pipeline: joint germline calling (`joint_germline`, as nf-core/sarek's): GVCFs, GenomicsDBImport, GenotypeGVCFs and
+  VQSR, each once over all intervals.
 * align-rs: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s); extension on its own thread pool.
 
 ### Fixed
+
+* variant-rs GenotypeGVCFs: the input records' IDs (a GVCF's rsIDs from HaplotypeCaller `--dbsnp`) are dropped as
+  GATK drops them; the ID is `--dbsnp`'s matches only. Seen in the pipeline's joint calling test.
 
 * variant-rs ApplyVQSR, MergeVcfs: INFO decoded and written as htsjdk does (`src/vcfinfo.rs`): an empty value
   (`KEY=`) is written `KEY=.`, a declared flag given as `FLAG=0` is dropped, and a key the header does not declare

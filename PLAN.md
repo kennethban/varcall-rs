@@ -4,7 +4,7 @@ Most users have one GPU (a workstation, or one cloud GPU), so the stages below s
 GPUs (large servers, consortium runs) come after, built on the same pieces. Every stage keeps the outputs identical
 (the rule in [CONTRIBUTING.md](CONTRIBUTING.md)) and reports its timing and that check before the next one starts.
 
-## Status (2026-11-19)
+## Status (2026-11-21)
 
 **Alignment (align-rs): done for now.** What is in: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s),
 extension's empty redo scan skipped and its own thread pool, and the pipeline's thread split per GPU. What was tried
@@ -22,8 +22,9 @@ or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25
 **Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1) and several GPUs (M1) are in; the PairHMM
 kernel (stage 3) and MarkDuplicates / BaseRecalibrator on the workstation (stage 5) are open.
 
-**Coverage:** the next GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next) (C1
-VQSR, C2 VariantFiltration, C3 GenomicsDBImport and C4 CreateSomaticPanelOfNormals done).
+**Coverage:** the GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next). C1
+VQSR, C2 VariantFiltration, C3 GenomicsDBImport and C4 CreateSomaticPanelOfNormals are done, and the pipeline runs
+joint germline calling with them (2026-11-21). No further tool is planned.
 
 ## Where the time goes (2026-11-19)
 
@@ -151,8 +152,8 @@ Steps, in order, each validated against GATK 4.7.0.0 before the next:
   WARP / sarek / best-practice settings, SNP, INDEL and BOTH, ApplyVQSR chained as the pipelines run it. A 30x
   genome's SNP model ~1 min (GATK ~11). Found on the way: htsjdk repairs standard INFO / FORMAT header lines on
   reading (`AD` `Number=.` -> `R`, `src/vcfheader.rs`), now done in ApplyVQSR and MergeVcfs (it only shows on VCFs GATK
-  did not write, such as the 1000 Genomes calls). Not done: `-AS`, `--aggregate`, model in / out, scattered
-  tranches; the pipeline's joint calling waits for C3. The plan as written:
+  did not write, such as the 1000 Genomes calls). The pipeline runs it in joint calling (`joint_germline`,
+  2026-11-21). Not done: `-AS`, `--aggregate`, model in / out, scattered tranches. The plan as written:
   VariantRecalibrator (~3.4k Java lines: VariantDataManager, GaussianMixtureModel,
   MultivariateGaussian, VariantRecalibratorEngine, TrancheManager, tranches; plus Jama's LU / inverse / det) and
   ApplyVQSR (small). Deterministic: sequential, one `java.util.Random(47382911)` (`Utils.java:52`) for the whole run.
@@ -177,9 +178,9 @@ Steps, in order, each validated against GATK 4.7.0.0 before the next:
   sample-map imports, batch 1 and 50, three arrays, an array starting mid-contig, sarek's `-V` + BED form with and
   without `--merge-input-intervals`, `--bypass-feature-reader`): every cell identical, `vidmap.json` and
   `callset.json` byte-identical, the header identical but for the command line; GATK's and variant-rs's
-  GenotypeGVCFs on them give GATK's output. Specs: `docs/specs/genomicsdb_import.md`. Not done: incremental import,
-  `--merge-contigs-into-num-partitions`, filtered or multi-sample GVCFs; the pipeline does not run joint calling yet.
-  The plan as written: A workspace whose GenotypeGVCFs output (GATK's and variant-rs's)
+  GenotypeGVCFs on them give GATK's output. Specs: `docs/specs/genomicsdb_import.md`. The pipeline runs it in joint
+  calling (`joint_germline`, 2026-11-21). Not done: incremental import, `--merge-contigs-into-num-partitions`,
+  filtered or multi-sample GVCFs. The plan as written: A workspace whose GenotypeGVCFs output (GATK's and variant-rs's)
   equals that from GATK's workspace: htsjdk parse, BCF2 round trip (floats to f32), the vidmap combine operations,
   callset order, fragments per batch. Or skip the workspace inside the pipeline and feed `gdb_merge` directly. Check
   the clipping of records that start before an interval empirically.
@@ -188,10 +189,11 @@ Steps, in order, each validated against GATK 4.7.0.0 before the next:
   flag INFO fields: one char, 1 or 0x7F; one and three arrays: every cell identical), the records a walker receives
   from the workspace (alleles and AD vs GATK SelectVariants, 2170), and the panel with five argument sets: all
   identical. The whole-workspace read (no -L, arrays in `ChrArrayFolderComparator` order) is shared with
-  GenotypeGVCFs. Not done: `-L`, a VCF input. The plan as written: Small: the commons-math binomial / beta-binomial and Brent fit already ported
-  for FilterMutectCalls (`src/mutect/fmc_math.rs`). Validate the GenomicsDB merge on Mutect2 VCFs (no `<NON_REF>`,
+  GenotypeGVCFs. Not done: `-L`, a VCF input. The plan as written: Small: the commons-math binomial /
+  beta-binomial and Brent fit already ported for FilterMutectCalls (`src/mutect/fmc_math.rs`). Validate the GenomicsDB merge on Mutect2 VCFs (no `<NON_REF>`,
   no-call samples without AD) first.
 
-With C1-C3 the pipeline can run joint germline calling as sarek and WARP do; C4 completes GATK's PoN workflow.
+With C1-C3 the pipeline runs joint germline calling as sarek does (`joint_germline`: GVCFs, GenomicsDBImport,
+GenotypeGVCFs, VQSR; identical to GATK in `pipeline/test`, test `joint`); C4 completes GATK's PoN workflow.
 Also seen, not planned: WARP's default Picard QC metrics (CollectWgsMetrics, CollectHsMetrics,
 CollectMultipleMetrics), medium; sarek uses mosdepth and samtools instead.

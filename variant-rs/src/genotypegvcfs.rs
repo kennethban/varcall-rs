@@ -1256,10 +1256,10 @@ fn genotype_record(rec: &MRec, gt: &mut Genotyper, ann: &mut Annotator) -> Optio
         contig: rec.contig.clone(),
         start: rec.start,
         stop: rec.start + alleles[0].len() as i64 - 1,
-        id: {
-            let ids: Vec<&str> = rec.id.split(',').filter(|x| *x != ".").collect();
-            if ids.is_empty() { ".".into() } else { ids.join(",") }
-        },
+        // GenotypingEngine.calculateGenotypes builds the regenotyped record anew (`new VariantContextBuilder(source,
+        // contig, start, end, alleles)`): the input's IDs (a GVCF's rsIDs from HaplotypeCaller --dbsnp) are dropped and
+        // only --dbsnp's matches below set the ID
+        id: ".".into(),
         alleles: alleles.clone(),
         log10_p_error: None,
         filter: ".".into(),

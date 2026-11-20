@@ -70,7 +70,8 @@ runtime. Singularity / Apptainer and the other settings:
 
 The Nextflow pipeline in [pipeline/](../pipeline/README.md) runs the same steps as sarek's germline and somatic
 paths, with align-rs and variant-rs, and without sarek's splitting into ~350 interval tasks. It takes sarek's
-samplesheet format.
+samplesheet format. With `joint_germline: true` it calls the germline samples jointly
+([below](#joint-call-several-samples)).
 
 ```bash
 pipeline/run.sh -params-file my.yaml    # nextflow run pipeline/main.nf on the idle GPUs, threads from the machine
@@ -133,6 +134,9 @@ variant-rs GenotypeGVCFs -R ref.fa -V gendb://my_workspace -O cohort.vcf.gz
 ```
 
 The workspace has the same cells and metadata as GATK's (GATK's GenotypeGVCFs reads it too).
+
+Then VariantRecalibrator / ApplyVQSR (or VariantFiltration) as GATK's. The pipeline does all of it with
+`joint_germline: true` (sarek's option), from FASTQ or BAMs: [pipeline/README.md](../pipeline/README.md).
 
 ## Run without a GPU
 

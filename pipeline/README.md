@@ -1,13 +1,16 @@
 # variant-rs FASTQ -> VCF pipeline (Nextflow)
 
-Germline (HaplotypeCaller) and somatic (Mutect2) short variants from FASTQ, in GATK Best Practices order, with
-variant-rs for every GATK step. Each step's output is GATK 4.7's (`test/compare.py` against `test/truth.sh`).
+Germline (HaplotypeCaller, per sample or jointly over a cohort) and somatic (Mutect2) short variants from FASTQ, in
+GATK Best Practices order, with variant-rs for every GATK step. Each step's output is GATK 4.7's (`test/compare.py`
+against `test/truth.sh`).
 
 ```
 per sample   align-rs mem (bwa-mem2 2.2.1's alignments, GPU)      a sorted BAM + index per lane, written directly
 per sample   MarkDuplicates over all lanes -> BaseRecalibrator (whole genome)
 germline     HaplotypeCaller, recal table applied on the fly (no recalibrated BAM), each interval its own GATK run
              (as sarek's scatter, but in one process) -> hard filters
+joint        (--joint_germline) HaplotypeCaller GVCFs -> GenomicsDBImport -> GenotypeGVCFs -> VQSR (SNPs, then INDELs),
+             as sarek's joint germline calling, each step once over all intervals
 somatic      ApplyBQSR -> Mutect2 (tumor + matched normal, or tumor only, with F1R2 counts)
              GetPileupSummaries -> CalculateContamination; LearnReadOrientationModel -> FilterMutectCalls
 ```
@@ -70,7 +73,10 @@ index is indexed in memory). HaplotypeCaller runs on the normal samples, Mutect2
 | `intervals` | `-L` for HaplotypeCaller and Mutect2 (BQSR is whole genome) |
 | `scatter_intervals` | `true`: HaplotypeCaller runs each interval as its own GATK run (`--scatter-intervals`), as sarek scatters it; `false`: one GATK run over all intervals; `auto` (default): `true` for up to 1,000 intervals (whole-genome calling regions), `false` above (exome targets: one run 30 s, per target 317 s) |
 | `hc_workers` | HaplotypeCaller contig workers (0: variant-rs default, 8 at 16+ threads) |
-| `dbsnp`, `gvcf` | HaplotypeCaller `--dbsnp`; `-ERC GVCF` (then no hard filters) |
+| `dbsnp`, `gvcf` | HaplotypeCaller (and joint GenotypeGVCFs) `--dbsnp`; `-ERC GVCF` (then no hard filters) |
+| `joint_germline` | joint calling over all germline samples, as sarek's `--joint_germline`: their GVCFs into one GenomicsDB workspace (one array per interval; every contig of the reference without `intervals`), GenotypeGVCFs, then VQSR when its resources are given; no per-sample hard filters |
+| `wes` | joint calling on exome targets: GenomicsDBImport `--merge-input-intervals` (sarek's `--wes`) |
+| `vqsr_snp_resources`, `vqsr_indel_resources` | VariantRecalibrator's resources as `--resource:name,known=…,training=…,truth=…,prior=… file` arguments (sarek's `known_snps_vqsr` / `known_indels_vqsr` plus `dbsnp_vqsr`); with both, VQSR runs with sarek's annotations and ApplyVQSR at truth sensitivity 99.9 (SNPs, then INDELs) |
 | `germline_resource`, `pon`, `pileup_sites` | Mutect2 / GetPileupSummaries resources |
 | `aligner`, `align_rs` | `align-rs` (default) or `bwa-mem2`; the align-rs binary |
 | `cpus`, `align_cpus`, `align_memory` | threads for each heavy step but alignment (default the machine's, at most 128); threads for each aligner task (default the machine's / the GPUs in use, at most 64); memory for each aligner task (the ~17 GB hg38 index is mapped, and shared by aligner tasks running together) |
@@ -108,8 +114,9 @@ identical to the one-GPU run's, and the SEQC2 exome pair identical to the workst
 tasks given GPUs that do not exist fall back to the CPU, with the same outputs.
 
 Outputs: `preprocessing/<sample>/` (MarkDuplicates BAM + metrics, recal table), `germline/<sample>/` (VCF, filtered
-VCF), `somatic/<tumor>_vs_<normal>/` (Mutect2 VCF + stats, F1R2, priors, contamination, segments, filtered VCF),
-`somatic/pileups/`.
+VCF; the GVCF with `joint_germline`), `germline/joint/` (`joint_germline.vcf.gz`, the VQSR recal files and tranches,
+`joint_germline_recalibrated.vcf.gz`), `somatic/<tumor>_vs_<normal>/` (Mutect2 VCF + stats, F1R2, priors,
+contamination, segments, filtered VCF), `somatic/pileups/`.
 
 ## Benchmarks
 
@@ -164,14 +171,15 @@ busy). `scatter_intervals true` calls each target on its own (as sarek, and GATK
 
 ## Tests (2026-11-16)
 
-`test/make_fastq.sh` makes the inputs; `test/truth.sh germline|somatic` runs the same chain with GATK 4.7 from the
-pipeline's own lane BAMs (alignment is not a GATK step); `test/compare.py germline|somatic` compares.
+`test/make_fastq.sh` makes the inputs; `test/truth.sh germline|somatic|somatic_bam|joint` runs the same chain with
+GATK 4.7 from the pipeline's own lane BAMs (alignment is not a GATK step); `test/compare.py <test>` compares.
 
 | test | input | result |
 |---|---|---|
 | germline | NA12878 chr20:10-15M, 1.19M pairs cut into 2 lanes; HaplotypeCaller on two intervals (`test/germline.intervals`, chr20:10-12.5M and 12.5-15M; truth: one GATK run per interval, records concatenated) (also from the 2 lane BAMs, `--step markduplicates`: same outputs) | 5 files identical: MarkDuplicates BAM (1,192,285 records) and metrics, recal table, VCF (8,039 records), filtered VCF |
 | somatic_bam | SEQC2 HCC1395 exome pair, chr22 (2.2M / 1.6M reads), from BAMs whose read-group SM (`WES_FD_*`) is not the samplesheet's sample name; the real target BED's chr22 part (6,644 regions, duplicated and overlapping ones included); Mutect2 on the pair, HaplotypeCaller on the normal | 17 files identical: both samples' MarkDuplicates BAMs, metrics and tables; Mutect2 VCF (94 records) and stats, F1R2, priors, pileups, contamination, segments, filtered VCF; HaplotypeCaller VCF (2,299 records) and filtered VCF |
 | somatic | HCC1143 tumor / normal (GATK somatic workshop, hg38 chr17), one FASTQ per read group: normal 16 paired lanes, tumor 18 paired + 4 single-end lanes | 17 files identical: both samples' MarkDuplicates and recalibrated BAMs, metrics and tables; Mutect2 VCF (359 records) and stats, F1R2 counts, priors, pileups, contamination, segments, filtered VCF |
+| joint (2026-11-21) | NA12878 (the germline test's 2 lane BAMs) and HCC1143_normal (the somatic test's 16), `--step markduplicates`, `joint_germline` over chr17:7-9.5M and the germline test's two chr20 intervals, `--dbsnp`, VQSR with the HapMap / Omni / 1000G / dbSNP and Mills / dbSNP resources | 14 files identical: both samples' MarkDuplicates BAMs, metrics, recal tables and GVCFs (805,650 and 58,712 records); the joint VCF (8,400 records), both recal files and tranches, the VQSR-filtered VCF. The joint steps take 3-4 s each |
 
 The F1R2 alt histograms are compared by column name: GATK writes their columns in an order that follows Java identity
 hash codes (a HashMap keyed by enum pairs), which differs between GATK runs; the counts are identical and

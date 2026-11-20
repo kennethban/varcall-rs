@@ -5,7 +5,8 @@
 //   per sample   align-rs mem: bwa-mem2 2.2.1's alignments on the GPU,  (a BAM + index per lane)
 //                sorted BAM + index written directly (or bwa-mem2 | samtools sort)
 //   per sample   MarkDuplicates over all lanes -> BaseRecalibrator (whole genome, all threads)
-//   germline     HaplotypeCaller with the recal table applied on the fly (no recalibrated BAM) -> hard filters
+//   germline     HaplotypeCaller with the recal table applied on the fly (no recalibrated BAM) -> hard filters, or
+//                with --joint_germline (as sarek's): GVCFs -> GenomicsDBImport -> GenotypeGVCFs -> VQSR (SNP, then INDEL)
 //   somatic      ApplyBQSR -> Mutect2 (tumor + matched normal, or tumor only) with F1R2 counts,
 //                GetPileupSummaries -> CalculateContamination, LearnReadOrientationModel -> FilterMutectCalls
 //
@@ -146,10 +147,11 @@ process HAPLOTYPECALLER {
     tuple val(meta), path("${meta.sample}.{vcf,g.vcf}.gz"), path("${meta.sample}.{vcf,g.vcf}.gz.tbi")
 
     script:
-    def ext = params.gvcf ? 'g.vcf.gz' : 'vcf.gz'
+    def gvcf = params.gvcf || params.joint_germline
+    def ext = gvcf ? 'g.vcf.gz' : 'vcf.gz'
     // scatter_intervals: each interval is its own GATK run (as sarek's HaplotypeCaller scatter), in one process
     def opt = (params.intervals_arg ? "-L ${sh(params.intervals_arg)} " + (params.hc_scatter ? '--scatter-intervals ' : '') : '') +
-        (params.dbsnp ? "--dbsnp ${sh(params.dbsnp)} " : '') + (params.gvcf ? '-ERC GVCF ' : '') +
+        (params.dbsnp ? "--dbsnp ${sh(params.dbsnp)} " : '') + (gvcf ? '-ERC GVCF ' : '') +
         (params.hc_workers ? "--contig-workers ${params.hc_workers} " : '')
     """
     VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} -I ${bam} --bqsr-recal-file ${table} -R ${sh(params.fasta)} ${opt}-O ${meta.sample}.${ext} \\
@@ -170,6 +172,88 @@ process HARDFILTER {
     script:
     """
     VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} filter -V ${vcf} -O ${meta.sample}.filtered.vcf.gz
+    """
+}
+
+// Joint germline calling (--joint_germline), as nf-core/sarek's: the samples' GVCFs into one GenomicsDB workspace,
+// GenotypeGVCFs over it, then VQSR (SNPs, then INDELs) when its resources are given. Sarek runs each step per scatter
+// interval and merges; here each runs once over all intervals (one workspace array per interval, the same calls).
+
+// -L for the joint steps: the calling intervals, or every contig of the reference (sarek's intervals without a list)
+def joint_intervals() { params.intervals_arg ? "-L ${sh(params.intervals_arg)}" : '-L contigs.list' }
+def contigs_list() { params.intervals_arg ? '' : "cut -f1 ${sh(params.fasta)}.fai > contigs.list" }
+
+process GENOMICSDBIMPORT {
+    tag "${gvcfs.size()} samples"
+
+    input:
+    tuple path(gvcfs), path(tbis)
+
+    output:
+    path "joint_germline.gdb"
+
+    script:
+    def vs = gvcfs.collect { "-V ${it}" }.join(' ')
+    """
+    ${contigs_list()}
+    VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} GenomicsDBImport ${vs} --genomicsdb-workspace-path joint_germline.gdb \
+        ${joint_intervals()} --tmp-dir . ${params.wes ? '--merge-input-intervals ' : ''}--genomicsdb-shared-posixfs-optimizations true --bypass-feature-reader
+    """
+}
+
+process GENOTYPEGVCFS {
+    publishDir "${params.outdir}/germline/joint", mode: params.publish_dir_mode
+
+    input:
+    path gdb
+
+    output:
+    tuple path("joint_germline.vcf.gz"), path("joint_germline.vcf.gz.tbi")
+
+    script:
+    """
+    ${contigs_list()}
+    VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} GenotypeGVCFs -R ${sh(params.fasta)} -V gendb://${gdb} ${joint_intervals()} \
+        ${params.dbsnp ? "--dbsnp ${sh(params.dbsnp)} " : ''}-O joint_germline.vcf.gz
+    """
+}
+
+process VARIANTRECALIBRATOR {
+    tag "${mode}"
+    publishDir "${params.outdir}/germline/joint", mode: params.publish_dir_mode
+
+    input:
+    tuple val(mode), path(vcf), path(tbi)
+
+    output:
+    tuple val(mode), path("joint_germline_${mode}.recal.vcf.gz"), path("joint_germline_${mode}.tranches")
+
+    script:
+    // sarek's annotations (joint_germline.config); default tranches and Gaussians
+    def an = mode == 'SNP' ? '-an QD -an MQ -an MQRankSum -an ReadPosRankSum -an FS -an SOR' : '-an QD -an MQRankSum -an ReadPosRankSum -an FS -an SOR -an DP'
+    def res = mode == 'SNP' ? params.vqsr_snp_resources : params.vqsr_indel_resources
+    """
+    VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} VariantRecalibrator -V ${vcf} -O joint_germline_${mode}.recal.vcf.gz \
+        --tranches-file joint_germline_${mode}.tranches -R ${sh(params.fasta)} --tmp-dir . ${res} ${an} -mode ${mode}
+    """
+}
+
+process APPLYVQSR {
+    publishDir "${params.outdir}/germline/joint", mode: params.publish_dir_mode
+
+    input:
+    tuple path(vcf), path(tbi), path(snp_recal), path(snp_tranches), path(indel_recal), path(indel_tranches)
+
+    output:
+    tuple path("joint_germline_recalibrated.vcf.gz"), path("joint_germline_recalibrated.vcf.gz.tbi")
+
+    script:
+    // SNPs first, then INDELs on that output (sarek: no duplicate records), each at truth sensitivity 99.9
+    """
+    VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} ApplyVQSR -V ${vcf} -O joint_germline_SNP.vcf.gz -R ${sh(params.fasta)} \
+        --tranches-file ${snp_tranches} --recal-file ${snp_recal} --tmp-dir . --truth-sensitivity-filter-level 99.9 -mode SNP
+    VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} ApplyVQSR -V joint_germline_SNP.vcf.gz -O joint_germline_recalibrated.vcf.gz -R ${sh(params.fasta)} \
+        --tranches-file ${indel_tranches} --recal-file ${indel_recal} --tmp-dir . --truth-sensitivity-filter-level 99.9 -mode INDEL
     """
 }
 
@@ -353,7 +437,18 @@ workflow {
     if (tools.contains('haplotypecaller')) {
         // germline calling on normal samples (status 0), as sarek
         hc_vcf = HAPLOTYPECALLER(md_table.filter { meta, bam, bai, table -> meta.status == 0 })
-        if (!params.gvcf) {
+        if (params.joint_germline) {
+            // all samples' GVCFs, in sample order, into one workspace
+            def gvcfs = hc_vcf.toSortedList { a, b -> a[0].sample <=> b[0].sample }
+                .map { l -> tuple(l.collect { it[1] }, l.collect { it[2] }) }
+            def joint = GENOTYPEGVCFS(GENOMICSDBIMPORT(gvcfs))
+            if (params.vqsr_snp_resources && params.vqsr_indel_resources) {
+                def recal = VARIANTRECALIBRATOR(channel.of('SNP', 'INDEL').combine(joint))
+                def snp = recal.filter { it[0] == 'SNP' }.map { mode, r, t -> tuple(r, t) }
+                def indel = recal.filter { it[0] == 'INDEL' }.map { mode, r, t -> tuple(r, t) }
+                APPLYVQSR(joint.combine(snp).combine(indel))
+            }
+        } else if (!params.gvcf) {
             HARDFILTER(hc_vcf)
         }
     }

@@ -86,6 +86,8 @@ run pipeline_germline pipe germline
 run pipeline_germline_bam pipe germline_bam
 run pipeline_somatic  pipe somatic
 run pipeline_somatic_bam pipe somatic_bam
+# joint calling of NA12878 and HCC1143_normal from the germline and somatic tests' lane BAMs (after those tests)
+run pipeline_joint   pipe joint
 
 echo; echo "=== lines reporting a difference (empty: all identical)"
 grep -H -E "DIFFER|DIFFERENT|FAILED|panicked|Traceback|No such file|command not found|unbound variable|parameter null or not set|mismatches +[1-9]|[1-9][0-9]* different or missing|[1-9][0-9]* case\(s\) differ|[1-9][0-9]* columns differ|records, [1-9][0-9]* differ|\| [a-z ]*DIFF" $O/*.log | head -40

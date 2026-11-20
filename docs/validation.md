@@ -54,7 +54,7 @@ outputs per PairHMM are compared with GATK's. The truth in `tests/truth` comes f
 | VariantRecalibrator / ApplyVQSR | NA12878 30x VCF (5.06 M records); 1000 Genomes 30x joint calls chr20:5-17 Mb (50 of 3202 samples, 500 k records); WARP's, sarek's and best-practice (InbreedingCoeff) settings, SNP / INDEL / BOTH, ApplyVQSR chained | tranches, recal VCF and filtered VCF identical (27 outputs) |
 | VariantFiltration / MakeSitesOnlyVcf | NA12878 30x VCF, the 1000 Genomes cohort slice, 11-sample joint calls; WARP's ExcessHet, exome-mask and DRAGEN filters, GATK's hard-filtering examples, the expression language's edge cases (missing values, lists, strings, inversion, previous filters, masks) | identical; where GATK fails, variant-rs fails |
 | MergeVcfs, SortSam, GatherBamFiles, GatherBQSRReports | WARP's and sarek's command lines | identical |
-| Pipeline | NA12878 chr20 slice (2 lanes), HCC1143 tumor / normal, SEQC2 WES; each step vs GATK | identical |
+| Pipeline | NA12878 chr20 slice (2 lanes), HCC1143 tumor / normal, SEQC2 WES; joint calling of NA12878 and HCC1143_normal (GVCFs, GenomicsDBImport, GenotypeGVCFs, VQSR); each step vs GATK | identical |
 
 Accuracy follows from identity. On HG002 against the GIAB v4.2.1 benchmark (chr1–22), variant-rs equals GATK:
 precision 0.9887, recall 0.9923, F 0.9905.

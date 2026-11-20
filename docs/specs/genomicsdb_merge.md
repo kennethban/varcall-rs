@@ -351,7 +351,10 @@ The following have no example in these workspaces:
 * more than 1024 genotypes;
 * non-diploid samples;
 * MNV-only spanning records;
-* multiple IDs;
+* multiple IDs (seen since in GVCFs made with HaplotypeCaller `--dbsnp`: GenomicsDB passes the calls' IDs on, as a
+  set in no fixed order, e.g. `rs66631876;rs34684979` for a GVCF's `rs34684979;rs66631876`; GenotypeGVCFs drops the
+  input ID anyway, its records being rebuilt by `GenotypingEngine.calculateGenotypes`, and sets only `--dbsnp`'s
+  matches);
 * `concatenate`/`mean`/`move_to_FORMAT` operations;
 * multiple arrays per contig.
 

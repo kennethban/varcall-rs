@@ -21,7 +21,8 @@ filtered VCF in 45 minutes on one workstation, instead of about 5 hours.
   `gatk`. An argument or input it does not reproduce exactly is refused with the reason, or passed to a real GATK.
 * **Drop-in for nf-core/sarek.** The variant-rs image replaces sarek's GATK image for the steps it reproduces.
 * **GPU optional.** Without a GPU everything runs on the CPU, with the same output.
-* **A FASTQ → VCF pipeline** in Nextflow, germline and tumor / normal, that takes sarek's samplesheet.
+* **A FASTQ → VCF pipeline** in Nextflow, germline (per sample, or joint calling with VQSR) and tumor / normal, that
+  takes sarek's samplesheet.
 
 ## Speed
 

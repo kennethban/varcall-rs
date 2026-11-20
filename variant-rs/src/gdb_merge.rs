@@ -788,14 +788,13 @@ fn operate(s: i64, e: i64, calls: &mut [Option<Call>], ctx: &Ctx, contig: &str, 
             info.push(("DP".into(), tot.to_string()));
         }
     }
-    // ID: the active calls' IDs (an unordered set in GenomicsDB: more than one is not deterministic)
-    let mut ids: Vec<&str> = calls.iter().flatten().filter_map(|c| c.id.as_deref()).collect();
+    // ID: the active calls' IDs. GenomicsDB keeps them as an unordered set, so several come in no fixed order; sorted
+    // here. No reader uses them: GenotypeGVCFs drops the input ID (its records are rebuilt), and
+    // CreateSomaticPanelOfNormals reads only the alleles and AD.
+    let mut ids: Vec<&str> = calls.iter().flatten().filter_map(|c| c.id.as_deref()).flat_map(|i| i.split(';')).collect();
     ids.sort_unstable();
     ids.dedup();
-    if ids.len() > 1 {
-        refuse(format!("{contig}:{s}: several IDs from GenomicsDB (their order is not deterministic): not supported"));
-    }
-    let id = ids.first().copied().unwrap_or(".");
+    let id = if ids.is_empty() { ".".to_string() } else { ids.join(";") };
     // line
     info.sort();
     let infos = if info.is_empty() { ".".to_string() } else { info.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(";") };
