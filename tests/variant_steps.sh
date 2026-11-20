@@ -27,6 +27,12 @@ variant_steps() {
                  -O contamination.table --tumor-segmentation segments.table
   run fmc     $X FilterMutectCalls -R ref.fa -V somatic.vcf.gz --contamination-table contamination.table \
                  --tumor-segmentation segments.table --ob-priors priors.tar.gz -O somatic.filtered.vcf.gz
+  # a panel of normals as GATK's mutect2_pon.wdl makes one (one normal here: --min-sample-count 1)
+  run m2_pon  $X Mutect2 -R ref.fa -I NORMAL.recal.bam --max-mnp-distance 0 -O NORMAL.pon.vcf.gz $HMM
+  run gdb_pon $X GenomicsDBImport -R ref.fa -V NORMAL.pon.vcf.gz --genomicsdb-workspace-path pon_db -L chr1 -L chr2 -L chr3 \
+                 --overwrite-existing-genomicsdb-workspace
+  run pon     $X CreateSomaticPanelOfNormals -R ref.fa -V gendb://pon_db --germline-resource germline_resource.vcf.gz \
+                 --min-sample-count 1 -O pon.vcf.gz
   # VQSR on the germline calls, the known sites as the training / truth resource (small: 2 / 1 Gaussians)
   run vqsr_snp   $X VariantRecalibrator -R ref.fa -V GERM.vcf.gz -O GERM.snp.recal.vcf.gz --tranches-file GERM.snp.tranches \
                     -an QD -an FS -an SOR -an ReadPosRankSum -mode SNP --max-gaussians 2 \
@@ -49,7 +55,8 @@ variant_steps() {
 # What is compared, and how: BAM records (bamdigest.py), VCF data lines, metrics without '#' lines, files as they are
 VARIANT_BAMS="GERM.md.bam TUMOR.md.bam NORMAL.md.bam GERM.recal.bam TUMOR.recal.bam NORMAL.recal.bam"
 VARIANT_VCFS="GERM.vcf.gz GERM.g.vcf.gz GERM.gg.vcf.gz GERM.gdb.vcf.gz somatic.vcf.gz somatic.filtered.vcf.gz GERM.snp.recal.vcf.gz
-  GERM.indel.recal.vcf.gz GERM.vqsr.vcf.gz GERM.vf.vcf.gz GERM.sites.vcf.gz"
+  GERM.indel.recal.vcf.gz GERM.vqsr.vcf.gz GERM.vf.vcf.gz GERM.sites.vcf.gz
+  NORMAL.pon.vcf.gz pon.vcf.gz"
 VARIANT_METRICS="GERM.md.metrics TUMOR.md.metrics NORMAL.md.metrics"
 VARIANT_FILES="GERM.recal.table TUMOR.recal.table NORMAL.recal.table somatic.vcf.gz.stats TUMOR.pileups.table
   NORMAL.pileups.table contamination.table segments.table somatic.filtered.vcf.gz.filteringStats.tsv GERM.snp.tranches

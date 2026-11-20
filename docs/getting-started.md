@@ -109,7 +109,7 @@ gatk HaplotypeCaller -R ref.fa -I GERM.recal.bam -O gatk.GERM.vcf.gz 2> /dev/nul
 cmp <(zgrep -v '^#' GERM.vcf.gz) <(zgrep -v '^#' gatk.GERM.vcf.gz) && echo identical
 ```
 
-Any step works the same way. `tests/selftest.sh` runs this whole tutorial, compares 32 outputs with GATK's, and does
+Any step works the same way. `tests/selftest.sh` runs this whole tutorial, compares 34 outputs with GATK's, and does
 it once with the CPU PairHMM and once with the GPU one.
 
 ## What next

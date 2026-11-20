@@ -56,6 +56,7 @@ All public. Sizes are what the harness keeps, outputs included.
 | `somatic/dream/` (2 GB) | ICGC-TCGA DREAM synthetic tumor/normal pairs 1-4 (chr20/21, b37) as in GATK's own tests | `dream/fetch_lfs.py` (GATK repository Git LFS: `src/test/resources/large/mutect`) |
 | `somatic/hcc1143/` (1 GB) | HCC1143 tumor/normal (GATK somatic workshop, hg38 chr17), PoN, gnomAD AF-only, ExAC common | `gs://gatk-best-practices/somatic-hg38` |
 | `somatic/seqc2/` (14 GB) | SEQC2 HCC1395 WES tumor/normal (FD_1), GRCh38.d1.vd1, targets, high-confidence calls | `somatic/seqc2/download.sh` (NCBI SEQC2, GATK best-practices bucket) |
+| `somatic/pon/` | Mutect2 calls on the four DREAM normals, their GenomicsDB workspaces, panel-of-normals truth | `somatic/pon/truth.sh` (makes its inputs) |
 | `somatic/{contam,orient,group3,longread,fmcgvcf,fmcnan,fmcdup,gathers}/` | Mutect2-family truth on the data above | each folder's `truth*.sh` / `run.sh` |
 | `hcorder/`, `hclong/`, `plan_edge/` | HaplotypeCaller / planner edge cases cut from HG002 | `truth.sh` / `run.sh` (make their inputs) |
 | `containers/variant-rs/truth/` | GATK 4.7.0.0 HaplotypeCaller on HG002 chr8:1-15M, run in sarek's GATK image (`containers/test_images.sh`) | GATK, from `hg002/` |

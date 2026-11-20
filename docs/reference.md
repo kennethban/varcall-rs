@@ -59,6 +59,7 @@ variant-rs <Tool> --help                   # which arguments are mapped, ignored
 |---|---|
 | HaplotypeCaller | VCF and `-ERC GVCF`; one sample, or several jointly (VCF mode); WARP's arguments (`-G` groups incl. AS, `-GQB`, `-contamination`, `--dbsnp`, interval padding / exclusion); on-the-fly BQSR (`--bqsr-recal-file`) |
 | Mutect2 | tumor / normal and tumor-only; PoN, germline resource, `--f1r2-tar-gz`, `--genotype-germline-sites`, `--genotype-pon-sites`, `--mitochondria-mode`, `--bam-output` |
+| CreateSomaticPanelOfNormals | from a GenomicsDB workspace of the normals' Mutect2 calls, as GATK's `mutect2_pon.wdl` runs it: `--germline-resource`, `--min-sample-count`, `--max-germline-probability` |
 | FilterMutectCalls, LearnReadOrientationModel, GetPileupSummaries, GatherPileupSummaries, CalculateContamination, MergeMutectStats | as GATK's somatic Best Practices and sarek run them |
 | BaseRecalibrator, ApplyBQSR, GatherBQSRReports | default covariates; WARP's `-OQ`, `--static-quantized-quals` |
 | MarkDuplicates | coordinate or query-grouped input, several inputs, WARP's and sarek's arguments, Picard `KEY=value` syntax |
@@ -142,13 +143,12 @@ Each item below is refused with the reason, never run differently. A refused var
 
 ### variant-rs: GATK tools it does not have
 
-It has the 22 tools in the [table above](#gatk-command-lines). Notable tools it does not have:
+It has the 23 tools in the [table above](#gatk-command-lines). Notable tools it does not have:
 
 * **Model-based filtering other than VQSR:** CNNScoreVariants / NVScoreVariants, FilterVariantTranches, VETS
   (ExtractVariantAnnotations, TrainVariantAnnotationsModel, ScoreVariantAnnotations).
 * **SelectVariants.** `variant-rs filter` (the pipeline's HARDFILTER step) gives the result of GATK's Best Practices
   single-sample hard filtering (SelectVariants → VariantFiltration → MergeVcfs) in one pass.
-* **CreateSomaticPanelOfNormals.** Mutect2 takes a panel of normals; making one needs GATK.
 * **RNA-seq** (SplitNCigarReads), **annotation** (Funcotator), **copy number and structural variants**, and
   **Picard's metrics** tools (CollectWgsMetrics, ...).
 
@@ -164,8 +164,10 @@ Each tool covers GATK's defaults plus the arguments that WARP and nf-core/sarek 
 * **BaseRecalibrator:** covariates other than the default ones (`-cov`).
 * **GenomicsDBImport:** adding samples to a workspace (`--genomicsdb-update-workspace-path`),
   `--merge-contigs-into-num-partitions`, `--header`, `--avoid-nio`, sample maps with index files; GVCFs with several
-  samples, with FILTER values (GATK's have none) or with flag INFO fields; `-V` headers that disagree on a field's
-  Number or Type (GATK promotes the line).
+  samples or with FILTER values (GATK's have none); `-V` headers that disagree on a field's Number or Type (GATK
+  promotes the line).
+* **CreateSomaticPanelOfNormals:** intervals (`-L`: the workspace is read whole), a VCF as input instead of a
+  workspace, `--call-genotypes`, `--genomicsdb-use-bcf-codec`.
 * **VariantFiltration:** genotype filters (`--genotype-filter-expression`, `--set-filtered-genotype-to-no-call`), SNP
   clusters (`--cluster-window-size`), `--apply-allele-specific-filters`, intervals (`-L`); in expressions, arithmetic,
   method calls (`vc.isSNP()`), regular expressions, the `vc` / `g` / `ALLELES` / genotype-count variables, and

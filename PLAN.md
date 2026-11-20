@@ -23,7 +23,7 @@ or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25
 kernel (stage 3) and MarkDuplicates / BaseRecalibrator on the workstation (stage 5) are open.
 
 **Coverage:** the next GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next) (C1
-VQSR, C2 VariantFiltration and C3 GenomicsDBImport done; next C4 CreateSomaticPanelOfNormals).
+VQSR, C2 VariantFiltration, C3 GenomicsDBImport and C4 CreateSomaticPanelOfNormals done).
 
 ## Where the time goes (2026-11-19)
 
@@ -183,7 +183,12 @@ Steps, in order, each validated against GATK 4.7.0.0 before the next:
   equals that from GATK's workspace: htsjdk parse, BCF2 round trip (floats to f32), the vidmap combine operations,
   callset order, fragments per batch. Or skip the workspace inside the pipeline and feed `gdb_merge` directly. Check
   the clipping of records that start before an interval empirically.
-* **C4, CreateSomaticPanelOfNormals.** Small: the commons-math binomial / beta-binomial and Brent fit already ported
+* **C4, CreateSomaticPanelOfNormals: done (2026-11-21).** `src/mutect/pon.rs`. GATK's `mutect2_pon.wdl` chain on the
+  four DREAM normals (`tests/harness/somatic/pon`): Mutect2 `--max-mnp-distance 0`, GenomicsDBImport (Mutect2 VCFs,
+  flag INFO fields: one char, 1 or 0x7F; one and three arrays: every cell identical), the records a walker receives
+  from the workspace (alleles and AD vs GATK SelectVariants, 2170), and the panel with five argument sets: all
+  identical. The whole-workspace read (no -L, arrays in `ChrArrayFolderComparator` order) is shared with
+  GenotypeGVCFs. Not done: `-L`, a VCF input. The plan as written: Small: the commons-math binomial / beta-binomial and Brent fit already ported
   for FilterMutectCalls (`src/mutect/fmc_math.rs`). Validate the GenomicsDB merge on Mutect2 VCFs (no `<NON_REF>`,
   no-call samples without AD) first.
 

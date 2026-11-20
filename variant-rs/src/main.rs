@@ -424,6 +424,17 @@ fn main() {
         }
         return;
     }
+    if argv.get(1).map(|s| s.as_str()) == Some("createsomaticpanelofnormals") {
+        mutect::pon::run(&argv[2..]);
+        return;
+    }
+    if argv.get(1).map(|s| s.as_str()) == Some("gdbreceive") {
+        // debugging: the records a walker receives from a whole workspace (FORMAT beyond GVCF fields left out)
+        let ws = gdb_store::Workspace::open(std::path::Path::new(&argv[2]));
+        let fasta = reference::Fasta::open(&argv[3]);
+        gdb_merge::whole_workspace_records(&ws, &fasta, true, |l| println!("{l}"));
+        return;
+    }
     if argv.get(1).map(|s| s.as_str()) == Some("genomicsdbimport") {
         gdb_import::run(&argv[2..]);
         return;

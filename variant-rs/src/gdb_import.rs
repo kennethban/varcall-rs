@@ -4,7 +4,7 @@
 //! allele / phase pairs, the AS_ "multi-D" fields as serialized vectors), plus, for a record spanning several
 //! positions, an END copy at its end column (moved before the next record of the row when they overlap). Cells of
 //! all rows are merged in (column, row) order and written as one fragment per batch (`gdb_write`).
-//! Refused (not verified against GATK): FILTER values other than '.', flag INFO fields, multi-sample inputs.
+//! Refused (not verified against GATK): FILTER values other than '.', multi-sample inputs.
 //!
 //! The tool (`run`, `docs/specs/genomicsdb_import.md`): samples from `--sample-name-map` or `-V` (rows in sorted
 //! sample order), the fields from the first sample's header (or the `-V` headers merged), `vidmap.json` /
@@ -45,6 +45,8 @@ pub struct Field {
     pub lengths: Vec<String>,
     pub classes: Vec<String>,
     pub delimiters: Vec<String>,
+    /// a Flag: one char, 1 when present (`TileDB`'s char null 0x7F when absent)
+    pub flag: bool,
 }
 
 impl Field {
@@ -85,6 +87,7 @@ impl Vid {
                 lengths: f["length"].as_array().map(|a| a.iter().map(|l| s(&l["variable_length_descriptor"])).collect()).unwrap_or_default(),
                 classes: list("vcf_field_class"),
                 delimiters: list("vcf_delimiter"),
+                flag: list("type").iter().any(|t| t == "Flag" || t == "flag"),
             });
         }
         // the global field index: fields in order, `<name>_FORMAT` after an INFO+FORMAT field, the tuple elements
@@ -392,9 +395,15 @@ impl<'a> Rec<'a> {
                     let val: Option<&str> = if is_fmt {
                         self.fmt.get(f.name.as_str()).copied()
                     } else {
+                        if f.flag {
+                            // a flag: present (bare, or with a value other than 0) -> 1, absent -> char null
+                            let present = matches!(self.info.get(f.name.as_str()), Some(None)) || matches!(self.info.get(f.name.as_str()), Some(Some(v)) if *v != "0");
+                            out.push(vec![if present { 1 } else { 0x7f }]);
+                            continue;
+                        }
                         match self.info.get(f.name.as_str()) {
                             Some(Some(v)) => Some(v),
-                            Some(None) => refuse(&format!("{at}: the flag {} in a GVCF is not supported", f.name)),
+                            Some(None) => refuse(&format!("{at}: INFO {} without a value is not supported", f.name)),
                             None => None,
                         }
                     };

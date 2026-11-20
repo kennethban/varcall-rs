@@ -394,7 +394,8 @@ Element type from vidmap (`Integer`→i32, `Float`→f32, `String`→char).
 * Values are the BCF values htsjdk encoded: floats are `(float)Double.parseDouble(text)`
   (Python: `struct.pack('<f', float(text))`), ints are exact.
 * FORMAT `DP` → attribute `DP_FORMAT`; INFO `DP` → `DP`.
-* Flag fields (none in GATK GVCFs): char, value 1 when present (from code, untested).
+* Flag fields (none in GATK GVCFs; Mutect2's `STR`, `PON`): a fixed CHAR of one value, `01` when present, `7f`
+  (the char null) when absent (verified on the `tests/harness/somatic/pon` workspaces).
 
 ### 7.4 GT (`length "PP"` → phased ploidy)
 i32 var, `2*ploidy - 1` elements: `allele0, phase1, allele1, phase2, allele2, ...` where
@@ -507,7 +508,7 @@ Runtime: ~55 s (ws_rb) … 216 s (ws_raw) in CPython.
 2. Records starting before the interval start (5.4) — from code only.
 3. Duplicate (row, column) across fragments (newest wins) — from code only (GATK never does this).
 4. FILTER `PASS` → −1 and non-`.` filters — from code only (all test FILTERs are `.`).
-5. Flag fields, multi-sample input VCFs, BCF vector-end padding — not produced by GATK GVCFs.
+5. Multi-sample input VCFs, BCF vector-end padding — not produced by GATK GVCFs (flags: verified, 7.3).
 6. Non-default import options (`disable_delta_encode_*`, `enable_bit_shuffle_gt`,
    `enable_lz4_compression_gt`, other compression types) are not settable from GATK; the
    prototype raises on anything other than zlib(+delta).

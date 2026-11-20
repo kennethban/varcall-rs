@@ -844,9 +844,15 @@ pub struct Scanner<'a> {
 
 impl<'a> Scanner<'a> {
     pub fn new(ws: &Workspace, arr: &'a Array, contig: &str) -> Scanner<'a> {
+        Self::with_fields(ws, arr, contig, false)
+    }
+
+    /// `other_format`: FORMAT fields other than GVCF ones (Mutect2's AF, F1R2, ...) are left out of the records
+    /// instead of refused (for callers that read only the alleles, GT and AD).
+    pub fn with_fields(ws: &Workspace, arr: &'a Array, contig: &str, other_format: bool) -> Scanner<'a> {
         let (info, format) = load_fields(ws);
         for f in &format {
-            if !["GT", "AD", "DP", "GQ", "MIN_DP", "PGT", "PID", "PL", "PS", "SB"].contains(&f.as_str()) {
+            if !other_format && !["GT", "AD", "DP", "GQ", "MIN_DP", "PGT", "PID", "PL", "PS", "SB"].contains(&f.as_str()) {
                 refuse(format!("GenomicsDB FORMAT field {f}: not supported"));
             }
         }
@@ -1003,6 +1009,32 @@ pub fn interval_records(ws: &Workspace, arrays: &mut [(i64, i64, Scanner)], cont
         }
         let _ = contig;
         a += 2 * SHARD;
+    }
+}
+
+/// The records a walker receives from a whole workspace (no -L): `GenomicsDBFeatureReader.iterator()` queries every
+/// array over its whole range [start, end], arrays in `ChrArrayFolderComparator` order (the contig name as
+/// `String.compareTo`, then the start).
+pub fn whole_workspace_records(ws: &Workspace, fasta: &crate::reference::Fasta, other_format: bool, mut each: impl FnMut(&str)) {
+    let mut arrs: Vec<(String, i64, i64, &std::path::PathBuf)> = Vec::new();
+    for p in &ws.arrays {
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let f: Vec<&str> = name.split('$').collect();
+        match (f.len(), f.get(1).and_then(|x| x.parse::<i64>().ok()), f.get(2).and_then(|x| x.parse::<i64>().ok())) {
+            (3, Some(lo), Some(hi)) => arrs.push((f[0].to_string(), lo, hi, p)),
+            _ => refuse(format!("-V gendb:// without -L: array {name} is not named contig$start$end; not supported")),
+        }
+    }
+    arrs.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()).then(a.1.cmp(&b.1)));
+    let mut out = Vec::new();
+    for (contig, lo, hi, p) in &arrs {
+        let a = crate::gdb_store::open_array(p);
+        let mut sc = Scanner::with_fields(ws, &a, contig, other_format);
+        out.clear();
+        sc.scan(*lo, *hi, fasta, &mut out);
+        for l in &out {
+            each(l);
+        }
     }
 }
 

@@ -30,6 +30,7 @@ run bqsr_gather      bash $HARNESS/bqsr/gather/cmp.sh
 run bqsr_warp        bash $HARNESS/bqsr/cmp_warp.sh
 run m2_dream         bash $HARNESS/somatic/dream/cmp_vcf.sh
 run fmc_dream        bash $HARNESS/somatic/dream/cmp_fmc.sh
+run pon              bash $HARNESS/somatic/pon/cmp.sh $O/pon
 run fmc_contam       bash $HARNESS/somatic/contam/cmp_fmc.sh
 run fmc_orient       bash $HARNESS/somatic/orient/cmp_fmc.sh
 run m2_group3        bash $HARNESS/somatic/group3/cmp.sh $O/g3

@@ -585,26 +585,7 @@ pub fn run(argv: &[String]) {
             // array over its whole range [start, end], arrays in ChrArrayFolderComparator order (contig name as
             // String.compareTo, then start), and the walker takes the records in that order
             let fasta = crate::reference::Fasta::open(&reference);
-            let mut arrs: Vec<(String, i64, i64, &std::path::PathBuf)> = Vec::new();
-            for p in &ws.arrays {
-                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let f: Vec<&str> = name.split('$').collect();
-                match (f.len(), f.get(1).and_then(|x| x.parse::<i64>().ok()), f.get(2).and_then(|x| x.parse::<i64>().ok())) {
-                    (3, Some(lo), Some(hi)) => arrs.push((f[0].to_string(), lo, hi, p)),
-                    _ => refuse(format!("-V gendb:// without -L: array {name} is not named contig$start$end; not supported")),
-                }
-            }
-            arrs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-            let mut out_lines = Vec::new();
-            for (contig, lo, hi, p) in &arrs {
-                let a = crate::gdb_store::open_array(p);
-                let mut sc = crate::gdb_merge::Scanner::new(ws, &a, contig);
-                out_lines.clear();
-                sc.scan(*lo, *hi, &fasta, &mut out_lines);
-                for l in &out_lines {
-                    handle(l);
-                }
-            }
+            crate::gdb_merge::whole_workspace_records(ws, &fasta, false, |l| handle(l));
         }
         Some(ws) => {
             let fasta = crate::reference::Fasta::open(&reference);
