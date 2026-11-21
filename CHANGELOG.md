@@ -48,6 +48,9 @@ named in its entry; a change of reference version is a new minor version at leas
 * variant-rs MarkDuplicates: smaller on-disk read ends (buckets 60 -> 43 GB), read straight into their arrays, and a
   cheaper first pass: a 30x genome on 32 threads 281 -> 255 s. `VARIANT_RS_TRACE_CPU=1` prints its CPU by step
   (and slows it). On the server at 128 threads, with level 2: 57 -> 48 s.
+* variant-rs HaplotypeCaller: each region's work before the PairHMM, and after it, runs as one task (two parallel
+  passes over a batch instead of five): a 30x genome on 32 threads 456 -> 400 s. The stage-time line reports
+  `finalize + assembly + prep` and `finish + realign` together.
 * Pipeline: MarkDuplicates writes its BAM at compression level 2, as nf-core/sarek's (the gatk launcher's
   `-Dsamjdk.compression_level=2`): the same records, the BAM ~7% larger, the step 255 -> 246 s.
 * align-rs: `ALIGN_RS_MEMLOG=SECS` prints the process's memory and its queues every SECS seconds.

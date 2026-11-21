@@ -605,6 +605,15 @@ On 32 threads the CPU stages set the pace (front end, assembly), so the defaults
 workers are half the threads up to 8 and, beyond 32 threads, a quarter of them up to 32 (`--contig-workers`
 overrides).
 
+**Fewer passes per batch (2026-11-21).** On 32 threads (RTX 5070 Ti) the run was CPU-bound with only ~23 threads
+busy, and adding parallelism made it slower (more batches in flight, deeper queues, 12 or 16 contig workers, a
+48-thread pool: 449-476 s against 445): the rayon pool woke and slept ~38,000 times a second, one parallel pass per
+stage per batch. Each region's work before the PairHMM (finalizeRegion, assembly, PairHMM inputs) is now one task,
+and its work after it (likelihoods, realignment) another: 30x genome, 456 -> 400 s (2 runs each), ~15,000 switches a
+second, VCF identical. Assembly on chr20 (`VARIANT_RS_ASM_PROFILE=1`): graph building 60% (read threading 52 of 54 s),
+paths and haplotype cigars 39% (the haplotype Smith-Waterman 32 of 35 s; 43 G cells with prefix reuse). Workstation
+runs: `$VARCALL_DATA/runs/stage6/hc`.
+
 **Several GPUs in one process (2026-11-19).** The engines are spread over every visible GPU (`VARIANT_RS_GPUS` for
 at most N): each GPU gets its own copy of the tables (constant memory) and kernel attributes, each engine belongs to
 one GPU, and a call takes a free engine on the GPU with the fewest calls running. HaplotypeCaller, 30x genome, L40S,

@@ -21,7 +21,7 @@ or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25
 
 **Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1), several GPUs (M1) and a cohort (M3: a 30x
 trio, FASTQ -> joint VCF in ~34 min on the server) are in; MarkDuplicates on the workstation (stage 5) 281 -> 246 s;
-the PairHMM kernel (stage 3) is open.
+HaplotypeCaller on the workstation (stage 6) 456 -> 400 s; the PairHMM kernel (stage 3) is open.
 
 **Coverage:** the GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next). C1
 VQSR, C2 VariantFiltration, C3 GenomicsDBImport and C4 CreateSomaticPanelOfNormals are done, and the pipeline runs
@@ -136,6 +136,27 @@ made the 128-thread run 53.5 -> 69.3 s): records and metrics identical to m1's M
   decommit (`MIMALLOC_PURGE_DECOMMITS=0`) gave another ~4% (237 s), not taken: memory returned later.
   BaseRecalibrator (107 s) is 58% `process_read` (the covariates and the table updates); not changed.
 
+### Stage 6: HaplotypeCaller's CPU stages on the workstation — done 2026-11-21
+
+On the RTX 5070 Ti (32 threads) HaplotypeCaller is CPU-bound, not GPU-bound: GPU busy 32%, ~10,000 CPU-s in a
+445 s run. Thread CPU by stage (`VARIANT_RS_TRACE_CPU=1`): assembly 2,674 s, BAM decode + filters 774, prepare 663,
+the PairHMM call 650 (mostly WSL GPU driver time; packing 91), genotyping 568, read scatter 552, realignment 389,
+finalizeRegion 384. Only ~23 of the 32 threads were busy, but more parallelism made it slower, not faster (more batches
+in flight 449 s, deeper front-to-back queue 451, 12 / 16 contig workers 454 / 460, a 48-thread pool 476): the pool
+threads woke and slept ~38,000 times a second, and every stage was a parallel pass over the batch with a barrier
+after it.
+
+* **Done:** each region's work before the PairHMM (finalizeRegion, assembly, PairHMM inputs) is one task, and so is
+  its work after it (likelihoods, realignment): two parallel passes over a batch instead of five. Same calls per
+  region, so the same output. 30x genome, 2 runs each, alternating: 456 -> 400 s (-12%), pool context switches
+  ~38,000 -> ~15,000/s, ~26 threads busy instead of ~23; VCF identical in every run, unit and pipeline tests
+  identical.
+* **What a GPU could still take:** assembly on chr20 (`VARIANT_RS_ASM_PROFILE=1`) is 60% building the graphs (reads
+  threaded k-mer by k-mer into hash tables: CPU work) and 39% haplotypes and their alignment to the reference, nearly
+  all the haplotype Smith-Waterman (43 G cells on chr20 with prefix reuse, 116 G without). The haplotype and read
+  realignment Smith-Waterman together are ~12-15% of HaplotypeCaller's CPU: integer DP that ports exactly, worth
+  ~50 s of the workstation's 400, at the cost of splitting each region's task at a batched GPU call. Not started.
+
 ## Several GPUs (an option, after stage 1)
 
 * **M1, HaplotypeCaller on several GPUs — done 2026-11-19:** the engine pool spread over every visible GPU, in one
@@ -154,8 +175,9 @@ made the 128-thread run 53.5 -> 69.3 s): records and metrics identical to m1's M
   GenotypeGVCFs genotypes each interval as its own GATK run (sarek's scatter), side by side; a HaplotypeCaller GVCF
   rule (a call with `<NON_REF>` written 0/0, PLs 0) seen once in the three genomes. Larger cohorts not measured.
 
-Order: alignment done for now (stages 2 and 4 tried and not pursued; M2); stage 1, M1, M3 and M4 done; stages 3
-and 5 open, as measured.
+Order: alignment done for now (stages 2 and 4 tried and not pursued; M2); stages 1, 5 and 6, M1, M3 and M4 done;
+stage 3 open (on the server, where HaplotypeCaller is GPU-bound; gpuPairHMM, arXiv 2411.11547, reports ~1.8 TCUPS on
+an L40S against our 245 GCUPS with GATK's own float recurrences, so a bit-exact port looks possible).
 
 ## Coverage: GATK tools to add next
 

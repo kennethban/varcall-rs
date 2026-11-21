@@ -1050,8 +1050,8 @@ fn main() {
                 eprintln!("front time {n}: {:.1} s", c.load(std::sync::atomic::Ordering::Relaxed) as f64 * 1e-9);
             }
         }
-        eprintln!("summed stage wall times (contigs overlap): front end {:.1}s (BGZF inflate {:.1}s) | finalize {:.1}s | assembly {:.1}s | prep {:.1}s | PairHMM {:.1}s | finish {:.1}s | realign {:.1}s | genotyping {:.1}s | ref-confidence {:.1}s | GVCF writer busy {:.1}s (deflate {:.1}s) | output deflate {:.1}s",
-                  front_secs, inflate_ns.load(Ordering::Relaxed) as f64 * 1e-9, s.preproc, s.asm, s.prep, s.hmm, s.finish, s.realign, s.geno, s.refconf, s.writer_busy, s.deflate, main_deflate);
+        eprintln!("summed stage wall times (contigs overlap): front end {:.1}s (BGZF inflate {:.1}s) | finalize + assembly + prep {:.1}s | PairHMM {:.1}s | finish + realign {:.1}s | genotyping {:.1}s | ref-confidence {:.1}s | GVCF writer busy {:.1}s (deflate {:.1}s) | output deflate {:.1}s",
+                  front_secs, inflate_ns.load(Ordering::Relaxed) as f64 * 1e-9, s.asm, s.hmm, s.finish, s.geno, s.refconf, s.writer_busy, s.deflate, main_deflate);
         slowest.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
         let top: Vec<String> = slowest.iter().take(5).map(|(t, n)| format!("{n} {t:.1}s")).collect();
         eprintln!("slowest contigs: {}", top.join(", "));

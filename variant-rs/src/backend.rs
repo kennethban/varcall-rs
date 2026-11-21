@@ -21,12 +21,11 @@ const REF_PAD_FOR_ASSEMBLY: i64 = 500;
 #[derive(Default, Clone, Debug)]
 pub struct Stats {
     pub convert: f64,
-    pub preproc: f64,
+    /// wall time of the per-region work before the PairHMM (finalizeRegion, assembly, PairHMM inputs)
     pub asm: f64,
-    pub prep: f64,
     pub hmm: f64,
+    /// wall time of the per-region work after the PairHMM (likelihoods, realignment)
     pub finish: f64,
-    pub realign: f64,
     pub geno: f64,
     pub refconf: f64,
     pub write: f64,
@@ -51,12 +50,9 @@ pub struct Stats {
 impl Stats {
     pub fn add(&mut self, o: &Stats) {
         self.convert += o.convert;
-        self.preproc += o.preproc;
         self.asm += o.asm;
-        self.prep += o.prep;
         self.hmm += o.hmm;
         self.finish += o.finish;
-        self.realign += o.realign;
         self.geno += o.geno;
         self.refconf += o.refconf;
         self.write += o.write;
@@ -183,21 +179,12 @@ pub struct BackendOut {
     pub stats: Stats,
 }
 
-/// Converts and finalizes (`finalizeRegion`) the reads of each region, in parallel.
-fn finalize_regions(regions: &[FilledRegion], keep: &[bool]) -> Vec<Vec<hc_assembly::Read>> {
-    regions
-        .par_iter()
-        .zip(keep.par_iter())
-        .map(|(fr, &k)| {
-            if !k {
-                return Vec::new();
-            }
-            crate::cpuprof::measure(0, || {
-                let raw: Vec<hc_preproc::Read> = fr.reads.iter().map(|r| r.to_preproc()).collect();
-                hc_preproc::finalize_region_owned(raw, fr.padded_start, fr.padded_end).into_iter().map(to_asm_read).collect()
-            })
-        })
-        .collect()
+/// `finalizeRegion` of one region's reads.
+fn finalize_region(fr: &FilledRegion) -> Vec<hc_assembly::Read> {
+    crate::cpuprof::measure(0, || {
+        let raw: Vec<hc_preproc::Read> = fr.reads.iter().map(|r| r.to_preproc()).collect();
+        hc_preproc::finalize_region_owned(raw, fr.padded_start, fr.padded_end).into_iter().map(to_asm_read).collect()
+    })
 }
 
 fn to_asm_read(r: hc_preproc::Read) -> hc_assembly::Read {
@@ -234,102 +221,6 @@ fn pair_hmm(preps: &[&hc_likelihood::Prepared], use_gpu: bool) -> Vec<Vec<f64>> 
     }
 }
 
-/// Assembly through realignment for the regions with `run[i]`; returns per region the likelihood result and
-/// the realigned evidence (only for genotyped regions).
-#[allow(clippy::type_complexity)]
-fn assemble_and_score(
-    regions: &[FilledRegion],
-    finals: &[Vec<hc_assembly::Read>],
-    run: &[bool],
-    refseq: &RefSeq,
-    contig_len: i64,
-    use_gpu: bool,
-    st: &mut Stats,
-) -> (Vec<Option<hc_likelihood::RegionResult>>, Vec<Option<(Vec<Vec<f64>>, Vec<hc_assembly::Read>)>>) {
-    let rp = |fr: &FilledRegion| ((fr.padded_start - REF_PAD_FOR_ASSEMBLY).max(1), (fr.padded_end + REF_PAD_FOR_ASSEMBLY).min(contig_len));
-    // 1. local assembly
-    let t = Instant::now();
-    let asm: Vec<Option<Result<hc_assembly::AssemblyResult, String>>> = regions
-        .par_iter()
-        .zip(finals.par_iter())
-        .zip(run.par_iter())
-        .map_init(
-            || hc_assembly::Assembler::new(hc_assembly::AssemblerConfig::default()),
-            |a, ((fr, f), &go)| {
-                if !go {
-                    return None;
-                }
-                let (rps, rpe) = rp(fr);
-                let info = hc_assembly::RegionInfo { start: fr.start, end: fr.end, padded_start: fr.padded_start, padded_end: fr.padded_end };
-                Some(crate::cpuprof::measure(1, || a.try_assemble_region(f, info, refseq.window(rps, rpe), rps, rpe)))
-            },
-        )
-        .collect();
-    st.asm += t.elapsed().as_secs_f64();
-    for (fr, r) in regions.iter().zip(asm.iter()) {
-        match r {
-            Some(Ok(a)) => st.haplotypes += a.haplotypes.len() as u64,
-            // GATK rethrows an assembly exception (AssemblyBasedCallerUtils.assembleReads) and the run fails; so
-            // does this one, before any output is finalized (the panic hook exits): skipping the region gave a
-            // complete-looking VCF missing its calls
-            Some(Err(e)) => panic!("assembly failed at {}-{}: {e}", fr.start, fr.end),
-            None => {}
-        }
-    }
-    // 2. trimming + genotyping reads + PairHMM inputs
-    let t = Instant::now();
-    let preps: Vec<Option<hc_likelihood::Prepared>> = regions
-        .par_iter()
-        .zip(finals.par_iter())
-        .zip(asm.par_iter())
-        .map(|((fr, f), a)| {
-            let a = a.as_ref()?.as_ref().ok()?;
-            let (rps, rpe) = rp(fr);
-            Some(crate::cpuprof::measure(2, || hc_likelihood::prepare(&hc_likelihood::RegionInput {
-                span: hc_likelihood::Span { start: fr.start, end: fr.end },
-                padded_span: hc_likelihood::Span { start: fr.padded_start, end: fr.padded_end },
-                reads: f,
-                mate_on_other_contig: &[], // taken from the reads' ref_id / mate_ref_id
-                haplotypes: &a.haplotypes,
-                ref_padded: refseq.window(rps, rpe),
-                ref_padded_start: rps,
-            })))
-        })
-        .collect();
-    drop(asm);
-    st.prep += t.elapsed().as_secs_f64();
-    // 3. PairHMM for the whole batch in one call (one GPU launch)
-    let t = Instant::now();
-    let refs: Vec<&hc_likelihood::Prepared> = preps.iter().flatten().collect();
-    let raws = pair_hmm(&refs, use_gpu);
-    st.hmm += t.elapsed().as_secs_f64();
-    // 4. likelihood post-processing + realignment of reads to their best haplotype
-    let t = Instant::now();
-    let mut raw_it = raws.into_iter();
-    let paired: Vec<Option<(hc_likelihood::Prepared, Vec<f64>)>> = preps.into_iter().map(|p| p.map(|p| (p, raw_it.next().unwrap()))).collect();
-    let finished: Vec<Option<hc_likelihood::RegionResult>> = paired.into_par_iter().map(|o| o.map(|(p, r)| crate::cpuprof::measure(4, || hc_likelihood::finish(p, &r)))).collect();
-    st.finish += t.elapsed().as_secs_f64();
-    let t = Instant::now();
-    let realigned: Vec<Option<(Vec<Vec<f64>>, Vec<hc_assembly::Read>)>> = finished
-        .par_iter()
-        .zip(regions.par_iter())
-        .map_init(hc_assembly::sw::SwAligner::new, |sw, (res, fr)| crate::cpuprof::measure(5, || {
-            let res = res.as_ref()?;
-            if res.exit != hc_likelihood::Exit::Genotyped {
-                return None;
-            }
-            let lk = res.likelihoods.as_ref()?;
-            let n = lk.reads.len();
-            let mat: Vec<Vec<f64>> = if n == 0 { vec![Vec::new(); lk.haplotypes.len()] } else { lk.values.chunks(n).map(|c| c.to_vec()).collect() };
-            let mut reads = lk.reads.clone();
-            hc_genotype::realign::realign_reads_to_best_haplotype(sw, &mut reads, &lk.haplotypes, &mat, rp(fr).0);
-            Some((mat, reads))
-        }))
-        .collect();
-    st.realign += t.elapsed().as_secs_f64();
-    (finished, realigned)
-}
-
 /// VCF mode: one batch of active regions.
 /// A batch after its per-region work (finalizeRegion, assembly, likelihoods, realignment): independent of every
 /// other batch, so several batches can be in this stage at once.
@@ -341,24 +232,104 @@ pub struct Computed {
     st: Stats,
 }
 
-/// The per-region stages of a batch (VCF: every region; GVCF: assembly only for active regions with reads).
+/// One region before the PairHMM: its finalized reads and, if it went through assembly, the assembly's haplotype
+/// count and the PairHMM inputs (`None` when the assembly gave nothing to score).
+type PreHmm = (Vec<hc_assembly::Read>, Option<Result<(usize, Option<hc_likelihood::Prepared>), String>>);
+
+/// The per-region stages of a batch (VCF: every region; GVCF: assembly only for active regions with reads). Each
+/// region's work before the PairHMM (finalizeRegion, assembly, trimming and PairHMM inputs) is one task, and so is its
+/// work after it (likelihoods, realignment): two parallel passes over the batch instead of five with a barrier after
+/// each, so fewer hand-offs between the pool's threads, and a slow region holds only its own task. Each region's
+/// result is computed by the same calls as before, so the output cannot change.
 fn compute_batch(regions: Vec<FilledRegion>, cfg: &BackendCfg) -> Computed {
     let mut st = Stats::default();
     if regions.is_empty() {
         return Computed { regions, finals: Vec::new(), finished: Vec::new(), realigned: Vec::new(), st };
     }
+    let (erc, refseq, contig_len) = (cfg.erc, &*cfg.refseq, cfg.contig_len);
+    let rp = |fr: &FilledRegion| ((fr.padded_start - REF_PAD_FOR_ASSEMBLY).max(1), (fr.padded_end + REF_PAD_FOR_ASSEMBLY).min(contig_len));
+    // 1. finalizeRegion, local assembly, trimming + genotyping reads + PairHMM inputs
     let t = Instant::now();
-    let keep = vec![true; regions.len()];
-    let finals = finalize_regions(&regions, &keep);
-    st.preproc += t.elapsed().as_secs_f64();
-    let run: Vec<bool> = if cfg.erc {
-        // regions that go through assembly: active with at least one read (region.size() > 0)
-        regions.iter().map(|fr| fr.active && !fr.reads.is_empty()).collect()
-    } else {
+    let pre: Vec<PreHmm> = regions
+        .par_iter()
+        .map_init(
+            || hc_assembly::Assembler::new(hc_assembly::AssemblerConfig::default()),
+            |a, fr| {
+                let f = finalize_region(fr);
+                // GVCF: regions that go through assembly are active with at least one read (region.size() > 0)
+                if erc && !(fr.active && !fr.reads.is_empty()) {
+                    return (f, None);
+                }
+                let (rps, rpe) = rp(fr);
+                let info = hc_assembly::RegionInfo { start: fr.start, end: fr.end, padded_start: fr.padded_start, padded_end: fr.padded_end };
+                let r = crate::cpuprof::measure(1, || a.try_assemble_region(&f, info, refseq.window(rps, rpe), rps, rpe)).map(|asm| {
+                    let p = crate::cpuprof::measure(2, || hc_likelihood::prepare(&hc_likelihood::RegionInput {
+                        span: hc_likelihood::Span { start: fr.start, end: fr.end },
+                        padded_span: hc_likelihood::Span { start: fr.padded_start, end: fr.padded_end },
+                        reads: &f,
+                        mate_on_other_contig: &[], // taken from the reads' ref_id / mate_ref_id
+                        haplotypes: &asm.haplotypes,
+                        ref_padded: refseq.window(rps, rpe),
+                        ref_padded_start: rps,
+                    }));
+                    (asm.haplotypes.len(), Some(p))
+                });
+                (f, Some(r))
+            },
+        )
+        .collect();
+    st.asm += t.elapsed().as_secs_f64();
+    let mut finals = Vec::with_capacity(regions.len());
+    let mut preps: Vec<Option<hc_likelihood::Prepared>> = Vec::with_capacity(regions.len());
+    for (fr, (f, r)) in regions.iter().zip(pre) {
+        preps.push(match r {
+            Some(Ok((n, p))) => {
+                st.haplotypes += n as u64;
+                p
+            }
+            // GATK rethrows an assembly exception (AssemblyBasedCallerUtils.assembleReads) and the run fails; so
+            // does this one, before any output is finalized (the panic hook exits): skipping the region gave a
+            // complete-looking VCF missing its calls
+            Some(Err(e)) => panic!("assembly failed at {}-{}: {e}", fr.start, fr.end),
+            None => None,
+        });
+        finals.push(f);
+    }
+    if !erc {
         st.final_reads += finals.iter().map(|f| f.len() as u64).sum::<u64>();
-        finals.iter().map(|_| true).collect()
-    };
-    let (finished, realigned) = assemble_and_score(&regions, &finals, &run, &cfg.refseq, cfg.contig_len, cfg.use_gpu, &mut st);
+    }
+    // 2. PairHMM for the whole batch in one call (one GPU launch)
+    let t = Instant::now();
+    let refs: Vec<&hc_likelihood::Prepared> = preps.iter().flatten().collect();
+    let raws = pair_hmm(&refs, cfg.use_gpu);
+    drop(refs);
+    st.hmm += t.elapsed().as_secs_f64();
+    // 3. likelihood post-processing + realignment of reads to their best haplotype
+    let t = Instant::now();
+    let mut raw_it = raws.into_iter();
+    let paired: Vec<Option<(hc_likelihood::Prepared, Vec<f64>)>> = preps.into_iter().map(|p| p.map(|p| (p, raw_it.next().unwrap()))).collect();
+    #[allow(clippy::type_complexity)]
+    let (finished, realigned): (Vec<Option<hc_likelihood::RegionResult>>, Vec<Option<(Vec<Vec<f64>>, Vec<hc_assembly::Read>)>>) = paired
+        .into_par_iter()
+        .zip(regions.par_iter())
+        .map_init(hc_assembly::sw::SwAligner::new, |sw, (o, fr)| {
+            let Some((p, r)) = o else { return (None, None) };
+            let res = crate::cpuprof::measure(4, || hc_likelihood::finish(p, &r));
+            let ra = crate::cpuprof::measure(5, || {
+                if res.exit != hc_likelihood::Exit::Genotyped {
+                    return None;
+                }
+                let lk = res.likelihoods.as_ref()?;
+                let n = lk.reads.len();
+                let mat: Vec<Vec<f64>> = if n == 0 { vec![Vec::new(); lk.haplotypes.len()] } else { lk.values.chunks(n).map(|c| c.to_vec()).collect() };
+                let mut reads = lk.reads.clone();
+                hc_genotype::realign::realign_reads_to_best_haplotype(sw, &mut reads, &lk.haplotypes, &mat, rp(fr).0);
+                Some((mat, reads))
+            });
+            (Some(res), ra)
+        })
+        .unzip();
+    st.finish += t.elapsed().as_secs_f64();
     Computed { regions, finals, finished, realigned, st }
 }
 
