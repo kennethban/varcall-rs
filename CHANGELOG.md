@@ -59,6 +59,10 @@ named in its entry; a change of reference version is a new minor version at leas
   282 -> 663 GCUPS on an L40S; HaplotypeCaller on a 30x genome, 1 L40S at 128 threads 106 -> 94 s, the workstation
   400 -> 355 s. `VARIANT_RS_HMM_KERNEL=warp` selects the old one-warp-per-pair kernel; `VARIANT_RS_HMM_BINTIME=1`
   prints the kernel time per read-length bin.
+* align-rs: mate SW as a wavefront over the query's 16 segments (no lazy-F loop, no per-row vote), the same results
+  as bwa-mem2's ksw_u8: kernel 21 -> 12 ms per 65,536 jobs on an L40S, 31 -> 18 on an RTX 5070 Ti; a 30x lane on
+  one L40S 86.5 -> 82.4 s. `ALIGN_RS_MSW=striped` runs the previous kernel (`ALIGN_RS_MSW_MINB` and `tune` now
+  apply to it only).
 
 ### Fixed
 

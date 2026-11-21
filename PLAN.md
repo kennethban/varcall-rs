@@ -178,6 +178,32 @@ after it.
   realignment Smith-Waterman together are ~12-15% of HaplotypeCaller's CPU: integer DP that ports exactly, worth
   ~50 s of the workstation's 400, at the cost of splitting each region's task at a batched GPU call. Not started.
 
+### Stage 7: align-rs kernels from the 2026-11-21 research — open
+
+A survey of GPU work on BWA-MEM-style alignment (2022-2026) found no GPU port that is both faster than align-rs and
+byte-identical to bwa-mem2 (Pham et al. ICS 2023 and G3SA ICS 2025 extend with a static band and no per-row
+z-drop; Parabricks documents small mismatches; minibwa and bwa-mem3's faster options are inexact by design). Exact
+ideas, in order:
+
+1. **Mate SW on a register-tiled wavefront** (CUDASW++4.0, BMC Bioinformatics 2024, 5 TCUPS on an L40S; the layout
+   stage 3 used): G threads per job, K query columns each in registers, thread t one target row behind thread t-1,
+   the boundary H / F and the running row maximum passed by shuffle: no lazy-F loop, no per-row vote or reduction.
+   bwa's striped semantics (row maximum and E from the values before the lazy-F pass, F restarting at each 16-lane
+   segment) are carried as a second F chain. **Done 2026-11-21, the default:** kernel 21 -> 12 ms per 65,536 jobs on
+   the L40S (31 -> 18 on the RTX 5070 Ti), every field identical to the striped kernel (a lane's chunk, 600,000
+   synthetic jobs); one 30x lane on one L40S 86.5 -> 82.4 s (2 runs each), workstation `mid` 1.60 -> 1.47 s a
+   batch; records identical to bwa-mem2, `tests/cmp.sh` and the pipeline tests identical
+   (`docs/notes/align-rs.md` section 12).
+2. **Ungapped shortcut for extension** (bwa-mem3 PRs #544 / #540, output identical at default parameters): an
+   extension whose diagonal has at most one mismatch takes the ungapped walk's result instead of banded SW; must
+   keep bwa's strict new-maximum rule, fall back when the mismatches cost more than `-d`, and not cut the w / 2w
+   retries short (#540 changed XS). Could take much of the 241 ms extension kernel and shrink its uploads.
+3. **Certified band for ksw_global2** (bwa-mem3 #575, score / CIGAR / NM / MD unchanged): about half the band
+   cells in the CIGAR stage, ~5% of a lane's CPU (helps where alignment is CPU-bound).
+4. **Lanes that finish early take the next job** in the extension kernel (AGAThA, PPoPP 2024): only if its warps
+   idle; measure warp efficiency first.
+5. Seeding k-mer interval table and read reordering (Pham et al.): a few % of seeding at best. Not planned.
+
 ## Several GPUs (an option, after stage 1)
 
 * **M1, HaplotypeCaller on several GPUs — done 2026-11-19:** the engine pool spread over every visible GPU, in one
@@ -196,7 +222,8 @@ after it.
   GenotypeGVCFs genotypes each interval as its own GATK run (sarek's scatter), side by side; a HaplotypeCaller GVCF
   rule (a call with `<NON_REF>` written 0/0, PLs 0) seen once in the three genomes. Larger cohorts not measured.
 
-Order: alignment done for now (stages 2 and 4 tried and not pursued; M2); stages 1, 3, 5 and 6, M1, M3 and M4 done.
+Order: stages 1, 3, 5 and 6, M1, M3 and M4 done; stages 2 and 4 tried and not pursued; stage 7 (align-rs kernels) open,
+starting with the mate-SW prototype.
 
 ## Coverage: GATK tools to add next
 

@@ -62,6 +62,7 @@ extern "C" {
     fn aln_gpu_sa(pos: *const i64, n: i64, out: *mut i64) -> i32;
     fn aln_gpu_set_settings(smem_g: i32, ext_bpsm: i32, msw_minb: i32) -> i32;
     fn aln_gpu_get_settings(out: *mut i32);
+    fn aln_gpu_msw_wave() -> i32;
     fn aln_gpu_kernel_times(out: *mut f64);
     fn aln_gpu_device(name: *mut u8, cap: i32, major: *mut i32, minor: *mut i32, driver: *mut i32) -> i32;
 }
@@ -129,13 +130,13 @@ impl Gpu {
             g.set_settings(s);
             let cur = g.settings();
             eprintln!(
-                "[align-rs] GPU settings from `align-rs tune` ({}, {}{}): seeding {} lanes per read, extension {} blocks/SM, mate SW cap {}",
+                "[align-rs] GPU settings from `align-rs tune` ({}, {}{}): seeding {} lanes per read, extension {} blocks/SM, mate SW {}",
                 crate::tune::cache_path().map(|p| p.display().to_string()).unwrap_or_default(),
                 c.date,
                 if c.driver != driver { format!(", tuned with driver {}, now {driver}", c.driver) } else { String::new() },
                 cur[0],
                 cur[1],
-                cur[2]
+                if g.msw_wave() { "wavefront".to_string() } else { format!("striped, cap {}", cur[2]) }
             );
         }
         let free = unsafe { aln_gpu_free_mem() };
@@ -304,6 +305,11 @@ impl Gpu {
         let mut s = [0i32; 3];
         unsafe { aln_gpu_get_settings(s.as_mut_ptr()) };
         s
+    }
+
+    /// whether mate SW runs the wavefront kernel (its register cap fixed; the cap setting is the striped kernel's)
+    pub fn msw_wave(&self) -> bool {
+        unsafe { aln_gpu_msw_wave() == 1 }
     }
 
     /// values < 0 are kept

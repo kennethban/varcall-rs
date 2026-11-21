@@ -179,8 +179,10 @@ pub fn run(g: &Gpu, sp: &SeedParams) -> Result<(), String> {
             },
         )?;
     }
-    // mate SW
-    if let Some(reads) = cap.msw_reads.as_ref() {
+    // mate SW: the register cap is the striped kernel's (ALIGN_RS_MSW=striped); the wavefront kernel's is fixed
+    if g.msw_wave() {
+        eprintln!("[align-rs tune] mate SW: the wavefront kernel (fixed register cap), not tuned; ALIGN_RS_MSW=striped tunes the striped kernel's cap");
+    } else if let Some(reads) = cap.msw_reads.as_ref() {
         let key = u64::MAX - 3;
         let n: usize = cap.msw.iter().map(|x| x.len()).sum();
         chosen[2] = pick(

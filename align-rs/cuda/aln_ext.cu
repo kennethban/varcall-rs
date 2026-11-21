@@ -15,7 +15,8 @@
 // changes any result: they only spread the same work differently.
 static int g_smem_g = 4;     // ALIGN_RS_SMEM_G: seeding lanes per read (1: a thread per read)
 static int g_ext_bpsm = 6;   // ALIGN_RS_EXT_BPSM: extension blocks per SM (0: a block per 128 jobs)
-static int g_msw_minb = 18;  // ALIGN_RS_MSW_MINB: mate-SW blocks per SM the registers are capped for (12, 18, 24)
+static int g_msw_minb = 18;  // ALIGN_RS_MSW_MINB: k_matesw's blocks per SM the registers are capped for (12, 18, 24)
+static int g_msw_wave = 1;   // mate SW: k_matesw_wave (ALIGN_RS_MSW=striped: k_matesw)
 static int g_n_sm = 0;
 static int gpu_settings(int dev);
 #define MAXQ 256  // longest query a job may have; longer jobs come back with score INT_MIN (CPU recomputes)
@@ -994,6 +995,191 @@ __global__ void __launch_bounds__(MSW_BS, MINB) k_matesw(const MJob *jobs, int n
     if (lane == 0) out[job] = o;
 }
 
+
+// ------------------------------------------------------------------------------------------------
+// Mate rescue as a wavefront (the default; ALIGN_RS_MSW=striped runs k_matesw): the same ksw_u8 results, 16 threads per
+// job. Thread t owns query segment t (positions t*SL .. t*SL+SL-1, as SSE lane t does) in registers and runs one
+// target row behind thread t-1, which hands it the row's boundary by shuffle: the final H at its last position (the
+// next row's diagonal), the F leaving it, the row maximum so far, and (when the row may beat the best so far) the
+// row's largest final H and its first position. No lazy-F loop, no per-row vote or reduction (the layout of
+// CUDASW++4.0 / gpuPairHMM). bwa's striped semantics are kept: the first sweep's F restarts at each segment, and the
+// row maximum and E take the values before the lazy-F pass (hf); H takes the full F (hF). So two F chains: fs within
+// the segment, ft across. E and the F chains are not clamped at 0 (H >= 0 absorbs a negative value: the same results).
+// The last thread keeps lane 0's state (b, n_b, gmax, te, qe). On a dumped lane chunk (65,536 jobs, all fields
+// identical): RTX 5070 Ti 31 -> 18 ms, L40S 21 -> 12 ms (kernel time). Register cap: 12 blocks of 64 per SM (80
+// registers), best on both.
+// ------------------------------------------------------------------------------------------------
+#define MSW_WAVE_MINB 12
+template <int SL, bool SAT, typename QF, typename TF>
+__device__ MRes ksw_u8_wave_t(int qlen, int tlen, QF qbase, TF tbase, int xtra, int t, unsigned mask, uint32_t *b, int bcap) {
+    const int o_del = c_par[0], e_del = c_par[1], o_ins = c_par[2], e_ins = c_par[3];
+    int mn = 127, mx = 0;
+    for (int a = 0; a < 25; ++a) { mn = c_mat[a] < mn ? c_mat[a] : mn; mx = c_mat[a] > mx ? c_mat[a] : mx; }
+    const int shift = (uint8_t)(256 - (int)(uint8_t)(int8_t)mn);
+    const int qmax = mx;
+    const int sA = (uint8_t)(int8_t)(c_mat[0] + shift), sB = (uint8_t)(int8_t)(c_mat[1] + shift), sN = (uint8_t)(int8_t)(c_mat[4] + shift);
+    const int sAs = sA - shift, sNs = sN - shift;
+    int qv[SL], base[SL], baseN[SL];
+#pragma unroll
+    for (int j = 0; j < SL; ++j) {
+        int k = j + t * SL;
+        qv[j] = k >= qlen ? 255 : qbase(k);
+        base[j] = qv[j] == 255 ? 0 : (qv[j] > 3 ? sNs : sB - shift);
+        baseN[j] = qv[j] == 255 ? 0 : sNs;
+    }
+    const int minsc = (xtra & 0x40000) ? (xtra & 0xffff) : 0x10000;
+    const int endsc = (xtra & 0x20000) ? (xtra & 0xffff) : 0x10000;
+    const int oe_del = (uint8_t)(o_del + e_del), ed = (uint8_t)e_del, oe_ins = (uint8_t)(o_ins + e_ins), ei = (uint8_t)e_ins;
+    int E[SL], Hp[SL];
+#pragma unroll
+    for (int j = 0; j < SL; ++j) { E[j] = 0; Hp[j] = 0; }
+    // the last thread's state (as lane 0 / the reductions of ksw_u8_pass_t)
+    int qe_save = 0, n_b = 0, te = -1, gmax = 0;
+    uint32_t last_b = 0;
+    bool over = false, done = false;
+    // boundary from thread t-1: w = H(8) | F(8) << 8 | rowmax(8) << 16 | tc(3) << 24; key = H << 9 | (511 - pos)
+    unsigned w_out = 0, key_out = 0;
+    int diag_in = 0;   // H(i-1, my first column - 1)
+    int gl = 0;        // the last thread's gmax as of a few rows back (a lower bound of gmax before this row)
+    const int nsteps = tlen + 15;
+    int tc_next = (t == 0 && tlen > 0) ? tbase(0) : 0;
+    for (int s = 0; s < nsteps; ++s) {
+        unsigned w_in = __shfl_up_sync(mask, w_out, 1, 16);
+        unsigned key_in = __shfl_up_sync(mask, key_out, 1, 16);
+        const int i = s - t;
+        if (t == 0) {
+            w_in = (unsigned)tc_next << 24; key_in = 0;
+            if (i + 1 < tlen) tc_next = tbase(i + 1);
+        }
+        if (i >= 0 && i < tlen) {
+            const int tc = (w_in >> 24) & 7;
+            int d = diag_in;
+            diag_in = w_in & 255;
+            int ft = (w_in >> 8) & 255, fs = 0, rmax = (w_in >> 16) & 255;
+            const int ft_in = ft;
+#define WV_CELL(SC) { \
+                int h = SAT ? max(min(d + (SC) + shift, 255) - shift, 0) : max(d + (SC), 0); \
+                const int e = E[j]; \
+                h = max(h, e); \
+                const int hf = max(h, fs), hF = max(h, ft); \
+                rmax = max(rmax, hf); \
+                E[j] = max(e - ed, hf - oe_del); \
+                fs = max(fs - ei, hf - oe_ins); \
+                ft = max(ft - ei, hF - oe_ins); \
+                d = Hp[j]; Hp[j] = hF; }
+            if (tc < 4) {
+#pragma unroll
+                for (int j = 0; j < SL; ++j) WV_CELL(qv[j] == tc ? sAs : base[j])
+            } else {
+#pragma unroll
+                for (int j = 0; j < SL; ++j) WV_CELL(baseN[j])
+            }
+#undef WV_CELL
+            w_out = (unsigned)Hp[SL - 1] | (unsigned)max(ft, 0) << 8 | (unsigned)rmax << 16 | (unsigned)tc << 24;
+            // the row's (largest final H, first position) is read only when the row's maximum beats gmax, and then
+            // only a segment whose largest H beats it can hold it: the others pass the incoming key on. A segment's
+            // largest final H is at most max(its largest first-sweep H, the F coming in) <= max(rmax, ft_in).
+            const int mF = max(rmax, ft_in);
+            unsigned key = key_in;
+            if (mF > gl) {
+#pragma unroll
+                for (int j = 0; j < SL; ++j) key = max(key, (unsigned)Hp[j] << 9 | (unsigned)(511 - (j + t * SL)));
+            }
+            key_out = key;
+            if (t == 15 && !done) {
+                const int imax = rmax;
+                if (imax >= minsc) {
+                    if (n_b == 0 || (int)(last_b & 0xfffff) + 1 != i) {
+                        last_b = (uint32_t)imax << 20 | (uint32_t)i;
+                        if (n_b < bcap) b[n_b] = last_b; else over = true;
+                        n_b++;
+                    } else if ((int)(last_b >> 20) < imax) {
+                        last_b = (uint32_t)imax << 20 | (uint32_t)i;
+                        if (n_b <= bcap) b[n_b - 1] = last_b;
+                    }
+                }
+                if (imax > gmax) {
+                    gmax = imax; te = i;
+                    qe_save = 511 - (int)(key & 511);
+                    if (gmax + shift >= 255 || gmax >= endsc) done = true;
+                }
+            }
+        }
+        if ((s & 7) == 7) {
+            const int g = __shfl_sync(mask, done ? -1 : gmax, 15, 16);
+            if (g < 0) break;
+            gl = g;
+        }
+    }
+    MRes r; r.score = gmax + shift < 255 ? gmax : 255; r.te = te; r.qe = -1; r.score2 = -1; r.te2 = -1; r.over = false;
+    if (t == 15 && r.score != 255) {
+        r.qe = te >= 0 ? qe_save : 0;
+        if (n_b > 0) {
+            int wd = (r.score + qmax - 1) / qmax;
+            int low = te - wd, high = te + wd;
+            int nb = n_b < bcap ? n_b : bcap;
+            for (int k = 0; k < nb; ++k) {
+                int e = (int)(b[k] & 0xfffff);
+                if ((e < low || e > high) && (int)(b[k] >> 20) > r.score2) { r.score2 = (int)(b[k] >> 20); r.te2 = e; }
+            }
+            r.over = over;
+        }
+    }
+    // everyone gets the last thread's result
+    r.score = __shfl_sync(mask, r.score, 15, 16); r.te = __shfl_sync(mask, r.te, 15, 16); r.qe = __shfl_sync(mask, r.qe, 15, 16);
+    r.score2 = __shfl_sync(mask, r.score2, 15, 16); r.te2 = __shfl_sync(mask, r.te2, 15, 16); r.over = __shfl_sync(mask, (int)r.over, 15, 16);
+    return r;
+}
+
+template <int SL, typename QF, typename TF>
+__device__ MRes ksw_u8_wave_s(int qlen, int tlen, QF qbase, TF tbase, int xtra, int t, unsigned mask, uint32_t *b, int bcap) {
+    int mn = 127, mx = 0;
+    for (int a = 0; a < 25; ++a) { mn = c_mat[a] < mn ? c_mat[a] : mn; mx = c_mat[a] > mx ? c_mat[a] : mx; }
+    const int shift = (uint8_t)(256 - (int)(uint8_t)(int8_t)mn);
+    const bool sat = SL * 16 * mx + mx + shift > 255;
+    return sat ? ksw_u8_wave_t<SL, true>(qlen, tlen, qbase, tbase, xtra, t, mask, b, bcap)
+               : ksw_u8_wave_t<SL, false>(qlen, tlen, qbase, tbase, xtra, t, mask, b, bcap);
+}
+
+template <typename QF, typename TF>
+__device__ MRes ksw_u8_wave(int qlen, int tlen, QF qbase, TF tbase, int xtra, int t, unsigned mask, uint32_t *b, int bcap) {
+    switch ((qlen + 15) / 16) {
+#define WS_CASE(n) case n: return ksw_u8_wave_s<n>(qlen, tlen, qbase, tbase, xtra, t, mask, b, bcap);
+        WS_CASE(1) WS_CASE(2) WS_CASE(3) WS_CASE(4) WS_CASE(5) WS_CASE(6) WS_CASE(7) WS_CASE(8)
+        WS_CASE(9) WS_CASE(10) WS_CASE(11) WS_CASE(12) WS_CASE(13) WS_CASE(14) WS_CASE(15) WS_CASE(16)
+#undef WS_CASE
+    }
+    MRes r; r.score = 0; r.te = -1; r.qe = -1; r.score2 = -1; r.te2 = -1; r.over = true;
+    return r;
+}
+
+__global__ void __launch_bounds__(MSW_BS, MSW_WAVE_MINB) k_matesw_wave(const MJob *jobs, int n, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, MOut *out, uint32_t *bscratch) {
+    int gt = blockIdx.x * blockDim.x + threadIdx.x;
+    int job = gt >> 4, lane = threadIdx.x & 15;
+    unsigned mask = 0xffffu << (threadIdx.x & 16);
+    if (job >= n) return;
+    const MJob jb = jobs[job];
+    const uint8_t *rd = reads + off[jb.read];
+    const int lq = jb.qlen;
+    auto qf = [&](int k) -> int { int c = jb.rev ? rd[lq - 1 - k] : rd[k]; return jb.rev ? (c < 4 ? 3 - c : 4) : c; };
+    auto tf = [&](int i) -> int { return ref_base(pac, l_pac, jb.rb + i); };
+    uint32_t *b = bscratch + jb.boff;
+    const int bcap = jb.tlen + 1;
+    MRes r = ksw_u8_wave(lq, jb.tlen, qf, tf, jb.xtra, lane, mask, b, bcap);
+    MOut o; o.score = r.score; o.te = r.te; o.qe = r.qe; o.score2 = r.score2; o.te2 = r.te2; o.tb = -1; o.qb = -1; o.ok = 1;
+    if (r.over) o.ok = 0;
+    const int xtra = jb.xtra;
+    if (!((xtra & 0x80000) == 0 || ((xtra & 0x40000) && r.score < (xtra & 0xffff)))) {
+        const int qe = r.qe, te = r.te;
+        auto qf2 = [&](int k) -> int { return qf(qe - k); };
+        auto tf2 = [&](int i) -> int { return i <= te ? tf(te - i) : tf(i); };
+        MRes rr = ksw_u8_wave(qe + 1, jb.tlen, qf2, tf2, 0x20000 | r.score, lane, mask, b, bcap);
+        if (r.score == rr.score) { o.tb = r.te - rr.te; o.qb = r.qe - rr.qe; }
+    }
+    if (lane == 15) out[job] = o;
+}
+
+
 static MJob *d_mjobs = 0; static size_t cap_mjobs = 0;
 static uint8_t *d_reads2 = 0; static size_t cap_reads2 = 0;
 static int64_t *d_off2 = 0;   static size_t cap_off2 = 0;
@@ -1021,7 +1207,8 @@ extern "C" int aln_gpu_matesw(const MJob *jobs, int n, int64_t scratch, MOut *ou
     int bs = MSW_BS;  // 16 threads per job
     int64_t nb = ((int64_t)n * 16 + bs - 1) / bs;
     cudaEvent_t ek0 = tev()[2], ek1 = tev()[3]; cudaEventRecord(ek0);
-    switch (g_msw_minb) {
+    if (g_msw_wave) k_matesw_wave<<<(unsigned)nb, bs>>>(d_mjobs, n, d_rs[2], d_os[2], d_pac, g_l_pac, d_mout, d_bscr);
+    else switch (g_msw_minb) {
     case 12: k_matesw<12><<<(unsigned)nb, bs>>>(d_mjobs, n, d_rs[2], d_os[2], d_pac, g_l_pac, d_mout, d_bscr); break;
     case 24: k_matesw<24><<<(unsigned)nb, bs>>>(d_mjobs, n, d_rs[2], d_os[2], d_pac, g_l_pac, d_mout, d_bscr); break;
     default: k_matesw<18><<<(unsigned)nb, bs>>>(d_mjobs, n, d_rs[2], d_os[2], d_pac, g_l_pac, d_mout, d_bscr);
@@ -1071,14 +1258,15 @@ static int gpu_settings(int dev) {
     minb = env_int("ALIGN_RS_MSW_MINB", minb);
     if (minb != 12 && minb != 18 && minb != 24) { fprintf(stderr, "[align-rs-gpu] ALIGN_RS_MSW_MINB=%d: one of 12, 18, 24; using 18\n", minb); minb = 18; }
     g_msw_minb = minb;
+    { const char *m = getenv("ALIGN_RS_MSW"); g_msw_wave = !(m && !strcmp(m, "striped")); }
     int g = env_int("ALIGN_RS_SMEM_G", 4);
     if (g != 1 && g != 2 && g != 4 && g != 8 && g != 16 && g != 32) { fprintf(stderr, "[align-rs-gpu] ALIGN_RS_SMEM_G=%d: one of 1, 2, 4, 8, 16, 32; using 4\n", g); g = 4; }
     g_smem_g = g;
     cudaFuncAttributes fm;
     int regs = 0;
-    if ((minb == 12 ? cudaFuncGetAttributes(&fm, k_matesw<12>) : minb == 24 ? cudaFuncGetAttributes(&fm, k_matesw<24>) : cudaFuncGetAttributes(&fm, k_matesw<18>)) == cudaSuccess) regs = fm.numRegs;
-    fprintf(stderr, "[align-rs-gpu] %s (sm_%d%d, %d SMs, ~%d KB L1/SM, %d threads/SM): seeding %d lanes per read, extension %d blocks/SM, mate SW %d registers (ALIGN_RS_SMEM_G, ALIGN_RS_EXT_BPSM, ALIGN_RS_MSW_MINB)\n",
-            pr.name, pr.major, pr.minor, g_n_sm, l1_kb, pr.maxThreadsPerMultiProcessor, g_smem_g, g_ext_bpsm, regs);
+    if ((g_msw_wave ? cudaFuncGetAttributes(&fm, k_matesw_wave) : minb == 12 ? cudaFuncGetAttributes(&fm, k_matesw<12>) : minb == 24 ? cudaFuncGetAttributes(&fm, k_matesw<24>) : cudaFuncGetAttributes(&fm, k_matesw<18>)) == cudaSuccess) regs = fm.numRegs;
+    fprintf(stderr, "[align-rs-gpu] %s (sm_%d%d, %d SMs, ~%d KB L1/SM, %d threads/SM): seeding %d lanes per read, extension %d blocks/SM, mate SW %s %d registers (ALIGN_RS_SMEM_G, ALIGN_RS_EXT_BPSM, ALIGN_RS_MSW, ALIGN_RS_MSW_MINB)\n",
+            pr.name, pr.major, pr.minor, g_n_sm, l1_kb, pr.maxThreadsPerMultiProcessor, g_smem_g, g_ext_bpsm, g_msw_wave ? "wavefront" : "striped", regs);
     return 0;
 }
 
@@ -1092,6 +1280,8 @@ extern "C" int aln_gpu_set_settings(int smem_g, int ext_bpsm, int msw_minb) {
     if (msw_minb >= 0) g_msw_minb = msw_minb;
     return 0;
 }
+// 1: mate SW runs k_matesw_wave, whose register cap is fixed (ALIGN_RS_MSW_MINB applies to k_matesw only)
+extern "C" int aln_gpu_msw_wave() { return g_msw_wave; }
 extern "C" void aln_gpu_get_settings(int *out) { out[0] = g_smem_g; out[1] = g_ext_bpsm; out[2] = g_msw_minb; }
 // seconds of kernel time so far: extension, seeding, SA, mate SW (exact when one call runs at a time)
 extern "C" void aln_gpu_kernel_times(double *out) {

@@ -47,7 +47,7 @@ extension 6 blocks/SM, mate SW 56 registers`.
 |---|---|---|---|---|
 | `ALIGN_RS_SMEM_G` | seeding: lanes per read (1, 2, 4, 8, 16, 32; 1 = a thread per read) | 4 | 1M pairs: 1: 1.22 s, 2: 0.79, 4: 0.68, 8: 0.68, 16: 0.99, 32: 1.60 | depends on the reads more than the GPU: 4 or 8 |
 | `ALIGN_RS_EXT_BPSM` | extension: blocks of 128 per SM (0: a block per 128 jobs) | (L1 KB) / 21, L1 ~ max shared per SM + 28 KB | 1/6 lane: 4: 5.45 s, 6: 5.06, 8: 5.07, 10: 5.68, 0: 6.14 | sized to L1: ~6 on 128 KB (Ada, consumer Blackwell), ~9 on 192 KB (A100), ~12 on 256 KB (H100, B200) |
-| `ALIGN_RS_MSW_MINB` | mate SW: blocks of 64 per SM the registers are capped for (12, 18, 24) | 3/4 of the SM's threads / 64 | lane chunk: 18 (56 registers) 306 GCUPS, uncapped (161) 164 | 1536 threads/SM -> 18; 2048 (A100, H100) -> 24; 1024 (Turing) -> 12 |
+| `ALIGN_RS_MSW_MINB` | mate SW, striped kernel (`ALIGN_RS_MSW=striped`): blocks of 64 per SM the registers are capped for (12, 18, 24); the wavefront kernel is fixed at 12 | 3/4 of the SM's threads / 64 | lane chunk: 18 (56 registers) 306 GCUPS, uncapped (161) 164 | 1536 threads/SM -> 18; 2048 (A100, H100) -> 24; 1024 (Turing) -> 12 |
 
 Only the sm_120 values are measured; the rules for other GPUs follow what limited each kernel here (extension:
 its DP rows in local memory, so L1 size; mate SW: resident warps, so the register file and thread slots).
@@ -340,3 +340,27 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     registers already limit the resident threads. 1.25-1.3x on mate SW is ~60-70 ms of the ~720 ms of kernel time a
     batch on the L40S, perhaps 5-8% of an alignment on one GPU (and nothing where alignment is CPU- or copy-bound),
     for a second kernel with its reverse pass and a fallback for long reads: not pursued.
+
+12. **Mate SW as a wavefront (2026-11-21; PLAN.md stage 7): the default.** `k_matesw_wave` keeps 16 threads per job and
+    the striped layout (thread t holds query segment t in registers) but runs thread t one target row behind thread
+    t-1 (CUDASW++4.0 / gpuPairHMM), so the row's boundary comes by shuffle: the final H at the segment's end, the F
+    leaving it, the row maximum so far, and (only when the row may beat the best so far) the row's largest final H
+    with its first position. No lazy-F loop, no per-row vote or reduction. ksw_u8's striped semantics are carried
+    exactly: the first sweep's F restarts at each segment and feeds the row maximum and E (hf), while H takes the full
+    F (hF), so two F chains; E and the F chains need no clamp at 0 (H >= 0 absorbs a negative value). The last thread
+    keeps lane 0's state (b, gmax, te, qe, score2). ALU-bound, so per-cell work decides: computing the position of the
+    row's largest H only for segments that could hold it (a bound from the row maximum and the incoming F) saved
+    ~1 ms of 19. Register cap 12 blocks of 64 per SM (80 registers), best on both GPUs; `ALIGN_RS_MSW=striped` runs
+    `k_matesw` (and `ALIGN_RS_MSW_MINB` / `tune` apply to it only).
+
+    | Kernel time, a lane's chunk (65,536 jobs) | RTX 5070 Ti | L40S |
+    |---|---:|---:|
+    | `k_matesw` (striped, cap 18) | 31.0 ms | 21.2 ms |
+    | `k_matesw_wave` (cap 12) | 18.3 ms | 12.2 ms |
+
+    Checked: every result field identical to `k_matesw` on the dumped chunk and on 600,000 synthetic jobs (queries of
+    1-256 bases, every segment count including the saturating 16-segment case, Ns, both strands, every start / minsc /
+    endsc flag combination); `tests/cmp.sh` and the pipeline tests identical. Lanes, records identical to bwa-mem2 in
+    every run: workstation `mid` 1.60 -> 1.47 s per batch; one 30x lane on one L40S at 64 threads 86.2 / 86.9 ->
+    80.7 / 84.1 s (two runs each, alternating). Runs: `$VARCALL_DATA/runs/stage7`, server `runs/stage7`.
+
