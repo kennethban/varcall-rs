@@ -615,6 +615,20 @@ paths and haplotype cigars 39% (the haplotype Smith-Waterman 32 of 35 s; 43 G ce
 runs: `$VARCALL_DATA/runs/stage6/hc`. On the server (L40S, GPU-bound) the same change gives 1 GPU at 64 threads
 121.6 -> 112.4 s, at 128 threads 112.1 -> 108.1 s, 2 GPUs at 128 threads 98.4 -> 94.5 s (2 runs each).
 
+**Tiled PairHMM kernel (2026-11-21).** The float pass gives each pair G threads (4-32 lanes of a warp); thread t
+holds read rows t*K+1 .. t*K+K and their per-row probabilities in registers and sweeps the haplotype one column per
+step, one step behind thread t-1, passing its last row's M, X, Y (and the haplotype base) down by shuffle: the layout
+of gpuPairHMM (Schmidt et al., arXiv 2411.11547), with GKL's operations per cell unchanged, so every value is still
+bit-identical. Pairs are binned by read length into 12 tiles of 16 .. 256 rows, (G, K) per tile chosen on both GPUs;
+reads longer than 256 keep the one-warp-per-pair kernel (`VARIANT_RS_HMM_KERNEL=warp` for all pairs). The double
+redo pass keeps the warp kernel, with consecutive redo pairs on different blocks: a launch redoes only ~170 pairs,
+and 4 warps on one SM queued for its 2 FP64 units. A tiled double kernel was slower (13 / 23 ms against 8 / 15 ms on
+the 5070 Ti / L40S for the dump). On the 5M-pair dump (`target/release/check dump_5M.bin 400`,
+`VARIANT_RS_HMM_BINTIME=1` for the time per bin): L40S 282 -> 663 GCUPS (float bins up to 1.33 TCUPS, the double pass
+15 -> 7 ms), RTX 5070 Ti 191 -> ~420. HaplotypeCaller, 30x genome, VCF identical: 1 L40S at 128 threads 106 -> 94 s
+(summed kernel time 236 -> 62 s), 2 L40S 94 -> 95 s (the chr2 interval's floor), the workstation 400 -> 355 s
+(kernel 142 -> 61 s). Runs: server `runs/stage3`, workstation `$VARCALL_DATA/runs/stage3/hc`.
+
 **Several GPUs in one process (2026-11-19).** The engines are spread over every visible GPU (`VARIANT_RS_GPUS` for
 at most N): each GPU gets its own copy of the tables (constant memory) and kernel attributes, each engine belongs to
 one GPU, and a call takes a free engine on the GPU with the fewest calls running. HaplotypeCaller, 30x genome, L40S,

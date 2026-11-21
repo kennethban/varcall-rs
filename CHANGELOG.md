@@ -54,6 +54,11 @@ named in its entry; a change of reference version is a new minor version at leas
 * Pipeline: MarkDuplicates writes its BAM at compression level 2, as nf-core/sarek's (the gatk launcher's
   `-Dsamjdk.compression_level=2`): the same records, the BAM ~7% larger, the step 255 -> 246 s.
 * align-rs: `ALIGN_RS_MEMLOG=SECS` prints the process's memory and its queues every SECS seconds.
+* variant-rs CUDA PairHMM: a tiled float kernel (several threads per pair, read rows in registers, pairs binned by
+  read length) and the double-precision redo spread over the SMs; results still bit-identical to GKL AVX-512. Kernel
+  282 -> 663 GCUPS on an L40S; HaplotypeCaller on a 30x genome, 1 L40S at 128 threads 106 -> 94 s, the workstation
+  400 -> 355 s. `VARIANT_RS_HMM_KERNEL=warp` selects the old one-warp-per-pair kernel; `VARIANT_RS_HMM_BINTIME=1`
+  prints the kernel time per read-length bin.
 
 ### Fixed
 

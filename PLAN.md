@@ -21,7 +21,8 @@ or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25
 
 **Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1), several GPUs (M1) and a cohort (M3: a 30x
 trio, FASTQ -> joint VCF in ~34 min on the server) are in; MarkDuplicates on the workstation (stage 5) 281 -> 246 s;
-HaplotypeCaller on the workstation (stage 6) 456 -> 400 s; the PairHMM kernel (stage 3) is open.
+HaplotypeCaller on the workstation (stage 6) 456 -> 400 s; the PairHMM kernel (stage 3) 2.4-2.8x faster, HaplotypeCaller
+on 1 L40S 106 -> 94 s (as fast as 2 GPUs) and on the workstation 400 -> 355 s.
 
 **Coverage:** the GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next). C1
 VQSR, C2 VariantFiltration, C3 GenomicsDBImport and C4 CreateSomaticPanelOfNormals are done, and the pipeline runs
@@ -95,9 +96,26 @@ clock: its lane is paced by GPU stages whose calls are mostly copies through pag
 busy. The changes were reverted as not worth their code (`docs/notes/align-rs.md` section 10). The structural fix
 for such machines, pinned buffers filled and read in place by every GPU stage, is not planned for now.
 
-### Stage 3: PairHMM kernel (if stage 1 leaves HaplotypeCaller GPU-bound)
+### Stage 3: PairHMM kernel — done 2026-11-21
 
-245 GCUPS on the L40S, 169 on the RTX 5070 Ti; 8.9 M of 1.15 G pairs go to the double-precision pass.
+Was 245 GCUPS on the L40S, 169 on the RTX 5070 Ti (one warp per pair); 8.9 M of 1.15 G pairs go to the
+double-precision pass.
+
+* **Float pass, tiled:** G threads per pair (4-32 lanes), thread t holding read rows t*K+1 .. t*K+K in registers and
+  sweeping the haplotype one step behind thread t-1 (gpuPairHMM's layout, Schmidt et al., arXiv 2411.11547), with
+  GKL's operations per cell as before. Pairs are binned by read length into 12 tiles (16 .. 256 rows, (G, K) tuned per
+  tile on both GPUs); longer reads keep the warp kernel. The 5M-pair dump (1,087,302 pairs, 400 regions a launch),
+  every value bit-identical to GKL AVX-512: float bins up to 1.33 TCUPS on the L40S.
+* **Double pass:** the redo list is spread one warp per SM (it had 4 warps on each of the first SMs, queued for the
+  SM's 2 FP64 units): 15 -> 7 ms on the L40S for the dump's 2,657 pairs. A tiled double kernel was slower on both GPUs
+  (13 / 23 ms against 8 / 15) and was dropped.
+* **Kernel, the dump:** L40S 282 -> 663 GCUPS, RTX 5070 Ti 191 -> ~420 (summed kernel time).
+* **HaplotypeCaller, 30x genome, VCF identical in every run:** server (m1's NA12878, 128 threads, 2 runs each,
+  alternating): 1 GPU 103.6 / 108.5 -> 94.8 / 92.6 s (summed kernel time 236 -> 62 s, callers' wait for an engine
+  ~1,370 -> ~120 s; one GPU now about as fast as two); 2 GPUs 95.3 / 92.8 -> 91.4 / 98.4 s (the 141 Mb chr2 interval
+  sets the time). Workstation (32 threads, 1 run): 400 -> 355 s, kernel 142 -> 61 s, GPU busy 37 -> 20%.
+  `hmmcmp` (synthetic reads 30-300 bp, 3 seeds) bit-identical to the CPU port; unit tests and the 5 pipeline tests
+  (run fresh, not resumed) identical.
 
 ### Stage 4: align-rs kernels — prototyped, not pursued (2026-11-19)
 
@@ -178,9 +196,7 @@ after it.
   GenotypeGVCFs genotypes each interval as its own GATK run (sarek's scatter), side by side; a HaplotypeCaller GVCF
   rule (a call with `<NON_REF>` written 0/0, PLs 0) seen once in the three genomes. Larger cohorts not measured.
 
-Order: alignment done for now (stages 2 and 4 tried and not pursued; M2); stages 1, 5 and 6, M1, M3 and M4 done;
-stage 3 open (on the server, where HaplotypeCaller is GPU-bound; gpuPairHMM, arXiv 2411.11547, reports ~1.8 TCUPS on
-an L40S against our 245 GCUPS with GATK's own float recurrences, so a bit-exact port looks possible).
+Order: alignment done for now (stages 2 and 4 tried and not pursued; M2); stages 1, 3, 5 and 6, M1, M3 and M4 done.
 
 ## Coverage: GATK tools to add next
 

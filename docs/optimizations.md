@@ -210,14 +210,21 @@ because GKL's MXCSR flushes doubles too:
 ```cuda
 // Flush-to-zero. GKL sets MXCSR.FTZ, which flushes denormal results of float AND double operations.
 // nvcc -ftz=true covers float only, so every double result is flushed explicitly.
-__device__ __forceinline__ double FZ(double x) { return fabs(x) < 2.2250738585072014e-308 ? copysign(0.0, x) : x; }
+// |x| < DBL_MIN exactly when the exponent field is 0: tested on the integer bits, off the slow FP64 units.
+__device__ __forceinline__ double FZ(double x) {
+  const long long u = __double_as_longlong(x);
+  return (u & 0x7ff0000000000000LL) == 0 ? __longlong_as_double(u & (long long)0x8000000000000000ULL) : x;
+}
 // Explicit fused multiply-add (the file is compiled with -fmad=false, so nothing else is contracted).
 __device__ __forceinline__ float  FMA(float a, float b, float c) { return __fmaf_rn(a, b, c); }
 __device__ __forceinline__ double MUL(double a, double b) { return FZ(__dmul_rn(a, b)); }
 ```
 
-Each warp computes one (read, haplotype) pair, and pairs are batched across regions into one launch. Whole genome:
-23/23 shards identical, GPU busy ~220 s of a ~12 min run.
+Pairs are batched across regions into one launch. At first each warp computed one (read, haplotype) pair (whole
+genome: 23/23 shards identical, GPU busy ~220 s of a ~12 min run). The float pass is now tiled, as in gpuPairHMM
+(Schmidt et al., arXiv 2411.11547): a few threads per pair, each holding K read rows in registers and sweeping the
+haplotype one step behind its neighbour, with pairs binned by read length. Same operations per cell, so the same
+bits, at 2.4-2.8x the speed (L40S 282 -> 663 GCUPS).
 
 The contig workers share a pool of engines (a CUDA stream and buffers each, 8 per GPU by default) instead of one
 engine behind a lock, so one worker's copies overlap another's kernels; the engines spread over every visible GPU.

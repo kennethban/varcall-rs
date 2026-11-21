@@ -42,6 +42,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <cstdlib>
+#include <string>
 
 #define CUDA_CHECK(call)                                                          \
   do {                                                                            \
@@ -165,7 +166,12 @@ __device__ __forceinline__ void locate_pair(const Batch& b, int pair, int& r, in
 // Flush-to-zero. GKL sets MXCSR.FTZ, which flushes denormal results of float AND double operations.
 // nvcc -ftz=true covers float only, so every double result is flushed explicitly.
 __device__ __forceinline__ float  FZ(float x)  { return x; }
-__device__ __forceinline__ double FZ(double x) { return fabs(x) < 2.2250738585072014e-308 ? copysign(0.0, x) : x; }
+// |x| < DBL_MIN exactly when the exponent field is 0 (a denormal or zero): tested on the integer bits, which keeps the
+// check off the (slow, on most GPUs) FP64 units
+__device__ __forceinline__ double FZ(double x) {
+  const long long u = __double_as_longlong(x);
+  return (u & 0x7ff0000000000000LL) == 0 ? __longlong_as_double(u & (long long)0x8000000000000000ULL) : x;
+}
 // Explicit fused multiply-add (the file is compiled with -fmad=false, so nothing else is contracted).
 __device__ __forceinline__ float  FMA(float a, float b, float c)    { return __fmaf_rn(a, b, c); }
 __device__ __forceinline__ double FMA(double a, double b, double c) { return FZ(__fma_rn(a, b, c)); }
@@ -256,12 +262,116 @@ __device__ T pairhmm_warp(const Batch& b, int r, int h, T* bufM, T* bufX, T* buf
   return __shfl_sync(FULL, ADD(sumM, sumX), lastLane);
 }
 
-// Pass 1: float for every pair. Pairs whose float result underflows are queued for pass 2.
-__global__ void pairhmm_float_kernel(Batch b, int nPairs, double* out, unsigned char* path, int* redo, int* nRedo, int bufStride) {
+// ---------------------------------------------------------------------------
+// Pass 1, tiled: G threads per pair (G = 4, 8, 16 or 32 lanes of a warp), thread t owning read rows t*K+1 .. t*K+K
+// in registers, for reads of at most G*K bases. The group sweeps the haplotype one column per step, thread t
+// one step behind thread t-1 (the layout of gpuPairHMM, Schmidt et al., arXiv 2411.11547). Per step a thread
+// computes its K cells of one column top to bottom and passes its last row's M, X, Y to the next thread:
+// 3 shuffles per K cells (the warp kernel: per cell), and one skew of G-1 steps per pair (the warp kernel: 31 per
+// 32-row stripe). Each cell is computed with the same operations in the same order as pairhmm_warp, and the last
+// row is summed left to right as there, so the results are bit-identical.
+// ---------------------------------------------------------------------------
+template <class T, int G, int K>
+__device__ __forceinline__ T tiled_pair(const Batch& b, bool live, int r, int h, int R, int H, int t, int steps) {
+  const unsigned FULL = 0xffffffffu;
+  // per-row transition / emission probabilities (GKL initializeVectors), as in pairhmm_warp
+  T pMM[K], pGAPM[K], pMX[K], pXY[K], pMY[K], dist1[K], dist3[K];
+  int rbase[K];
+  const int ro = live ? b.readOff[r] : 0;
+#pragma unroll
+  for (int k = 0; k < K; ++k) {
+    const int row = t * K + k + 1;
+    pMM[k] = pGAPM[k] = pMX[k] = pXY[k] = pMY[k] = dist1[k] = dist3[k] = (T)0;
+    rbase[k] = 255;
+    if (row <= R) {
+      const int p = ro + row - 1;
+      const int qi = b.ins[p] & 127, qd = b.del[p] & 127, qc = b.gcp[p] & 127, qq = b.q[p] & 127;
+      const int mx = max(qi, qd), mn = min(qi, qd);
+      pMM[k]   = DevTables<T>::mm(((mx * (mx + 1)) >> 1) + mn);
+      pGAPM[k] = SUB((T)1.0, DevTables<T>::ph2pr(qc));
+      pMX[k]   = DevTables<T>::ph2pr(qi);
+      pXY[k]   = DevTables<T>::ph2pr(qc);   // pXX = pYY
+      pMY[k]   = DevTables<T>::ph2pr(qd);
+      const T distm = DevTables<T>::ph2pr(qq);
+      dist1[k] = SUB((T)1.0, distm);
+      dist3[k] = DIV(distm, (T)3.0);
+      rbase[k] = b.rs[p];
+      if (rbase[k] == 4) dist3[k] = dist1[k];   // a read 'N' matches every haplotype base
+    }
+  }
+  const T initY = live ? DIV(DevTables<T>::init(), (T)H) : (T)0;
+  const uint8_t* hap = b.hap + (live ? b.hapOff[h] : 0);
+  // the row holding the read's last base, and the thread that owns it
+  const int lastT = (R - 1) / K, lastK = (R - 1) % K;
+
+  T M[K], X[K], Y[K];  // own rows at the previous column (column 0: zero)
+#pragma unroll
+  for (int k = 0; k < K; ++k) M[k] = X[k] = Y[k] = (T)0;
+  // the row above the first own row: at this column (up) and the previous one (diag). Thread 0: row 0, (0, 0, initY)
+  // at every column. Other threads: thread t-1's last row, shuffled in each step; column 0 is zero.
+  const T y0 = t == 0 ? initY : (T)0;
+  T upM = 0, upX = 0, upY = y0, dgM = 0, dgX = 0, dgY = y0;
+  T sumM = 0, sumX = 0;
+
+  int hb = 0;  // the haplotype base of this step's column: thread 0 loads it, the others get it from thread t-1
+  for (int s = 0; s < steps; ++s) {
+    const int c = s - t + 1;  // haplotype column (1-based) of this step
+    if (t == 0 && c <= H) hb = __ldg(hap + c - 1);
+    if (c >= 1 && c <= H) {
+      const bool hN = hb == 4;  // a haplotype 'N' matches every read base
+      T uM = upM, uX = upX, dM = dgM, dX = dgX, dY = dgY;
+#pragma unroll
+      for (int k = 0; k < K; ++k) {
+        const T prior = (rbase[k] == hb || hN) ? dist1[k] : dist3[k];
+        const T nM = MUL(FMA(dY, pGAPM[k], FMA(dX, pGAPM[k], MUL(dM, pMM[k]))), prior);
+        const T nX = FMA(uX, pXY[k], MUL(uM, pMX[k]));
+        const T nY = FMA(Y[k], pXY[k], MUL(M[k], pMY[k]));
+        if (t == lastT && k == lastK) { sumM = ADD(sumM, nM); sumX = ADD(sumX, nX); }
+        dM = M[k]; dX = X[k]; dY = Y[k];   // this row at column c-1: the next row's diagonal
+        M[k] = nM; X[k] = nX; Y[k] = nY;
+        uM = nM; uX = nX;                  // this row at column c: the next row's up
+      }
+    }
+    // the last own row at column c goes to the next thread, for its column c (up) next step
+    const T sM = __shfl_up_sync(FULL, M[K - 1], 1, G);
+    const T sX = __shfl_up_sync(FULL, X[K - 1], 1, G);
+    const T sY = __shfl_up_sync(FULL, Y[K - 1], 1, G);
+    const int sH = __shfl_up_sync(FULL, hb, 1, G);
+    if (t > 0) { dgM = upM; dgX = upX; dgY = upY; upM = sM; upX = sX; upY = sY; hb = sH; }
+  }
+  return ADD(sumM, sumX);   // meaningful in thread lastT
+}
+
+// the steps of a warp: the longest of its groups' (H + G - 1); every thread of a warp runs them all, as the shuffles
+// involve the whole warp
+__device__ __forceinline__ int warp_steps(int steps) {
+  for (int o = 16; o > 0; o >>= 1) steps = max(steps, __shfl_xor_sync(0xffffffffu, steps, o));
+  return steps;
+}
+
+template <int G, int K>
+__global__ void __launch_bounds__(128) pairhmm_float_tiled(Batch b, const int* pairs, int nPairs, double* out, unsigned char* path, int* redo, int* nRedo) {
+  const int gid = (blockIdx.x * blockDim.x + threadIdx.x) / G, t = threadIdx.x % G;
+  const bool live = gid < nPairs;
+  int pair = 0, r = 0, h = 0, R = 0, H = 0;
+  if (live) { pair = pairs[gid]; locate_pair(b, pair, r, h); R = b.readLen[r]; H = b.hapLen[h]; }
+  const int steps = warp_steps((live && R > 0) ? H + G - 1 : 0);
+  const float res = tiled_pair<float, G, K>(b, live, r, h, R, H, t, steps);
+  if (live && t == (R > 0 ? (R - 1) / K : 0)) {
+    if (R == 0) { out[pair] = 0.0; path[pair] = 2; return; }
+    if (res < MIN_ACCEPTED) { redo[atomicAdd(nRedo, 1)] = pair; }
+    else { out[pair] = (double)res; path[pair] = 0; }   // raw float sum; host takes log10f
+  }
+}
+
+// Pass 1: float for every pair (or the pairs listed in `pairs`). Pairs whose float result underflows are queued for
+// pass 2.
+__global__ void pairhmm_float_kernel(Batch b, const int* pairs, int nPairs, double* out, unsigned char* path, int* redo, int* nRedo, int bufStride) {
   extern __shared__ unsigned char smem[];
   const int warpInBlk = threadIdx.x / WARP, lane = threadIdx.x % WARP;
-  const int pair = blockIdx.x * (blockDim.x / WARP) + warpInBlk;  // warps per block: set per launch
-  if (pair >= nPairs) return;
+  const int i = blockIdx.x * (blockDim.x / WARP) + warpInBlk;  // warps per block: set per launch
+  if (i >= nPairs) return;
+  const int pair = pairs ? pairs[i] : i;
   float* buf = reinterpret_cast<float*>(smem) + warpInBlk * 3 * bufStride;
   int r, h; locate_pair(b, pair, r, h);
   if (b.readLen[r] == 0) { if (lane == 0) { out[pair] = 0.0; path[pair] = 2; } return; }
@@ -275,17 +385,51 @@ __global__ void pairhmm_float_kernel(Batch b, int nPairs, double* out, unsigned 
 // Pass 2: double precision for the (rare) underflowing pairs, or for everything if requested.
 // nPairsDev (if non-null) holds the device-side count of queued pairs, so the host does
 // not need to synchronize between pass 1 and pass 2.
+// The grid loops over the pairs (a fixed grid for the device-side count of the redo pass). Consecutive pairs go to
+// different blocks, so a short redo list is spread over the SMs: FP64 units are few (2 per SM on the L40S), and
+// warps on one SM queue for them.
 __global__ void pairhmm_double_kernel(Batch b, const int* pairs, int nPairs, const int* nPairsDev, double* out, unsigned char* path, int bufStride) {
   extern __shared__ unsigned char smem[];
   const int warpInBlk = threadIdx.x / WARP, lane = threadIdx.x % WARP;
-  const int i = blockIdx.x * (blockDim.x / WARP) + warpInBlk;
-  if (i >= (nPairsDev ? *nPairsDev : nPairs)) return;
-  const int pair = pairs ? pairs[i] : i;
-  double* buf = reinterpret_cast<double*>(smem) + warpInBlk * 3 * bufStride;
-  int r, h; locate_pair(b, pair, r, h);
-  if (b.readLen[r] == 0) { if (lane == 0) { out[pair] = 0.0; path[pair] = 2; } return; }
-  const double res = pairhmm_warp<double>(b, r, h, buf, buf + bufStride, buf + 2 * bufStride, lane);
-  if (lane == 0) { out[pair] = res; path[pair] = 1; }   // raw double sum; host takes log10
+  const int n = nPairsDev ? *nPairsDev : nPairs;
+  for (int i = warpInBlk * gridDim.x + blockIdx.x; i < n; i += gridDim.x * (blockDim.x / WARP)) {
+    const int pair = pairs ? pairs[i] : i;
+    double* buf = reinterpret_cast<double*>(smem) + warpInBlk * 3 * bufStride;
+    int r, h; locate_pair(b, pair, r, h);
+    if (b.readLen[r] == 0) { if (lane == 0) { out[pair] = 0.0; path[pair] = 2; } continue; }
+    const double res = pairhmm_warp<double>(b, r, h, buf, buf + bufStride, buf + 2 * bufStride, lane);
+    if (lane == 0) { out[pair] = res; path[pair] = 1; }   // raw double sum; host takes log10
+  }
+}
+
+// Tiles of the tiled kernel (read rows per pair) and their (G threads, K rows per thread); reads longer than the
+// last tile go to pairhmm_float_kernel.
+static constexpr int NTILE = 12;
+static constexpr int TILE_ROWS[NTILE] = {16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 192, 256};
+static inline int tile_of(int readLen) {
+  for (int i = 0; i < NTILE; ++i) if (readLen <= TILE_ROWS[i]) return i;
+  return NTILE;  // the warp kernel
+}
+template <int G, int K>
+static void launch_tiled(const Batch& b, const int* pairs, int n, double* out, unsigned char* path, int* redo, int* nRedo, cudaStream_t st) {
+  const int blocks = (int)(((long long)n * G + 127) / 128);
+  pairhmm_float_tiled<G, K><<<blocks, 128, 0, st>>>(b, pairs, n, out, path, redo, nRedo);
+}
+static void launch_tile(int tile, const Batch& b, const int* pairs, int n, double* out, unsigned char* path, int* redo, int* nRedo, cudaStream_t st) {
+  switch (tile) {
+    case 0: launch_tiled<4, 4>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 1: launch_tiled<4, 8>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 2: launch_tiled<8, 6>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 3: launch_tiled<8, 8>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 4: launch_tiled<16, 5>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 5: launch_tiled<16, 6>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 6: launch_tiled<16, 7>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 7: launch_tiled<16, 8>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 8: launch_tiled<16, 9>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 9: launch_tiled<16, 10>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 10: launch_tiled<16, 12>(b, pairs, n, out, path, redo, nRedo, st); break;
+    case 11: launch_tiled<32, 8>(b, pairs, n, out, path, redo, nRedo, st); break;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +441,7 @@ struct Device {
   float log10InitF = 0; double log10InitD = 0;
   uint8_t conv[256];
   int maxSmem = 48 * 1024;  // opt-in dynamic shared memory per block (set in init; the smallest of the devices')
+  int nSM = 0;              // multiprocessors (the smallest of the devices'): the double pass's fixed grids
   int nDev = 0;             // devices used: the visible ones (CUDA_VISIBLE_DEVICES), at most VARIANT_RS_GPUS
 
   bool init(bool dbl) {
@@ -315,6 +460,9 @@ struct Device {
       int smem = 0;
       CUDA_CHECK(cudaDeviceGetAttribute(&smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, d));
       if (d == 0 || smem < maxSmem) maxSmem = smem;
+      int sm = 0;
+      CUDA_CHECK(cudaDeviceGetAttribute(&sm, cudaDevAttrMultiProcessorCount, d));
+      if (d == 0 || sm < nSM) nSM = sm;
       CUDA_CHECK(cudaFuncSetAttribute(pairhmm_float_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
       CUDA_CHECK(cudaFuncSetAttribute(pairhmm_double_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
       CUDA_CHECK(cudaMemcpyToSymbol(c_ph2pr_f, tf.ph2pr, sizeof(tf.ph2pr)));
@@ -359,6 +507,9 @@ struct Engine {
   // statistics (this engine's; one caller at a time)
   long long nsPack = 0, nsGpu = 0, nBatches = 0, nLaunches = 0, nPairs = 0, nCells = 0, nDouble = 0;
   double msH2D = 0, msKernel = 0, msD2H = 0;
+  // VARIANT_RS_HMM_BINTIME=1: kernel time and cells per bin (the tiles, the warp kernel, the double pass)
+  double binMs[NTILE + 2] = {0}; double binCells[NTILE + 2] = {0}; long long binPairs[NTILE + 2] = {0};
+  cudaEvent_t evBin[NTILE + 3]{};
 
   bool create(int d) {
     dev = d;
@@ -366,6 +517,7 @@ struct Engine {
     CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     CUDA_CHECK(cudaEventCreate(&evStart)); CUDA_CHECK(cudaEventCreate(&evH2D));
     CUDA_CHECK(cudaEventCreate(&evKernel)); CUDA_CHECK(cudaEventCreate(&evEnd));
+    for (auto& e : evBin) CUDA_CHECK(cudaEventCreate(&e));
     CUDA_CHECK(cudaMallocHost(&hNRedo, sizeof(int)));
     CUDA_CHECK(cudaMalloc(&dNRedo, sizeof(int)));
     return true;
@@ -426,7 +578,8 @@ struct Engine {
     size_t o_rs      = align(o_hapLen + nH * sizeof(int));
     size_t o_q = align(o_rs + totR), o_i = align(o_q + totR), o_d = align(o_i + totR), o_c = align(o_d + totR);
     size_t o_hap = align(o_c + totR);
-    size_t total = align(o_hap + totH);
+    size_t o_pairs = align(o_hap + totH);   // the pairs, grouped by kernel (tile of the read length)
+    size_t total = align(o_pairs + (size_t)nPairsB * sizeof(int));
     if (!ensure(total, nPairsB)) return false;
 
     int* pairStart = (int*)(hIn + o_pairStart); int* readStart = (int*)(hIn + o_readStart);
@@ -456,6 +609,29 @@ struct Engine {
       }
     }
     pairStart[G] = ps;
+    // pairs by kernel: the tiled kernel of the read's length, or the warp kernel (VARIANT_RS_HMM_KERNEL=warp: all)
+    int binStart[NTILE + 2] = {0};
+    double cellsBin[NTILE + 2] = {0};
+    static const bool warpOnly = [] { const char* e = getenv("VARIANT_RS_HMM_KERNEL"); return e && !strcmp(e, "warp"); }();
+    static const bool binTime = getenv("VARIANT_RS_HMM_BINTIME") != nullptr;
+    {
+      int cnt[NTILE + 1] = {0};
+      for (const auto& g : groups) {
+        long long hs = 0;
+        for (int x : g.hl) hs += x;
+        for (int L : g.rl) { const int bin = warpOnly ? NTILE : tile_of(L); cnt[bin] += (int)g.hl.size(); cellsBin[bin] += (double)L * hs; }
+      }
+      for (int i = 0; i <= NTILE; ++i) binStart[i + 1] = binStart[i] + cnt[i];
+      int fill[NTILE + 1];
+      memcpy(fill, binStart, sizeof(fill));
+      int* lists = (int*)(hIn + o_pairs);
+      int pr = 0;
+      for (const auto& g : groups)
+        for (int L : g.rl) {
+          const int bin = warpOnly ? NTILE : tile_of(L);
+          for (size_t hh = 0; hh < g.hl.size(); ++hh) lists[fill[bin]++] = pr++;
+        }
+    }
     auto t1 = std::chrono::steady_clock::now();
 
     Batch b;
@@ -487,9 +663,20 @@ struct Engine {
       pairhmm_double_kernel<<<blocks, wpb * WARP, smemD, stream>>>(b, nullptr, nPairsB, nullptr, dOut, dPath, bufStride);
     } else {
       CUDA_CHECK(cudaMemsetAsync(dNRedo, 0, sizeof(int), stream));
-      pairhmm_float_kernel<<<blocks, wpb * WARP, smemF, stream>>>(b, nPairsB, dOut, dPath, dRedo, dNRedo, bufStride);
-      // Pass 2 is always launched; warps beyond the device-side redo count exit immediately.
-      pairhmm_double_kernel<<<blocks, wpb * WARP, smemD, stream>>>(b, dRedo, nPairsB, dNRedo, dOut, dPath, bufStride);
+      const int* dPairs = (const int*)(dIn + o_pairs);
+      if (binTime) CUDA_CHECK(cudaEventRecord(evBin[0], stream));
+      for (int i = 0; i < NTILE; ++i) {
+        if (binStart[i + 1] > binStart[i]) launch_tile(i, b, dPairs + binStart[i], binStart[i + 1] - binStart[i], dOut, dPath, dRedo, dNRedo, stream);
+        if (binTime) CUDA_CHECK(cudaEventRecord(evBin[i + 1], stream));
+      }
+      if (const int n = binStart[NTILE + 1] - binStart[NTILE]; n > 0)
+        pairhmm_float_kernel<<<(n + wpb - 1) / wpb, wpb * WARP, smemF, stream>>>(b, dPairs + binStart[NTILE], n, dOut, dPath, dRedo, dNRedo, bufStride);
+      if (binTime) CUDA_CHECK(cudaEventRecord(evBin[NTILE + 1], stream));
+      // Pass 2 is always launched, on a fixed grid that loops over the device-side redo count. (A tiled double kernel,
+      // registers only, was slower on the RTX 5070 Ti and the L40S, 13 / 23 ms against 8 / 15 on the 5M-pair dump: a
+      // launch has a few dozen pairs to redo, and its time is one pair's chain of FP64 steps, longer when tiled.)
+      pairhmm_double_kernel<<<std::min(blocks, g_dev.nSM * 4), wpb * WARP, smemD, stream>>>(b, dRedo, nPairsB, dNRedo, dOut, dPath, bufStride);
+      if (binTime) CUDA_CHECK(cudaEventRecord(evBin[NTILE + 2], stream));
       CUDA_CHECK(cudaMemcpyAsync(hNRedo, dNRedo, sizeof(int), cudaMemcpyDeviceToHost, stream));
     }
     CUDA_CHECK(cudaGetLastError());
@@ -516,6 +703,11 @@ struct Engine {
     float a = 0, k = 0, d = 0;
     cudaEventElapsedTime(&a, evStart, evH2D); cudaEventElapsedTime(&k, evH2D, evKernel); cudaEventElapsedTime(&d, evKernel, evEnd);
     msH2D += a; msKernel += k; msD2H += d;
+    if (binTime && !g_dev.useDouble)
+      for (int i = 0; i < NTILE + 2; ++i) {
+        float ms = 0; cudaEventElapsedTime(&ms, evBin[i], evBin[i + 1]);
+        binMs[i] += ms; binCells[i] += cellsBin[i]; binPairs[i] += i <= NTILE ? binStart[i + 1] - binStart[i] : *hNRedo;
+      }
     nsPack += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     nsGpu += std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
     nBatches += G; nLaunches++; nPairs += nPairsB; nCells += cells; nDouble += g_dev.useDouble ? nPairsB : *hNRedo;
@@ -575,6 +767,13 @@ static void report_all() {
           nBatches, nLaunches, nPairs, (double)nCells, nDouble,
           (int)g_pool.size(), g_dev.nDev, nsPack * 1e-9, nsGpu * 1e-9, msH2D * 1e-3, msKernel * 1e-3, msD2H * 1e-3, g_nsTotal * 1e-9, g_nsWait * 1e-9,
           nCells / (msKernel * 1e-3) * 1e-9, (double)nPairs / nLaunches);
+  if (getenv("VARIANT_RS_HMM_BINTIME"))
+    for (int i = 0; i < NTILE + 2; ++i) {
+      double ms = 0, c = 0; long long n = 0;
+      for (Engine* e : g_pool) { ms += e->binMs[i]; c += e->binCells[i]; n += e->binPairs[i]; }
+      if (ms > 0) fprintf(stderr, "[cuda-pairhmm] bin %-12s pairs %10lld  kernel %8.3f s  %7.1f GCUPS\n",
+                          i < NTILE ? ("<=" + std::to_string(TILE_ROWS[i])).c_str() : i == NTILE ? "warp" : "double", n, ms * 1e-3, i <= NTILE ? c / (ms * 1e-3) * 1e-9 : 0.0);
+    }
 }
 
 
