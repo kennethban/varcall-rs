@@ -110,9 +110,12 @@ process MARKDUPLICATES {
 
     script:
     def ins = bams.collect { "-I ${it}" }.join(' ')
+    // level 2: sarek runs MarkDuplicates through the gatk launcher, whose -Dsamjdk.compression_level=2 replaces
+    // Picard's default 5. The records are the same; deflate is 1.7x faster (34% of the step's CPU at 5), the BAM
+    // ~7% larger (30x: 45.5 GB against 42.4).
     """
     VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} markdup ${ins} -O ${meta.sample}.md.bam -M ${meta.sample}.md.metrics \\
-        --CREATE_INDEX true --tmp-dir . --threads ${task.cpus}
+        --CREATE_INDEX true --tmp-dir . --compression-level 2 --threads ${task.cpus}
     """
 }
 

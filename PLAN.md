@@ -20,8 +20,8 @@ Going further means a larger project: pinned buffers filled and read in place by
 or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25%.
 
 **Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1), several GPUs (M1) and a cohort (M3: a 30x
-trio, FASTQ -> joint VCF in ~34 min on the server) are in; the PairHMM kernel (stage 3) and MarkDuplicates /
-BaseRecalibrator on the workstation (stage 5) are open.
+trio, FASTQ -> joint VCF in ~34 min on the server) are in; MarkDuplicates on the workstation (stage 5) 281 -> 246 s;
+the PairHMM kernel (stage 3) is open.
 
 **Coverage:** the GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next). C1
 VQSR, C2 VariantFiltration, C3 GenomicsDBImport and C4 CreateSomaticPanelOfNormals are done, and the pipeline runs
@@ -108,9 +108,24 @@ is GPU-bound (one GPU with CPU to spare); not the workstation (copy-bound) or se
 22.8 vs ~26.9 ms): ~60-70 ms of ~720 ms GPU time a batch, perhaps 5-8% of a one-GPU alignment, for a new kernel with
 its reverse pass and a fallback. Not pursued; details in `docs/notes/align-rs.md` section 11.
 
-### Stage 5: MarkDuplicates and BaseRecalibrator
+### Stage 5: MarkDuplicates and BaseRecalibrator — done 2026-11-21
 
-5.3 of the workstation's 44.6 min; profile there if they matter after stages 1-2.
+5.3 of the workstation's 44.6 min. Profiled there (2026-11-21, 30x, 32 threads, page cache dropped before each
+run; outputs identical, `VARIANT_RS_TRACE_CPU=1` prints the CPU by step):
+
+| MarkDuplicates | Total | Pass 1 | Duplicates | Pass 2 | CPU |
+|---|---:|---:|---:|---:|---:|
+| Before | 281 s | 81 s | 43 s | 157 s | 6,347 s |
+| Smaller bucket ends, direct bucket reads, cheaper pass 1 | 255 s | 66 s | 40 s | 148 s | 6,090 s |
+| And BGZF level 2 in the pipeline, as sarek's | 246 s | 67 s | 40 s | 139 s | 5,677 s |
+
+* **Done:** the on-disk ends packed (35 bytes a fragment, 50 a pair; the buckets 60 -> 43 GB) and read straight into
+  their arrays; pass 1's mate lookup without a per-record allocation, the @PG / RG tags found in one scan. The
+  pipeline writes the BAM at level 2, as sarek does through the gatk launcher (`-Dsamjdk.compression_level=2`;
+  Picard's own default is 5): the same records, the BAM ~7% larger.
+* **Left:** deflate is still a third of MarkDuplicates' CPU, file reads and inflate a sixth. mimalloc without
+  decommit (`MIMALLOC_PURGE_DECOMMITS=0`) gave another ~4% (237 s), not taken: memory returned later.
+  BaseRecalibrator (107 s) is 58% `process_read` (the covariates and the table updates); not changed.
 
 ## Several GPUs (an option, after stage 1)
 

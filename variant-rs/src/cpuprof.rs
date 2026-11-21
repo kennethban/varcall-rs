@@ -77,3 +77,54 @@ pub fn report() {
         eprintln!("assembly phases (VARIANT_RS_ASM_PROFILE, summed over threads; nested scopes overlap):\n{}assembly events:\n{}", hc_assembly::prof::report(), hc_assembly::prof::hits_report());
     }
 }
+
+/// `VARIANT_RS_TRACE_CPU=1` for MarkDuplicates and BaseRecalibrator: thread CPU time by step, summed over threads.
+/// A [`Laps`] charges the time since its last lap to a step; its sums go into [`LAP`] when it is dropped.
+pub const NL: usize = 12;
+pub static LAP: [AtomicU64; NL] = [const { AtomicU64::new(0) }; NL];
+
+pub struct Laps {
+    on: bool,
+    last: u64,
+    ns: [u64; NL],
+}
+
+impl Laps {
+    pub fn new() -> Laps {
+        let on = on();
+        Laps { on, last: if on { thread_cpu_ns() } else { 0 }, ns: [0; NL] }
+    }
+    /// Charges the thread CPU time since the last lap to step `i`.
+    #[inline]
+    pub fn lap(&mut self, i: usize) {
+        if self.on {
+            let t = thread_cpu_ns();
+            self.ns[i] += t - self.last;
+            self.last = t;
+        }
+    }
+}
+
+impl Drop for Laps {
+    fn drop(&mut self) {
+        for (a, &n) in LAP.iter().zip(&self.ns) {
+            if n > 0 {
+                a.fetch_add(n, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// The steps' CPU seconds (`names`: step index and name), when profiling is on.
+pub fn report_laps(title: &str, names: &[(usize, &str)]) {
+    if !on() {
+        return;
+    }
+    let tot: u64 = names.iter().map(|&(i, _)| LAP[i].load(Ordering::Relaxed)).sum();
+    eprintln!("{title} CPU by step (thread CPU seconds, summed over threads):");
+    for &(i, n) in names {
+        let c = LAP[i].load(Ordering::Relaxed);
+        eprintln!("  cpu {:>8.1} s {:>5.1}%  {n}", c as f64 / 1e9, 100.0 * c as f64 / tot.max(1) as f64);
+    }
+    eprintln!("  cpu {:>8.1} s total", tot as f64 / 1e9);
+}

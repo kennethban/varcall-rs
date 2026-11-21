@@ -132,7 +132,6 @@ struct End {
     idx2: u64, // u64::MAX = -1
 }
 
-const END_SIZE: usize = std::mem::size_of::<End>();
 
 impl End {
     fn is_paired(&self) -> bool {
@@ -148,20 +147,137 @@ impl End {
     }
 }
 
-fn ends_to_bytes(v: &[End]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * END_SIZE) }
+/// An end as the buckets store it: packed (no padding), and a fragment end without the fields only pair ends use
+/// (35 bytes for a fragment, 50 for a pair, against 56 in memory: 60 -> 43 GB of buckets for a 30x genome).
+trait DiskEnd: Copy {
+    fn from_end(e: &End) -> Self;
+    fn to_end(&self) -> End;
 }
 
-fn bytes_to_ends(b: &[u8]) -> Vec<End> {
-    assert_eq!(b.len() % END_SIZE, 0);
-    let n = b.len() / END_SIZE;
-    let mut v: Vec<End> = Vec::with_capacity(n);
-    unsafe {
-        std::ptr::copy_nonoverlapping(b.as_ptr(), v.as_mut_ptr() as *mut u8, b.len());
-        v.set_len(n);
-    }
-    v
+/// A fragment end: `ofo`, `rg`, `coord2` and `idx2` are always unset (-1) for fragments, and nothing reads `ofo` or
+/// `rg` of one (they are for optical duplicates, which only pairs have)
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct FragDisk {
+    idx1: u64,
+    ref1: i32,
+    coord1: i32,
+    ref2: i32,
+    x: i32,
+    y: i32,
+    lib: u16,
+    tile: i16,
+    score: i16,
+    orientation: u8,
 }
+
+impl DiskEnd for FragDisk {
+    fn from_end(e: &End) -> FragDisk {
+        debug_assert!(e.coord2 == -1 && e.idx2 == u64::MAX);
+        FragDisk { idx1: e.idx1, ref1: e.ref1, coord1: e.coord1, ref2: e.ref2, x: e.x, y: e.y, lib: e.lib, tile: e.tile, score: e.score, orientation: e.orientation }
+    }
+    fn to_end(&self) -> End {
+        let d = *self;
+        End { lib: d.lib, orientation: d.orientation, ofo: u8::MAX, rg: -1, tile: d.tile, ref1: d.ref1, coord1: d.coord1, ref2: d.ref2, coord2: -1, x: d.x, y: d.y, score: d.score, _pad: [0; 6], idx1: d.idx1, idx2: u64::MAX }
+    }
+}
+
+/// A pair end: every field of `End` but the padding
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct PairDisk {
+    idx1: u64,
+    idx2: u64,
+    ref1: i32,
+    coord1: i32,
+    ref2: i32,
+    coord2: i32,
+    x: i32,
+    y: i32,
+    lib: u16,
+    rg: i16,
+    tile: i16,
+    score: i16,
+    orientation: u8,
+    ofo: u8,
+}
+
+impl DiskEnd for PairDisk {
+    fn from_end(e: &End) -> PairDisk {
+        PairDisk { idx1: e.idx1, idx2: e.idx2, ref1: e.ref1, coord1: e.coord1, ref2: e.ref2, coord2: e.coord2, x: e.x, y: e.y, lib: e.lib, rg: e.rg, tile: e.tile, score: e.score, orientation: e.orientation, ofo: e.ofo }
+    }
+    fn to_end(&self) -> End {
+        let d = *self;
+        End { lib: d.lib, orientation: d.orientation, ofo: d.ofo, rg: d.rg, tile: d.tile, ref1: d.ref1, coord1: d.coord1, ref2: d.ref2, coord2: d.coord2, x: d.x, y: d.y, score: d.score, _pad: [0; 6], idx1: d.idx1, idx2: d.idx2 }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<FragDisk>() == 35 && std::mem::size_of::<PairDisk>() == 50);
+
+fn disk_bytes<T: DiskEnd>(v: &[T]) -> &[u8] {
+    // SAFETY: T is a packed struct of integers (no padding, any byte pattern valid)
+    unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
+}
+
+/// The PG and RG values (Z tags) of a record, in one pass over its tags.
+fn find_pg_rg(rec: &[u8], aux: usize) -> (Option<&[u8]>, Option<&[u8]>) {
+    let (mut pg, mut rg) = (None, None);
+    let mut o = aux;
+    while o + 3 <= rec.len() && (pg.is_none() || rg.is_none()) {
+        let t = [rec[o], rec[o + 1]];
+        let ty = rec[o + 2];
+        o += 3;
+        match ty {
+            b'Z' | b'H' => {
+                let s = o;
+                while rec[o] != 0 {
+                    o += 1;
+                }
+                if ty == b'Z' {
+                    // the first of each, as find_z returns
+                    if t == *b"PG" && pg.is_none() {
+                        pg = Some(&rec[s..o]);
+                    } else if t == *b"RG" && rg.is_none() {
+                        rg = Some(&rec[s..o]);
+                    }
+                }
+                o += 1;
+            }
+            // the sizes as find_z steps over them
+            b'B' => {
+                let sub = rec[o];
+                let n = u32::from_le_bytes(rec[o + 1..o + 5].try_into().unwrap()) as usize;
+                let sz = match sub {
+                    b'c' | b'C' => 1,
+                    b's' | b'S' => 2,
+                    _ => 4,
+                };
+                o += 5 + n * sz;
+            }
+            b'A' | b'c' | b'C' => o += 1,
+            b's' | b'S' => o += 2,
+            _ => o += 4,
+        }
+    }
+    (pg, rg)
+}
+
+/// FNV-1a for the mate map's byte keys (SipHash, the default, was a visible share of pass 1)
+#[derive(Default, Clone, Copy)]
+struct Fnv(u64);
+impl std::hash::Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h = if self.0 == 0 { 0xcbf2_9ce4_8422_2325 } else { self.0 };
+        for &b in bytes {
+            h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+        }
+        self.0 = h;
+    }
+}
+type FastHash = std::hash::BuildHasherDefault<Fnv>;
 
 /// `ReadNameParser.getLastThreeFields` + `rapidParseInt` (default READ_NAME_REGEX): (tile, x, y).
 fn parse_location(name: &[u8]) -> Option<(i16, i32, i32)> {
@@ -416,13 +532,14 @@ fn make_pair(a: &Half, b: &Half) -> End {
 // buckets on disk
 // ------------------------------------------------------------------------------------------------
 
-struct Buckets {
+struct Buckets<T: DiskEnd> {
     files: Vec<Mutex<BufWriter<std::fs::File>>>,
     paths: Vec<String>,
+    _t: std::marker::PhantomData<T>,
 }
 
-impl Buckets {
-    fn new(dir: &str, prefix: &str, n: usize) -> Buckets {
+impl<T: DiskEnd> Buckets<T> {
+    fn new(dir: &str, prefix: &str, n: usize) -> Buckets<T> {
         let mut files = Vec::with_capacity(n);
         let mut paths = Vec::with_capacity(n);
         for i in 0..n {
@@ -430,12 +547,19 @@ impl Buckets {
             files.push(Mutex::new(BufWriter::with_capacity(1 << 20, std::fs::File::create(&p).unwrap_or_else(|e| panic!("{p}: {e}")))));
             paths.push(p);
         }
-        Buckets { files, paths }
+        Buckets { files, paths, _t: std::marker::PhantomData }
     }
-    fn flush_local(&self, local: &mut HashMap<usize, Vec<End>>, force: bool) {
-        for (b, v) in local.iter_mut() {
+    /// One end per bucket slot of a thread's `local` buffers (`local[b]`: bucket b's).
+    fn local(&self) -> Vec<Vec<T>> {
+        (0..self.files.len()).map(|_| Vec::new()).collect()
+    }
+    fn push(local: &mut [Vec<T>], b: usize, e: &End) {
+        local[b].push(T::from_end(e));
+    }
+    fn flush_local(&self, local: &mut [Vec<T>], force: bool) {
+        for (b, v) in local.iter_mut().enumerate() {
             if !v.is_empty() && (force || v.len() >= 8192) {
-                self.files[*b].lock().unwrap().write_all(ends_to_bytes(v)).unwrap();
+                self.files[b].lock().unwrap().write_all(disk_bytes(v)).unwrap();
                 v.clear();
             }
         }
@@ -448,14 +572,20 @@ impl Buckets {
     fn size(&self, b: usize) -> u64 {
         std::fs::metadata(&self.paths[b]).map_or(0, |m| m.len())
     }
+    /// Bucket `b`'s ends, widened (the file read in one call into a buffer of its size).
     fn read(&self, b: usize) -> Vec<End> {
-        let mut data = Vec::new();
-        std::fs::File::open(&self.paths[b]).unwrap().read_to_end(&mut data).unwrap();
-        bytes_to_ends(&data)
+        let mut f = std::fs::File::open(&self.paths[b]).unwrap();
+        let len = f.metadata().unwrap().len() as usize;
+        let sz = std::mem::size_of::<T>();
+        assert_eq!(len % sz, 0, "{}: not a whole number of ends", self.paths[b]);
+        let mut raw = vec![0u8; len];
+        f.read_exact(&mut raw).unwrap();
+        // SAFETY: T is a packed struct of integers (alignment 1, any bytes valid); each read is within raw
+        raw.chunks_exact(sz).map(|c| unsafe { std::ptr::read_unaligned(c.as_ptr() as *const T) }.to_end()).collect()
     }
 }
 
-impl Drop for Buckets {
+impl<T: DiskEnd> Drop for Buckets<T> {
     fn drop(&mut self) {
         for p in &self.paths {
             let _ = std::fs::remove_file(p);
@@ -706,9 +836,18 @@ fn mark_frags(list: &[End], res: &mut GroupResult) {
     }
 }
 
-fn group_bucket(frags: Vec<End>, pairs: Vec<End>, dist: i32) -> GroupResult {
+/// [`group_bucket`] on bucket `b` as the buckets hold it.
+fn group_from_disk(frag_b: &Buckets<FragDisk>, pair_b: &Buckets<PairDisk>, b: usize, dist: i32) -> GroupResult {
+    let mut laps = crate::cpuprof::Laps::new();
+    let (mut frags, mut pairs) = (frag_b.read(b), pair_b.read(b));
+    laps.lap(4);
+    let r = group_bucket(&mut frags, &mut pairs, dist);
+    laps.lap(5);
+    r
+}
+
+fn group_bucket(frags: &mut [End], pairs: &mut [End], dist: i32) -> GroupResult {
     let mut res = GroupResult::default();
-    let mut pairs = pairs;
     pairs.sort_unstable_by_key(|e| e.key());
     let mut i = 0;
     while i < pairs.len() {
@@ -729,7 +868,6 @@ fn group_bucket(frags: Vec<End>, pairs: Vec<End>, dist: i32) -> GroupResult {
         }
         i = j;
     }
-    let mut frags = frags;
     frags.sort_unstable_by_key(|e| e.key());
     let mut i = 0;
     while i < frags.len() {
@@ -917,8 +1055,8 @@ pub fn run(argv: &[String]) {
     let open = |ch: &Chunk| ChunkRecords::open(&inputs, &tails, merged.as_ref(), ch, &io_ns);
     let bmap = BucketMap::new(&header.ref_lens, args.bucket_bp);
     let pid = std::process::id();
-    let frag_b = Buckets::new(&args.tmp, &format!("ardmd{pid}.frag"), bmap.n);
-    let pair_b = Buckets::new(&args.tmp, &format!("ardmd{pid}.pair"), bmap.n);
+    let frag_b: Buckets<FragDisk> = Buckets::new(&args.tmp, &format!("ardmd{pid}.frag"), bmap.n);
+    let pair_b: Buckets<PairDisk> = Buckets::new(&args.tmp, &format!("ardmd{pid}.pair"), bmap.n);
 
     // ---- pass 1
     let mut pass1: Vec<Pass1> = chunks
@@ -940,25 +1078,36 @@ pub fn run(argv: &[String]) {
             }
             let Some(mut stream) = open(ch) else { return p };
             let mut rec = Vec::new();
-            let mut lf: HashMap<usize, Vec<End>> = HashMap::new();
-            let mut lp: HashMap<usize, Vec<End>> = HashMap::new();
-            let mut waiting: HashMap<(Vec<u8>, i32), Half> = HashMap::new();
-            let mut seen_pg: std::collections::HashSet<Option<Vec<u8>>> = std::collections::HashSet::new();
+            let mut lf = frag_b.local();
+            let mut lp = pair_b.local();
+            // mates waiting in this chunk, by read group + name + the reference they are filed under (4 bytes LE)
+            let mut waiting: HashMap<Vec<u8>, Half, FastHash> = HashMap::default();
+            let mut key: Vec<u8> = Vec::new();
+            // PG values seen in this chunk (p.pg_seen keeps their first-occurrence order)
+            let mut seen_pg: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+            let mut seen_no_pg = false;
             let mut local: u64 = 0;
-            while stream.next(&mut rec) {
+            let mut laps = crate::cpuprof::Laps::new();
+            while {
+                let more = stream.next(&mut rec);
+                laps.lap(8);
+                more
+            } {
                 let idx = ((ci as u64) << 32) | local;
                 local += 1;
                 let aux = bamwrite::aux_start(&rec);
-                let pg = find_z(&rec, aux, b"PG").map(|v| v.to_vec());
-                if !seen_pg.contains(&pg) {
-                    seen_pg.insert(pg.clone());
-                    p.pg_seen.push(pg);
+                let (pg, rg) = find_pg_rg(&rec, aux);
+                let new_pg = match pg {
+                    Some(v) => !seen_pg.contains(v) && seen_pg.insert(v.to_vec()),
+                    None => !std::mem::replace(&mut seen_no_pg, true),
+                };
+                if new_pg {
+                    p.pg_seen.push(pg.map(|v| v.to_vec()));
                 }
                 let v = view(&rec);
                 if v.flag & 0x4 != 0 || v.flag & 0x900 != 0 {
                     continue;
                 }
-                let rg = find_z(&rec, aux, b"RG");
                 let (lib, rg_ord) = hi.lib_and_rg(rg);
                 let l_read_name = rec[8] as usize;
                 let name = &rec[32..32 + l_read_name - 1];
@@ -973,32 +1122,47 @@ pub fn run(argv: &[String]) {
                     e.y = y;
                     e.rg = rg_ord;
                 }
-                lf.entry(bmap.bucket(e.ref1, e.coord1)).or_default().push(e);
+                Buckets::push(&mut lf, bmap.bucket(e.ref1, e.coord1), &e);
                 if paired {
-                    let mut key = rg.expect("paired read without a read group").to_vec();
+                    key.clear();
+                    key.extend_from_slice(rg.expect("paired read without a read group"));
                     key.extend_from_slice(name);
+                    let nk = key.len();
                     // tmp.remove(rec.getReferenceIndex(), key)
-                    match waiting.remove(&(key.clone(), v.ref_id)) {
+                    key.extend_from_slice(&v.ref_id.to_le_bytes());
+                    match waiting.remove(&key[..]) {
                         Some(first) => {
                             let second = Half { end: e, neg: v.flag & 0x10 != 0, first_of_pair: v.flag & 0x40 != 0, target_ref: v.mate_ref };
                             let pe = make_pair(&first, &second);
-                            lp.entry(bmap.bucket(pe.ref1, pe.coord1)).or_default().push(pe);
+                            Buckets::push(&mut lp, bmap.bucket(pe.ref1, pe.coord1), &pe);
                         }
                         None => {
                             let h = Half { end: e, neg: v.flag & 0x10 != 0, first_of_pair: v.flag & 0x40 != 0, target_ref: v.mate_ref };
-                            waiting.insert((key, v.mate_ref), h);
+                            key.truncate(nk);
+                            key.extend_from_slice(&v.mate_ref.to_le_bytes());
+                            waiting.insert(key.clone(), h);
                         }
                     }
                 }
+                laps.lap(2);
                 if local % 4096 == 0 {
                     frag_b.flush_local(&mut lf, false);
                     pair_b.flush_local(&mut lp, false);
+                    laps.lap(3);
                 }
             }
             frag_b.flush_local(&mut lf, true);
             pair_b.flush_local(&mut lp, true);
+            laps.lap(3);
             p.n_records = local;
-            p.cross = waiting.into_iter().map(|((k, _), h)| (k, h)).collect();
+            // the key without its reference (the cross-chunk join adds it back)
+            p.cross = waiting
+                .into_iter()
+                .map(|(mut k, h)| {
+                    k.truncate(k.len() - 4);
+                    (k, h)
+                })
+                .collect();
             p
         })
         .collect();
@@ -1026,12 +1190,12 @@ pub fn run(argv: &[String]) {
         .map(|mut cross| {
             cross.sort_unstable_by_key(|x| x.1.end.idx1);
             let mut waiting: HashMap<(Vec<u8>, i32), Half> = HashMap::new();
-            let mut lp: HashMap<usize, Vec<End>> = HashMap::new();
+            let mut lp = pair_b.local();
             for (key, h) in cross {
                 match waiting.remove(&(key.clone(), h.end.ref1)) {
                     Some(first) => {
                         let pe = make_pair(&first, &h);
-                        lp.entry(bmap.bucket(pe.ref1, pe.coord1)).or_default().push(pe);
+                        Buckets::push(&mut lp, bmap.bucket(pe.ref1, pe.coord1), &pe);
                     }
                     None => {
                         let t = h.target_ref;
@@ -1074,7 +1238,7 @@ pub fn run(argv: &[String]) {
         .into_par_iter()
         .with_max_len(1)
         .map(|(_, b)| {
-            let mut r = group_bucket(frag_b.read(b), pair_b.read(b), args.optical_distance);
+            let mut r = group_from_disk(&frag_b, &pair_b, b, args.optical_distance);
             for &p in &r.dups {
                 let g = offsets[(p >> 32) as usize] + (p & 0xffff_ffff);
                 bits[(g / 64) as usize].fetch_or(1 << (g % 64), Ordering::Relaxed);
@@ -1118,7 +1282,12 @@ pub fn run(argv: &[String]) {
         let mut ts = bamwrite::TagScratch::default();
         let mut lm = vec![LibMetrics::default(); hi.libs.len()];
         let mut local = 0u64;
-        while stream.next(&mut rec) {
+        let mut laps = crate::cpuprof::Laps::new();
+        while {
+            let more = stream.next(&mut rec);
+            laps.lap(9);
+            more
+        } {
             let dup = if ch.tid >= 0 {
                 let g = offsets[ci] + local;
                 bits.get((g / 64) as usize).map_or(false, |w| w.load(Ordering::Relaxed) & (1 << (g % 64)) != 0)
@@ -1134,13 +1303,18 @@ pub fn run(argv: &[String]) {
             let (lib, _) = hi.lib_and_rg(rg);
             lm[lib as usize].add_read(flag, dup);
             retag(&mut rec, &pg_map, &args, &mut ts);
+            laps.lap(6);
             w.push(&rec);
+            laps.lap(7);
         }
         let mut g = lib_metrics.lock().unwrap();
         for (a, b) in g.iter_mut().zip(lm.iter()) {
             a.add(b);
         }
-        w.finish()
+        drop(g);
+        let o = w.finish();
+        laps.lap(7);
+        o
     };
     // chunks run on the pool, at most `window` ahead of the writer; this thread appends them in order as they finish
     let window = 4 * args.threads.max(1);
@@ -1192,6 +1366,21 @@ pub fn run(argv: &[String]) {
 
     write_metrics(&args, &cmdline, &header.text, &hi, &lib_metrics.into_inner().unwrap(), &res);
     eprintln!("total {:.1}s", t0.elapsed().as_secs_f64());
+    crate::cpuprof::report_laps(
+        "MarkDuplicates",
+        &[
+            (0, "input: file reads (reader threads)"),
+            (1, "input: BGZF inflate (reader threads)"),
+            (8, "pass 1: records from the streams (copy, merge of the inputs)"),
+            (2, "pass 1: ends (parse, read name, mate join)"),
+            (3, "pass 1: bucket writes"),
+            (4, "grouping: bucket reads"),
+            (5, "grouping: sort + duplicate sets"),
+            (9, "pass 2: records from the streams (copy, merge of the inputs)"),
+            (6, "pass 2: flags, metrics, tags re-encoded"),
+            (7, "pass 2: BGZF blocks + deflate"),
+        ],
+    );
 }
 
 /// Cuts chunks holding much more read data than a `chunk`-sized piece of the genome at mean density (by the index's

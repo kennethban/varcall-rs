@@ -224,11 +224,18 @@ pub fn run(argv: &[String]) {
                 let len = header.ref_lens[tid];
                 // reference window: from the first possible read start to well past the chunk end
                 let win_from = (ch.from - 1).max(1);
+                let mut laps = crate::cpuprof::Laps::new();
                 let (mut refseq, _) = fasta.fetch(name, win_from, ch.to + 20_000);
                 let mut ref_from = win_from;
                 let mut stream = input.stream(tid, &ch.query(), false, io_ns.clone());
-                while stream.next_record(&mut rec) {
+                laps.lap(4);
+                while {
+                    let more = stream.next_record(&mut rec);
+                    laps.lap(8);
+                    more
+                } {
                     let (has_rg, qual_missing) = decode(&rec, &mut r, &mut rg, &mut oq);
+                    laps.lap(2);
                     if r.ref_id != ch.tid || r.start < ch.from || r.start > ch.to {
                         continue;
                     }
@@ -254,13 +261,16 @@ pub fn run(argv: &[String]) {
                     if !hc_preproc::bqsr_clip(&mut r, &mut w.cigar_scratch) {
                         continue;
                     }
+                    laps.lap(3);
                     if r.start < ref_from || r.end >= ref_from + refseq.len() as i64 {
                         let f = r.start.max(1);
                         let (s, _) = fasta.fetch(name, f, r.end.max(f) + 20_000);
                         refseq = s;
                         ref_from = f;
+                        laps.lap(4);
                     }
                     recal::process_read(&r, rgk, tid, orig_span, &known, &refseq, ref_from, &mut c, &mut w);
+                    laps.lap(5);
                 }
                 (c, w, r, rec, rg, oq)
             },
@@ -279,4 +289,16 @@ pub fn run(argv: &[String]) {
     let text = report::report_text(&fin, &rgs, 16);
     std::fs::write(&args.out, text).unwrap_or_else(|e| panic!("{}: {e}", args.out));
     eprintln!("report written in {:.1}s; total {:.1}s", t2.elapsed().as_secs_f64(), t0.elapsed().as_secs_f64());
+    crate::cpuprof::report_laps(
+        "BaseRecalibrator",
+        &[
+            (0, "input: file reads (reader threads)"),
+            (1, "input: BGZF inflate (reader threads)"),
+            (8, "records from the stream (copy)"),
+            (2, "decode (CIGAR, bases, qualities, tags)"),
+            (3, "read filters + clipping (reads skipped: their filter time goes to the stream)"),
+            (4, "reference fetch"),
+            (5, "covariates + known sites + counts (process_read)"),
+        ],
+    );
 }

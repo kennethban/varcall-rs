@@ -545,8 +545,8 @@ pub(super) fn run(args: &Args) {
     let io_ns = Arc::new(AtomicU64::new(0));
     let bmap = BucketMap::new(&merged.ref_lens, args.bucket_bp);
     let pid = std::process::id();
-    let frag_b = Buckets::new(&args.tmp, &format!("ardmdq{pid}.frag"), bmap.n);
-    let pair_b = Buckets::new(&args.tmp, &format!("ardmdq{pid}.pair"), bmap.n);
+    let frag_b: Buckets<FragDisk> = Buckets::new(&args.tmp, &format!("ardmdq{pid}.frag"), bmap.n);
+    let pair_b: Buckets<PairDisk> = Buckets::new(&args.tmp, &format!("ardmdq{pid}.pair"), bmap.n);
 
     // ---- pass 1: read ends indexed by the first record of their query-name group
     let mut pg_seen: Vec<Option<Vec<u8>>> = Vec::new();
@@ -555,8 +555,8 @@ pub(super) fn run(args: &Args) {
     {
         let mut src = Source::new(&ins, &merged, &io_ns);
         let mut rec = Vec::new();
-        let mut lf: HashMap<usize, Vec<End>> = HashMap::new();
-        let mut lp: HashMap<usize, Vec<End>> = HashMap::new();
+        let mut lf = frag_b.local();
+        let mut lp = pair_b.local();
         let mut waiting: HashMap<(Vec<u8>, i32), Half> = HashMap::new();
         let mut group_name: Vec<u8> = Vec::new();
         let mut group_idx = 0u64;
@@ -594,7 +594,7 @@ pub(super) fn run(args: &Args) {
                 e.y = y;
                 e.rg = rg_ord;
             }
-            lf.entry(bmap.bucket(e.ref1, e.coord1)).or_default().push(e);
+            Buckets::push(&mut lf, bmap.bucket(e.ref1, e.coord1), &e);
             if paired {
                 let mut key = rg.expect("paired read without a read group").to_vec();
                 key.extend_from_slice(name);
@@ -602,7 +602,7 @@ pub(super) fn run(args: &Args) {
                 match waiting.remove(&(key.clone(), v.ref_id)) {
                     Some(a) => {
                         let pe = make_pair(&a, &h);
-                        lp.entry(bmap.bucket(pe.ref1, pe.coord1)).or_default().push(pe);
+                        Buckets::push(&mut lp, bmap.bucket(pe.ref1, pe.coord1), &pe);
                     }
                     None => {
                         waiting.insert((key, v.mate_ref), h);
@@ -625,7 +625,7 @@ pub(super) fn run(args: &Args) {
     let t1 = Instant::now();
     let res = (0..bmap.n)
         .into_par_iter()
-        .map(|b| group_bucket(frag_b.read(b), pair_b.read(b), args.optical_distance))
+        .map(|b| group_from_disk(&frag_b, &pair_b, b, args.optical_distance))
         .reduce(GroupResult::default, |mut a, b| {
             a.merge(b);
             a

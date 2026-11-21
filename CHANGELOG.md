@@ -45,6 +45,11 @@ named in its entry; a change of reference version is a new minor version at leas
   scatter). GATK's single run differs from that (QD's random jitter is one stream across all intervals), so without
   the flag variant-rs stays one run.
 * align-rs: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s); extension on its own thread pool.
+* variant-rs MarkDuplicates: smaller on-disk read ends (buckets 60 -> 43 GB), read straight into their arrays, and a
+  cheaper first pass: a 30x genome on 32 threads 281 -> 255 s. `VARIANT_RS_TRACE_CPU=1` prints its CPU by step.
+* Pipeline: MarkDuplicates writes its BAM at compression level 2, as nf-core/sarek's (the gatk launcher's
+  `-Dsamjdk.compression_level=2`): the same records, the BAM ~7% larger, the step 255 -> 246 s.
+* align-rs: `ALIGN_RS_MEMLOG=SECS` prints the process's memory and its queues every SECS seconds.
 
 ### Fixed
 

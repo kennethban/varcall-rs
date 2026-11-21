@@ -92,6 +92,7 @@ pub fn spawn_block_reader(file: Arc<File>, ranges: Vec<(u64, u64)>, parallel: bo
 fn read_ranges(file: &File, ranges: &[(u64, u64)], parallel: bool, tx: &SyncSender<Option<Vec<Block>>>, inflate_ns: &std::sync::atomic::AtomicU64) {
     const READ: usize = 4 << 20;
     let mut buf = vec![0u8; READ + 70000];
+    let mut laps = crate::cpuprof::Laps::new();
     for &(first, last) in ranges {
         let mut pos = first;
         // blocks with offset <= last are needed
@@ -102,6 +103,7 @@ fn read_ranges(file: &File, ranges: &[(u64, u64)], parallel: bool, tx: &SyncSend
                 Ok(n) => n,
                 Err(e) => panic!("BAM read error: {e}"),
             };
+            laps.lap(0);
             // every range ends at a block the index points to: ending early means a damaged file
             assert!(n > 0, "BAM file truncated: end of file at offset {pos}, index expects data up to block {last}");
             let mut blocks = split_blocks(&buf[..n]);
@@ -117,6 +119,7 @@ fn read_ranges(file: &File, ranges: &[(u64, u64)], parallel: bool, tx: &SyncSend
                 blocks.iter().map(|&(o, s)| Block { coff: base + o as u64, data: inflate_block(&b[o..o + s]) }).collect()
             };
             inflate_ns.fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+            laps.lap(1);
             let &(lo, ls) = blocks.last().unwrap();
             pos = base + (lo + ls) as u64;
             if tx.send(Some(out)).is_err() {

@@ -254,7 +254,8 @@ Others of the same kind:
 
 * **MarkDuplicates:** pass 1 runs over 2 Mb chunks in parallel. Read ends go to on-disk buckets keyed by
   (contig, position), and buckets are grouped in parallel with Picard's comparator. Pass 2 rewrites records in
-  parallel and appends them in order. Whole genome: 6 min vs Picard's 42 min.
+  parallel and appends them in order. Whole genome: 6 min vs Picard's 42 min. The ends on disk are packed
+  (35 bytes a fragment, 50 a pair) and read straight into their arrays.
 * **ApplyBQSR:** rewrites each record's quality bytes in place and re-encodes the tags as htsjdk does.
 * **BGZF:** compressed and decompressed in parallel with libdeflate everywhere. The `.bai` / `.tbi` are built while
   writing.

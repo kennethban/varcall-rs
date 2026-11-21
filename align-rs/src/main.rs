@@ -29,6 +29,26 @@ use std::io::Write;
 static PROF: [std::sync::atomic::AtomicU64; 9] = [const { std::sync::atomic::AtomicU64::new(0) }; 9];
 static DROP_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static DROP_MAX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// lanes handed to the final-pass thread and not yet finished (ALIGN_RS_MEMLOG)
+static FINAL_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// batches written (ALIGN_RS_MEMLOG)
+static WRITTEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// ALIGN_RS_MEMLOG=s: every s seconds, the process's memory (/proc/self/status) and the backlogs of the two queues
+/// without a bound (the dropper's, the final pass's)
+fn memlog() {
+    let Some(secs) = std::env::var("ALIGN_RS_MEMLOG").ok().and_then(|v| v.parse::<f64>().ok()) else { return };
+    let t0 = std::time::Instant::now();
+    std::thread::spawn(move || loop {
+        let st = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let kb = |k: &str| st.lines().find(|l| l.starts_with(k)).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) >> 10;
+        let o = std::sync::atomic::Ordering::Relaxed;
+        eprintln!(
+            "[align-rs] mem {:7.1} s: anon {} MB, file {} MB, swap {} MB; written {} batches, drops pending {}, final passes pending {}",
+            t0.elapsed().as_secs_f64(), kb("RssAnon:"), kb("RssFile:"), kb("VmSwap:"), WRITTEN.load(o), DROP_PENDING.load(o), FINAL_PENDING.load(o)
+        );
+        std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+    });
+}
 const PROF_NAMES: [&str; 9] = ["wall: seeding (SMEM)", "wall: SA + chaining", "wall: extension (rounds + replay + dedup)", "pairing + SAM", "wall: FASTQ read + gunzip", "wall: seed/chain/extend phase", "wall: pestat + SAM phase", "wall: output write", "dropper busy"];
 fn vb<T>(v: &Vec<T>) -> usize {
     v.capacity() * std::mem::size_of::<T>()
@@ -321,6 +341,7 @@ fn main() {
         let decommit = std::env::var("ALIGN_RS_MI_DECOMMIT").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
         unsafe { mi_option_set(MI_OPTION_PURGE_DECOMMITS, decommit as std::ffi::c_long) };
     }
+    memlog();
     if std::env::var("ALIGN_RS_PTRACER").is_ok() {
         // profiling: let a sampler (gdb) attach although yama's ptrace_scope is 1 (PR_SET_PTRACER, PR_SET_PTRACER_ANY)
         extern "C" {
@@ -447,6 +468,7 @@ fn main() {
                 let tf = std::time::Instant::now();
                 let (n, path) = (b.n_records, b.path().to_string());
                 b.finish();
+                FINAL_PENDING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 eprintln!("[align-rs] sorted BAM + index: {path}: {n} records, final pass {:.1} s", tf.elapsed().as_secs_f64());
             }
             prof::stage_done("BAM final pass");
@@ -571,10 +593,10 @@ fn main() {
                 let (lane, sopt, paired) = (&lanes[li], &lanes[li].sopt, lanes[li].r2.is_some());
                 if lane.bam() && li >= next_lane {
                     if let Some(b) = sink.take() {
-                        ftx.send(b).unwrap();
+                        { FINAL_PENDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed); ftx.send(b).unwrap(); }
                     }
                     for l in &lanes[next_lane..li] {
-                        ftx.send(new_sink(l)).unwrap();
+                        { FINAL_PENDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed); ftx.send(new_sink(l)).unwrap(); }
                     }
                     sink = Some(new_sink(lane));
                     next_lane = li + 1;
@@ -618,15 +640,16 @@ fn main() {
                 mbsz("SAM text", n_processed, || vb(&text) + text.iter().map(|t| t.capacity()).sum::<usize>());
                 mbsz("rescue pre", n_processed, || vb(&pre) + pre.iter().map(vb).sum::<usize>());
                 dropper.send(Box::new((text, batch, seqs, pre))).unwrap();
+                WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 eprintln!("[align-rs] batch: {} reads, {:.2}s", n, t0.elapsed().as_secs_f64());
             }
             out.flush().unwrap();
             if lanes[0].bam() {
                 if let Some(b) = sink.take() {
-                    ftx.send(b).unwrap();
+                    { FINAL_PENDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed); ftx.send(b).unwrap(); }
                 }
                 for l in &lanes[next_lane..] {
-                    ftx.send(new_sink(l)).unwrap();
+                    { FINAL_PENDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed); ftx.send(new_sink(l)).unwrap(); }
                 }
             }
             drop(ftx);
