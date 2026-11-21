@@ -52,7 +52,9 @@ __device__ __forceinline__ int ref_base(const uint8_t *pac, int64_t l_pac, int64
 
 // thread t runs job order[t] (jobs of similar size side by side, so that a warp's threads finish together) and
 // writes its result in the job's own slot
-__global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, JobOut *out, int *nleft, int jw, int jend_bonus, int jdir) {
+// The jobs the ungapped shortcut took (k_extkey: *nug of them) are sorted last and skipped.
+__global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const int *nug, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, JobOut *out, int *nleft, int jw, int jend_bonus, int jdir) {
+  n -= *nug;
   // grid-stride: a fixed number of blocks per SM (aln_gpu_extend), so the threads' DP rows fit L1
   for (int t0 = blockIdx.x * blockDim.x + threadIdx.x; t0 < n; t0 += gridDim.x * blockDim.x) {
     const int t = order[t0];
@@ -259,12 +261,66 @@ extern "C" int aln_gpu_set_reads(int slot, uint64_t key, const uint8_t *reads, i
 static uint32_t *d_ekey = 0; static size_t cap_ekey = 0;
 static uint32_t *d_eidx = 0; static size_t cap_eidx = 0;
 static uint8_t *d_etmp = 0;  static size_t cap_etmp = 0;
-__global__ void k_extkey(const Job *jobs, int n, uint32_t *key, uint32_t *idx) {
+// ksw_extend2's result read off the main diagonal when no path with a gap can change it (bwa-mem3's ungapped
+// shortcut; the conditions and why they suffice: align-rs/src/ext.rs `ungapped_extend`, the same walk): the
+// diagonal's total loss (a - score per cell) below min(o_del + e_del, o_ins + e_ins), tlen >= qlen, every diagonal
+// value > 0, no z-drop on the diagonal. false: the job needs the DP.
+__device__ bool ungapped_ext(const Job &jb, const uint8_t *rd, const uint8_t *pac, int64_t l_pac, int dir, JobOut &r) {
+    const int qlen = jb.qlen;
+    if (qlen < 1 || (int64_t)jb.rlen < qlen) return false;
+    int a = 0;
+    for (int i = 0; i < 25; ++i) a = a > c_mat[i] ? a : c_mat[i];
+    const int oe = min(c_par[0] + c_par[1], c_par[2] + c_par[3]), zdrop = c_par[4];
+    int d = jb.h0, mx = d, mi = -1, loss = 0;
+    for (int i = 0; i < qlen; ++i) {
+        const int sc = c_mat[rd[jb.qstart + (int64_t)i * dir] * 5 + ref_base(pac, l_pac, jb.rstart + (int64_t)i * dir)];
+        loss += a - sc;
+        if (loss >= oe) return false;
+        d += sc;
+        if (d <= 0) return false;
+        if (d > mx) { mx = d; mi = i; }
+        else if (zdrop > 0 && mx - d > zdrop) return false;
+    }
+    r.score = mx; r.qle = mi + 1; r.tle = mi + 1; r.gtle = qlen; r.gscore = d; r.max_off = 0;
+    return true;
+}
+
+// The sort key (qlen << 16 | rlen, clamped), and the ungapped shortcut (ALIGN_RS_UNGAPPED, `mode`): 1, a job it
+// takes gets its result here and the largest key (sorted last, k_extend skips it); 2 (check), its result goes to
+// ug[] and the job still runs the DP (k_extcheck compares).
+__global__ void k_extkey(const Job *jobs, int n, uint32_t *key, uint32_t *idx, int mode, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, int dir, JobOut *out, JobOut *ug, int *nug) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= n) return;
-    key[t] = ((uint32_t)jobs[t].qlen << 16) | min(jobs[t].rlen, 65535u);
+    const Job jb = jobs[t];
+    uint32_t k = ((uint32_t)jb.qlen << 16) | min(jb.rlen, 65535u);
+    if (mode) {
+        JobOut r;
+        const bool ok = ungapped_ext(jb, reads + off[jb.read], pac, l_pac, dir, r);
+        if (mode == 1) {
+            if (ok) { out[t] = r; k = 0xffffffffu; atomicAdd(nug, 1); }
+        } else {
+            if (!ok) r.score = INT_MIN;
+            ug[t] = r;
+        }
+    }
+    key[t] = k;
     idx[t] = t;
 }
+// ALIGN_RS_UNGAPPED=check: the shortcut's results against the DP's
+__global__ void k_extcheck(const JobOut *out, const JobOut *ug, int n, int *cnt) {
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n || ug[t].score == INT_MIN) return;
+    const JobOut a = out[t], b = ug[t];
+    atomicAdd(&cnt[0], 1);
+    if (a.score != b.score || a.qle != b.qle || a.tle != b.tle || a.gtle != b.gtle || a.gscore != b.gscore || a.max_off != b.max_off) atomicAdd(&cnt[1], 1);
+}
+static int ungapped_mode() {
+    static int m = [] { const char *e = getenv("ALIGN_RS_UNGAPPED"); return e && !strcmp(e, "0") ? 0 : e && !strcmp(e, "check") ? 2 : 1; }();
+    return m;
+}
+static JobOut *d_ug = 0; static size_t cap_ug = 0;
+static int *d_nug = 0;
+static std::atomic<long long> g_ug_jobs{0}, g_ug_checked{0};
 
 static thread_local double t_ext_call[4] = {0, 0, 0, 0};
 static int *d_nleft = 0;
@@ -279,7 +335,11 @@ extern "C" int aln_gpu_extend(const Job *jobs, int n_jobs, int w, int end_bonus,
     int bs = 128, nb = (n_jobs + bs - 1) / bs;
     // order by size: key qlen << 16 | rlen (clamped), radix-sorted with the job indexes
     if (grow(&d_ekey, &cap_ekey, (size_t)n_jobs * 2) || grow(&d_eidx, &cap_eidx, (size_t)n_jobs * 2)) return -1;
-    k_extkey<<<nb, bs>>>(d_jobs, n_jobs, d_ekey, d_eidx);
+    const int ugm = ungapped_mode();
+    if (!d_nug) CK(cudaMalloc((void **)&d_nug, 2 * sizeof(int)));
+    CK(cudaMemsetAsync(d_nug, 0, 2 * sizeof(int), cudaStreamPerThread));
+    if (ugm == 2 && grow(&d_ug, &cap_ug, (size_t)n_jobs)) return -1;
+    k_extkey<<<nb, bs>>>(d_jobs, n_jobs, d_ekey, d_eidx, ugm, d_rs[1], d_os[1], d_pac, g_l_pac, dir, d_out, d_ug, d_nug);
     size_t tb = 0;
     CK(cub::DeviceRadixSort::SortPairs(nullptr, tb, d_ekey, d_ekey + n_jobs, d_eidx, d_eidx + n_jobs, n_jobs, 0, 32, cudaStreamPerThread));
     if (grow(&d_etmp, &cap_etmp, tb)) return -1;
@@ -290,12 +350,19 @@ extern "C" int aln_gpu_extend(const Job *jobs, int n_jobs, int w, int end_bonus,
     if (g_ext_bpsm > 0 && nb > g_ext_bpsm * g_n_sm) nb = g_ext_bpsm * g_n_sm;
     if (!d_nleft) CK(cudaMalloc((void **)&d_nleft, sizeof(int)));
     CK(cudaMemsetAsync(d_nleft, 0, sizeof(int), cudaStreamPerThread));
-    k_extend<<<nb, bs>>>(d_jobs, d_eidx + n_jobs, n_jobs, d_rs[1], d_os[1], d_pac, g_l_pac, d_out, d_nleft, w, end_bonus, dir);
+    k_extend<<<nb, bs>>>(d_jobs, d_eidx + n_jobs, n_jobs, d_nug, d_rs[1], d_os[1], d_pac, g_l_pac, d_out, d_nleft, w, end_bonus, dir);
     CK(cudaGetLastError());
+    if (ugm == 2) k_extcheck<<<(n_jobs + bs - 1) / bs, bs>>>(d_out, d_ug, n_jobs, d_nug);
     cudaEventRecord(ev[2]);
     CK(cudaMemcpy(out, d_out, (size_t)n_jobs * sizeof(JobOut), cudaMemcpyDeviceToHost));
-    int nleft = 0;
+    int nleft = 0, nug[2] = {0, 0};
     CK(cudaMemcpy(&nleft, d_nleft, sizeof(int), cudaMemcpyDeviceToHost));
+    CK(cudaMemcpy(nug, d_nug, 2 * sizeof(int), cudaMemcpyDeviceToHost));
+    if (ugm == 2) {
+        // check: nug[0] jobs the shortcut took, nug[1] of them differ from the DP
+        if (nug[1]) { fprintf(stderr, "[align-rs-gpu] ALIGN_RS_UNGAPPED=check: %d of %d shortcut results differ from the DP\n", nug[1], nug[0]); abort(); }
+        g_ug_checked += nug[0];
+    } else g_ug_jobs += nug[0];
     cudaEventRecord(ev[3]);
     cudaEventSynchronize(ev[3]);
     float a, b, c, srt;
@@ -312,7 +379,8 @@ extern "C" void aln_gpu_ext_take(double *out) {
 }
 
 extern "C" void aln_gpu_report() {
-    fprintf(stderr, "[align-rs-gpu] extension: H2D %.2f s, kernel %.2f s, D2H %.2f s\n", t_h2d, t_kernel, t_d2h);
+    fprintf(stderr, "[align-rs-gpu] extension: H2D %.2f s, kernel %.2f s, D2H %.2f s; ungapped shortcut: %lld jobs%s\n", t_h2d, t_kernel, t_d2h,
+            ungapped_mode() == 2 ? g_ug_checked.load() : g_ug_jobs.load(), ungapped_mode() == 2 ? " checked against the DP, all identical" : ungapped_mode() == 0 ? " (off)" : "");
 }
 
 // ------------------------------------------------------------------------------------------------

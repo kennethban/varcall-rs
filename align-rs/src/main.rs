@@ -846,7 +846,7 @@ fn main() {
             eprintln!("[align-rs] {n}: {:.1} s", c.load(std::sync::atomic::Ordering::Relaxed) as f64 * 1e-9);
         }
         let e: Vec<f64> = ext::EPROF.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed) as f64).collect();
-        eprintln!("[align-rs] extension: setup {:.1} s, job build {:.1} s, run {:.1} s ({} jobs), apply {:.1} s, replay+dedup {:.1} s", e[0] * 1e-9, e[1] * 1e-9, e[2] * 1e-9, e[5] as u64, e[3] * 1e-9, e[4] * 1e-9);
+        eprintln!("[align-rs] extension: setup {:.1} s, job build {:.1} s, run {:.1} s ({} jobs; the CPU extender's ungapped shortcut {}), apply {:.1} s, replay+dedup {:.1} s", e[0] * 1e-9, e[1] * 1e-9, e[2] * 1e-9, e[5] as u64, e[6] as u64, e[3] * 1e-9, e[4] * 1e-9);
         let sp: Vec<f64> = sam::SPROF.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed) as f64 * 1e-9).collect();
         eprintln!("[align-rs] mate SW calls {} (u8 {}), cells {:.3e}", sam::KSW_CALLS[0].load(std::sync::atomic::Ordering::Relaxed), sam::KSW_CALLS[1].load(std::sync::atomic::Ordering::Relaxed), sam::KSW_CALLS[2].load(std::sync::atomic::Ordering::Relaxed) as f64);
         eprintln!("[align-rs] pairing + SAM split (thread s): mate SW {:.1}, CIGAR/NM/MD {:.1}, SAM text {:.1}", sp[0], sp[1], sp[3]);

@@ -63,6 +63,10 @@ named in its entry; a change of reference version is a new minor version at leas
   as bwa-mem2's ksw_u8: kernel 21 -> 12 ms per 65,536 jobs on an L40S, 31 -> 18 on an RTX 5070 Ti; a 30x lane on
   one L40S 86.5 -> 82.4 s. `ALIGN_RS_MSW=striped` runs the previous kernel (`ALIGN_RS_MSW_MINB` and `tune` now
   apply to it only).
+* align-rs: extension's ungapped shortcut (from bwa-mem3): a job whose seed diagonal loses less than a gap open
+  (default scoring: at most one mismatch) takes its result from a walk along the diagonal on the GPU instead of the
+  banded DP, identical results; a quarter of the jobs, the extension kernel -12% on an L40S. `ALIGN_RS_UNGAPPED=0`
+  turns it off, `=check` compares it with the DP.
 
 ### Fixed
 

@@ -364,3 +364,24 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     every run: workstation `mid` 1.60 -> 1.47 s per batch; one 30x lane on one L40S at 64 threads 86.2 / 86.9 ->
     80.7 / 84.1 s (two runs each, alternating). Runs: `$VARCALL_DATA/runs/stage7`, server `runs/stage7`.
 
+13. **Ungapped shortcut for extension (2026-11-22; PLAN.md stage 7): the default.** From bwa-mem3 (PRs #540, #544),
+    with the conditions derived for ksw_extend2 (`ext.rs` `ungapped_extend`): when the main diagonal's total loss
+    (a - score per cell: a mismatch a + b, an N a + 1) stays below min(o_del + e_del, o_ins + e_ins), every path
+    with a gap scores at least 2 below the diagonal in its row and in its column, so the row maxima, the new maxima
+    (max_off 0) and gscore at row qlen - 1 are the diagonal's; with tlen >= qlen, every diagonal value > 0 and no
+    z-drop on the diagonal, the DP reaches row qlen - 1 as the walk does, and the rows past the query's end are
+    gapped. Default scoring: at most one mismatch (or up to three Ns).
+    The walk first ran on the CPU while building each round's jobs: exact, but on the workstation the lane slowed
+    (1.59 -> 1.74 s a batch: job build 5 -> 7.6 s of CPU against 1.3 s of kernel saved). It now runs on the GPU in
+    `k_extkey` (one thread per job, before the size sort): a job it takes gets its result there and the largest key,
+    and `k_extend` skips the last *nug jobs; no CPU cost, uploads unchanged. The CPU extender (no GPU) runs the same
+    walk. `ALIGN_RS_UNGAPPED=0` turns it off; `=check` runs every job through the DP as well and aborts on a
+    difference.
+    * Checked: `=check` on the `mid` set (36.6 M of 146.6 M jobs taken, 25%) and on a 30x lane on the L40S (229.8 M
+      of 920.8 M), every result identical to the DP; records identical to bwa-mem2 in every run; the CPU extender's
+      records identical to bwa-mem2 on tiny / indel / longdel with the shortcut on and off.
+    * L40S, one 30x lane at 64 threads, five pairs alternating: extension kernel 29.4-29.5 -> 25.5-26.0 s a lane
+      (-12%); the lane 77.4 / 75.6 / 85.4 / 87.4 / 81.5 -> 92.8 / 76.9 / 75.7 / 79.5 / 72.0 s (the last three pairs
+      -8 to -10 s; runs vary by ~10 s). Workstation `mid`: kernel 5.35 -> 4.1-4.5 s, 1.53-1.54 -> 1.55-1.57 s a batch
+      (not paced by extension).
+

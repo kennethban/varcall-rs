@@ -362,8 +362,9 @@ fn seedcov(r: &Reg, c: &Chain) -> i32 {
 
 const MAX_BAND_TRY: i32 = 2;
 
-/// ALIGN_RS_PROFILE: wall time of the extension phases (ns): setup, job build, run, apply, replay+dedup; jobs run
-pub static EPROF: [std::sync::atomic::AtomicU64; 6] = [const { std::sync::atomic::AtomicU64::new(0) }; 6];
+/// ALIGN_RS_PROFILE: wall time of the extension phases (ns): setup, job build, run, apply, replay+dedup; jobs run;
+/// jobs the CPU extender took by the ungapped shortcut
+pub static EPROF: [std::sync::atomic::AtomicU64; 7] = [const { std::sync::atomic::AtomicU64::new(0) }; 7];
 fn eadd(i: usize, t: std::time::Instant) {
     EPROF[i].fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
 }
@@ -411,6 +412,55 @@ pub struct JobOut {
     pub max_off: i32,
 }
 
+/// ksw_extend2's result read off the main diagonal, when no path with a gap can change it; None otherwise (the job
+/// runs the DP). The shortcut of bwa-mem3 (PRs #540, #544), with its conditions derived here for ksw_extend2:
+/// * `loss` = sum over the diagonal's cells of (a - score), a the matrix maximum (a mismatch a + b, an N a + 1).
+///   A path with a gap reaching row i (or column j) pairs at most i + 1 (j + 1) bases and pays at least
+///   min(o_del + e_del, o_ins + e_ins) = `oe`, so it scores at most h0 + (i + 1) a - oe, while the diagonal cell
+///   scores h0 + (i + 1) a - loss(0..i). With loss < oe over the whole query, every row's maximum and every
+///   column's best cell are the diagonal's, strictly: the row maximum's last position (mj) is i, a new maximum is
+///   a diagonal cell (max_off 0), and gscore is H(qlen-1, qlen-1) at row qlen-1 (later rows' column qlen-1 cells are
+///   gapped, lower).
+/// * the band always holds the diagonal (w >= 1, and the band's trimming keeps columns up to a non-zero cell + 1),
+///   and cutting paths (band, zero cells) only lowers the gapped values.
+/// * the walk must reach row qlen - 1 as the DP does: tlen >= qlen, every diagonal value > 0 (else `mm == 0` or a
+///   dead cell), and z-drop not firing on a diagonal row (max - D(i) > zdrop; the rows' offsets cancel on the
+///   diagonal). Rows past the query's end are gapped: they change nothing.
+/// `q(k)` / `t(k)`: the query's / target's k-th base in the job's direction. The GPU runs the same walk in
+/// `k_extkey` (cuda/aln_ext.cu); here it serves the CPU extender. ALIGN_RS_UNGAPPED=0 turns both off.
+#[inline]
+pub fn ungapped_extend(o: &ExtOpt, qlen: i32, tlen: i64, h0: i32, q: impl Fn(i32) -> u8, t: impl Fn(i32) -> u8) -> Option<JobOut> {
+    if qlen < 1 || tlen < qlen as i64 {
+        return None;
+    }
+    let a = o.mat.iter().copied().max().unwrap() as i32;
+    let oe = (o.o_del + o.e_del).min(o.o_ins + o.e_ins);
+    let (mut d, mut max, mut max_i, mut loss) = (h0, h0, -1i32, 0i32);
+    for i in 0..qlen {
+        let sc = o.mat[q(i) as usize * 5 + t(i) as usize] as i32;
+        loss += a - sc;
+        if loss >= oe {
+            return None;
+        }
+        d += sc;
+        if d <= 0 {
+            return None;
+        }
+        if d > max {
+            max = d;
+            max_i = i;
+        } else if o.zdrop > 0 && max - d > o.zdrop {
+            return None;
+        }
+    }
+    Some(JobOut { score: max, qle: max_i + 1, tle: max_i + 1, gtle: qlen, gscore: d, max_off: 0 })
+}
+
+fn ungapped_on() -> bool {
+    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *M.get_or_init(|| std::env::var("ALIGN_RS_UNGAPPED").as_deref() != Ok("0"))
+}
+
 /// Runs extension jobs (CPU: `CpuExtender`; GPU: crate::gpu)
 pub trait Extender: Sync {
     /// `key`: the batch (gpu::batch_key), for the device's copy of its reads
@@ -429,6 +479,13 @@ impl Extender for CpuExtender<'_> {
             .with_min_len(256)
             .map(|j| {
                 let q = &reads[j.read as usize];
+                if ungapped_on() {
+                    let r = ungapped_extend(o, j.qlen as i32, j.rlen as i64, j.h0 as i32, |k| q[(j.qstart as i64 + k as i64 * dir) as usize], |k| self.ref_string[(j.rstart + k as i64 * dir) as usize]);
+                    if let Some(r) = r {
+                        EPROF[6].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return r;
+                    }
+                }
                 let qs: Vec<u8> = (0..j.qlen as i64).map(|i| q[(j.qstart as i64 + i * dir) as usize]).collect();
                 let rs: Vec<u8> = (0..j.rlen as i64).map(|i| self.ref_string[(j.rstart + i * dir) as usize]).collect();
                 let r = ksw_extend2(o, &qs, &rs, rd.w, rd.end_bonus, j.h0 as i32);

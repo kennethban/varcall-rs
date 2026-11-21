@@ -197,7 +197,11 @@ ideas, in order:
 2. **Ungapped shortcut for extension** (bwa-mem3 PRs #544 / #540, output identical at default parameters): an
    extension whose diagonal has at most one mismatch takes the ungapped walk's result instead of banded SW; must
    keep bwa's strict new-maximum rule, fall back when the mismatches cost more than `-d`, and not cut the w / 2w
-   retries short (#540 changed XS). Could take much of the 241 ms extension kernel and shrink its uploads.
+   retries short (#540 changed XS). **Done 2026-11-22, the default:** a quarter of the jobs, every result identical
+   to the DP (`ALIGN_RS_UNGAPPED=check` on a 30x lane: 229.8 M of 920.8 M jobs); the walk runs on the GPU (on the
+   CPU it cost more than it saved on the workstation). L40S, one 30x lane: extension kernel 29.5 -> 25.7 s (-12%),
+   the lane ~85 -> ~76 s in the last three of five pairs (noisy: ~10 s between runs). Records identical to bwa-mem2
+   (`docs/notes/align-rs.md` section 13).
 3. **Certified band for ksw_global2** (bwa-mem3 #575, score / CIGAR / NM / MD unchanged): about half the band
    cells in the CIGAR stage, ~5% of a lane's CPU (helps where alignment is CPU-bound).
 4. **Lanes that finish early take the next job** in the extension kernel (AGAThA, PPoPP 2024): only if its warps
