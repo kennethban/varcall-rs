@@ -95,7 +95,7 @@ pub const C_RDEDUP: usize = 24;
 pub const C_FETCHW: usize = 25;
 
 /// counters
-pub const N_NAMES: [&str; 31] = [
+pub const N_NAMES: [&str; 34] = [
     "ext: regions (seeds) extended",
     "ext: regions kept by the replay",
     "ext: jobs run",
@@ -127,6 +127,9 @@ pub const N_NAMES: [&str; 31] = [
     "GPU seeding: seeds",
     "GPU set_reads, all slots (us)",
     "GPU seeding: output Vec growth (us)",
+    "CIGAR: equal-length DP calls left ungapped by the certificate",
+    "CIGAR: DP calls in a narrower certified band",
+    "CIGAR: DP calls with unequal lengths (no certificate)",
 ];
 pub const N_REG: usize = 0;
 pub const N_KEPT: usize = 1;
@@ -152,6 +155,9 @@ pub const N_GFETCH: usize = 27;
 pub const N_GSEEDS: usize = 28;
 pub const N_GSETREADS: usize = 29;
 pub const N_GRESIZE: usize = 30;
+pub const N_CERT0: usize = 31;
+pub const N_CERTW: usize = 32;
+pub const N_CIGUNEQ: usize = 33;
 
 const NS: usize = CPU_NAMES.len() + N_NAMES.len();
 type Slots = [AtomicU64; NS];

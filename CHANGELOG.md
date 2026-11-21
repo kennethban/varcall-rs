@@ -67,6 +67,9 @@ named in its entry; a change of reference version is a new minor version at leas
   (default scoring: at most one mismatch) takes its result from a walk along the diagonal on the GPU instead of the
   banded DP, identical results; a quarter of the jobs, the extension kernel -12% on an L40S. `ALIGN_RS_UNGAPPED=0`
   turns it off, `=check` compares it with the DP.
+* align-rs: the CIGAR's global alignment runs equal-length regions in the narrower band the ungapped score certifies
+  (from bwa-mem3), identical score, CIGAR, NM and MD: half the band cells, CIGAR CPU -31% on 5 M pairs.
+  `ALIGN_RS_CIGAR_BAND=0` turns it off, `=check` compares it with the usual band.
 
 ### Fixed
 

@@ -296,6 +296,37 @@ pub fn bns_get_seq(bns: &Bns, mut beg: i64, mut end: i64) -> Vec<u8> {
     seq
 }
 
+/// The certified band of bwa-mem3 PR #575 for a global alignment of equal-length sequences: no cell more than kc off
+/// the diagonal lies on a path scoring at least the ungapped score `su`. A gapped path has I >= 1 insertions and as
+/// many deletions, so it scores at most amax*len - o_ins - o_del - I*(amax + e_ins + e_del); through a cell k off the
+/// diagonal I >= k, so with kc = (amax*len - o_ins - o_del - su) / slope every path beyond kc scores below su. Band kc
+/// then gives ksw_global2's score and direction bits on every cell the backtrack reads: the same score and CIGAR.
+/// Returns -1 (no certificate) for unequal lengths or penalties the bound does not cover; 0: the ungapped alignment
+/// is the unique optimum (and ksw_global2's backtrack picks it).
+pub fn cert_band(o: &ExtOpt, q: &[u8], r: &[u8]) -> i64 {
+    if q.len() != r.len() {
+        return -1;
+    }
+    let amax = o.mat.iter().copied().max().unwrap() as i64;
+    let slope = amax + o.e_ins as i64 + o.e_del as i64;
+    if slope <= 0 || o.o_ins < 0 || o.o_del < 0 {
+        return -1;
+    }
+    let su: i64 = q.iter().zip(r).map(|(&a, &b)| o.mat[b as usize * 5 + a as usize] as i64).sum();
+    let num = amax * q.len() as i64 - o.o_ins as i64 - o.o_del as i64 - su;
+    if num < 0 { 0 } else { num / slope }
+}
+
+/// ALIGN_RS_CIGAR_BAND: 0 the original band; check runs both and aborts on a difference; default: the certified band
+pub fn cert_mode() -> u8 {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *M.get_or_init(|| match std::env::var("ALIGN_RS_CIGAR_BAND").as_deref() {
+        Ok("0") => 0,
+        Ok("check") => 2,
+        _ => 1,
+    })
+}
+
 /// bwa_gen_cigar2's score (no CIGAR): global alignment of query against [rb, re)
 pub fn gen_cigar2_score(o: &ExtOpt, bns: &Bns, w_: i32, query: &[u8], rb: i64, re: i64) -> Option<i32> {
     let l_pac = bns.l_pac;
@@ -323,6 +354,23 @@ pub fn gen_cigar2_score(o: &ExtOpt, bns: &Bns, w_: i32, query: &[u8], rb: i64, r
     w = w.min(w_);
     let min_w = (rlen - l_query).abs() + 3;
     w = w.max(min_w);
+    if cert_mode() != 0 {
+        let kc = cert_band(o, &q, &rseq);
+        if kc == 0 {
+            let s = (0..q.len()).map(|i| o.mat[rseq[i] as usize * 5 + q[i] as usize] as i32).sum();
+            if cert_mode() == 2 {
+                assert_eq!(s, ksw_global2_score(o, &q, &rseq, w), "certified band: ungapped score differs");
+            }
+            return Some(s);
+        }
+        if kc > 0 && kc < w as i64 {
+            let s = ksw_global2_score(o, &q, &rseq, kc as i32);
+            if cert_mode() == 2 {
+                assert_eq!(s, ksw_global2_score(o, &q, &rseq, w), "certified band: score differs");
+            }
+            return Some(s);
+        }
+    }
     Some(ksw_global2_score(o, &q, &rseq, w))
 }
 

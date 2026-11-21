@@ -36,6 +36,7 @@ align-rs tune [-t N] [-K N] ref.fa R1.fq[.gz] [R2.fq[.gz]]
 | `ALIGN_RS_EXT_BPSM` | extension: blocks of 128 threads per SM (default from the L1 size) |
 | `ALIGN_RS_MSW=striped` | mate SW: the striped kernel (16 threads per job emulating bwa's SSE lanes) instead of the wavefront one; same results, slower |
 | `ALIGN_RS_UNGAPPED` | extension's ungapped shortcut: `0` off (every job runs the banded DP; same results), `check` runs both and stops on a difference (default on) |
+| `ALIGN_RS_CIGAR_BAND` | the CIGAR's global alignment in the band certified by the ungapped score (equal lengths): `0` the usual band (same results), `check` runs both and stops on a difference (default on) |
 | `ALIGN_RS_MSW_MINB` | mate SW, striped kernel only: blocks per SM the registers are capped for (default from the thread slots) |
 | `ALIGN_RS_TUNE_CACHE` | where `tune` saves (default `$XDG_CACHE_HOME/align-rs/gpu-settings.tsv` or `~/.cache/align-rs/...`) |
 | `ALIGN_RS_PROFILE=1` / `2` | per-stage timeline and counters at the end / plus per-item CPU timers |

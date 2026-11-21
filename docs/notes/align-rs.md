@@ -384,4 +384,22 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       (-12%); the lane 77.4 / 75.6 / 85.4 / 87.4 / 81.5 -> 92.8 / 76.9 / 75.7 / 79.5 / 72.0 s (the last three pairs
       -8 to -10 s; runs vary by ~10 s). Workstation `mid`: kernel 5.35 -> 4.1-4.5 s, 1.53-1.54 -> 1.55-1.57 s a batch
       (not paced by extension).
+14. **Certified band for the CIGAR's global alignment (2026-11-22; PLAN.md stage 7): the default.** From bwa-mem3
+    (PR #575; `ext.rs` `cert_band`). gen_cigar2 runs ksw_global2 in a band of half-width w around the main diagonal.
+    When the query and the reference span have equal lengths, a path with gaps has I >= 1 insertions and as many
+    deletions, so it scores at most amax * len - o_ins - o_del - I * (amax + e_ins + e_del), and a path through a
+    cell k off the diagonal has I >= k. With su the ungapped score, kc = (amax * len - o_ins - o_del - su) /
+    (amax + e_ins + e_del) bounds the cells of every path scoring at least su, so every path to an optimal cell, and
+    every predecessor that ties or wins a comparison the backtrack reads, lies within kc: band min(w, kc) gives the
+    same score and direction bits on the backtrack, so the same CIGAR (and NM / MD). kc = 0 (the ungapped alignment is
+    the only optimum) skips the DP. Unequal lengths keep the usual band. `ALIGN_RS_CIGAR_BAND=0` turns it off;
+    `=check` runs the usual band as well and aborts on a difference (score and CIGAR; the score-only variant used
+    when merging regions does the same).
+    * Workstation `mid` (5 M pairs, 32 threads): of 18.1 M gen_cigar2 calls, 3.9 M run the DP; 2.65 M of those now
+      run in a narrower band and 52 k skip it; 1.17 M have unequal lengths. Band cells 22.4 G -> 10.9 G (bwa-mem3
+      reports 22.2 -> 10.8 G on its WGS set); CIGAR / NM / MD 140 -> 96 thread-s, user CPU 674 -> 651 s; wall
+      unchanged (28-31 s, the GPU paces the lane). `=check`: no difference; records identical in all three modes and
+      to bwa-mem2; `tests/cmp.sh`, the germline and somatic pipeline tests and their 40 lane BAMs identical.
+    * Not done: bwa-mem3 #580 extends the bound to unequal lengths (a single-gap lower bound; band |d| + x, at least
+      |d| + 3); there it took the CIGAR pass's cells down another ~26%, under 1% of bwa-mem3's wall.
 

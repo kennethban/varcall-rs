@@ -203,7 +203,12 @@ ideas, in order:
    the lane ~85 -> ~76 s in the last three of five pairs (noisy: ~10 s between runs). Records identical to bwa-mem2
    (`docs/notes/align-rs.md` section 13).
 3. **Certified band for ksw_global2** (bwa-mem3 #575, score / CIGAR / NM / MD unchanged): about half the band
-   cells in the CIGAR stage, ~5% of a lane's CPU (helps where alignment is CPU-bound).
+   cells in the CIGAR stage, ~5% of a lane's CPU (helps where alignment is CPU-bound). **Done 2026-11-22, the
+   default:** equal-length regions run in the band the ungapped score certifies; workstation `mid`: band cells
+   22.4 G -> 10.9 G, CIGAR / NM / MD 140 -> 96 thread-s (user CPU 674 -> 651 s; wall unchanged, the GPU paces it);
+   `ALIGN_RS_CIGAR_BAND=check` found no difference; records identical to bwa-mem2, `tests/cmp.sh` and the pipeline
+   tests identical (`docs/notes/align-rs.md` section 14). bwa-mem3 #580 (unequal lengths, 1.2 M of the 3.9 M DP
+   calls here) would take another ~25% of the cells; not done.
 4. **Lanes that finish early take the next job** in the extension kernel (AGAThA, PPoPP 2024): only if its warps
    idle; measure warp efficiency first.
 5. Seeding k-mer interval table and read reordering (Pham et al.): a few % of seeding at best. Not planned.

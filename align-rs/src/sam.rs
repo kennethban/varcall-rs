@@ -481,8 +481,25 @@ fn gen_cigar2(o: &ExtOpt, bns: &Bns, w_: i32, query: &[u8], rb: i64, re: i64) ->
         let min_w = (rlen - l_query).abs() + 3;
         w = w.max(min_w);
         crate::prof::count(crate::prof::N_CIGDP, 1);
-        crate::prof::count(crate::prof::N_CIGCELLS, q.len() as u64 * (2 * w as u64 + 1).min(rlen as u64));
-        ksw_global2(o, &q, &rseq, w)
+        let mode = ext::cert_mode();
+        let kc = if mode != 0 { ext::cert_band(o, &q, &rseq) } else { -1 };
+        if rlen != l_query {
+            crate::prof::count(crate::prof::N_CIGUNEQ, 1);
+        }
+        let ungapped = || (q.iter().zip(&rseq).map(|(&a, &b)| o.mat[b as usize * 5 + a as usize] as i32).sum::<i32>(), vec![(l_query as u32) << 4]);
+        let res = if kc == 0 {
+            crate::prof::count(crate::prof::N_CERT0, 1);
+            ungapped()
+        } else {
+            let wc = if kc > 0 && kc < w as i64 { crate::prof::count(crate::prof::N_CERTW, 1); kc as i32 } else { w };
+            crate::prof::count(crate::prof::N_CIGCELLS, q.len() as u64 * (2 * wc as u64 + 1).min(rlen as u64));
+            ksw_global2(o, &q, &rseq, wc)
+        };
+        if mode == 2 && kc >= 0 {
+            let full = ksw_global2(o, &q, &rseq, w);
+            assert!(res == full, "certified band {kc} (band {w}): {res:?} differs from {full:?}");
+        }
+        res
     };
     // NM and MD
     let int2base: &[u8; 5] = if rb < l_pac { b"ACGTN" } else { b"TGCAN" };
