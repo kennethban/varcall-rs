@@ -151,6 +151,9 @@ after it.
   region, so the same output. 30x genome, 2 runs each, alternating: 456 -> 400 s (-12%), pool context switches
   ~38,000 -> ~15,000/s, ~26 threads busy instead of ~23; VCF identical in every run, unit and pipeline tests
   identical.
+* **Server (L40S, m1's NA12878, 2 runs each alternating, VCF identical in every run):** smaller gains where the GPU
+  sets the pace: 1 GPU at 64 threads 121.6 -> 112.4 s (-8%), at 128 threads 112.1 -> 108.1 s (-4%); 2 GPUs at 128
+  threads (the pipeline's) 98.4 -> 94.5 s (-4%; runs vary by ~7 s).
 * **What a GPU could still take:** assembly on chr20 (`VARIANT_RS_ASM_PROFILE=1`) is 60% building the graphs (reads
   threaded k-mer by k-mer into hash tables: CPU work) and 39% haplotypes and their alignment to the reference, nearly
   all the haplotype Smith-Waterman (43 G cells on chr20 with prefix reuse, 116 G without). The haplotype and read

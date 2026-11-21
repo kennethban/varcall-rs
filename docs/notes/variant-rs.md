@@ -612,7 +612,8 @@ stage per batch. Each region's work before the PairHMM (finalizeRegion, assembly
 and its work after it (likelihoods, realignment) another: 30x genome, 456 -> 400 s (2 runs each), ~15,000 switches a
 second, VCF identical. Assembly on chr20 (`VARIANT_RS_ASM_PROFILE=1`): graph building 60% (read threading 52 of 54 s),
 paths and haplotype cigars 39% (the haplotype Smith-Waterman 32 of 35 s; 43 G cells with prefix reuse). Workstation
-runs: `$VARCALL_DATA/runs/stage6/hc`.
+runs: `$VARCALL_DATA/runs/stage6/hc`. On the server (L40S, GPU-bound) the same change gives 1 GPU at 64 threads
+121.6 -> 112.4 s, at 128 threads 112.1 -> 108.1 s, 2 GPUs at 128 threads 98.4 -> 94.5 s (2 runs each).
 
 **Several GPUs in one process (2026-11-19).** The engines are spread over every visible GPU (`VARIANT_RS_GPUS` for
 at most N): each GPU gets its own copy of the tables (constant memory) and kernel attributes, each engine belongs to
