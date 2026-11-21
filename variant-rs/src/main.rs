@@ -574,15 +574,7 @@ fn main() {
             // one GATK run per interval (sarek: one HaplotypeCaller task per interval BED), in dictionary order.
             // Overlapping intervals are merged (separate runs would call the overlap twice); abutting ones stay
             // separate runs, as sarek's tasks are.
-            all.sort();
-            let mut merged: Vec<Interval> = Vec::with_capacity(all.len());
-            for i in all {
-                match merged.last_mut() {
-                    Some(l) if l.tid == i.tid && i.start <= l.end => l.end = l.end.max(i.end),
-                    _ => merged.push(i),
-                }
-            }
-            for iv in merged {
+            for iv in intervals::scatter_pieces(all) {
                 domain_ivs.push((format!("{}_{}-{}", ref_dict.names[iv.tid], iv.start, iv.end), finish_ivs(vec![iv])));
             }
         } else {

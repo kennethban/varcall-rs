@@ -63,8 +63,8 @@ variant-rs <Tool> --help                   # which arguments are mapped, ignored
 | FilterMutectCalls, LearnReadOrientationModel, GetPileupSummaries, GatherPileupSummaries, CalculateContamination, MergeMutectStats | as GATK's somatic Best Practices and sarek run them |
 | BaseRecalibrator, ApplyBQSR, GatherBQSRReports | default covariates; WARP's `-OQ`, `--static-quantized-quals` |
 | MarkDuplicates | coordinate or query-grouped input, several inputs, WARP's and sarek's arguments, Picard `KEY=value` syntax |
-| GenotypeGVCFs | a GVCF file or a GenomicsDB workspace (`-V gendb://`); default or WARP annotations |
-| GenomicsDBImport | `--sample-name-map` or `-V` per GVCF, `-L` (strings or files), `--merge-input-intervals`, `--batch-size`, `--consolidate`, `--bypass-feature-reader` (WARP's and sarek's commands): the same cells, `vidmap.json`, `callset.json` and header as GATK's workspace |
+| GenotypeGVCFs | a GVCF file or a GenomicsDB workspace (`-V gendb://`); default or WARP annotations; `--scatter-intervals`: each `-L` interval its own GATK run (sarek's scatter), side by side |
+| GenomicsDBImport | `--sample-name-map` or `-V` per GVCF, `-L` (strings or files), `--merge-input-intervals`, `--batch-size`, `--consolidate`, `--bypass-feature-reader` (WARP's and sarek's commands): the same cells, `vidmap.json`, `callset.json` and header as GATK's workspace; the intervals imported side by side (`--threads`) |
 | VariantFiltration, MakeSitesOnlyVcf | INFO-level filter expressions (GATK's JEXL: comparisons, `&&` / `||` / `!`, strings, flags, `QUAL`, `TYPE`, `CHROM`, `POS`, `N_ALLELES`, `FILTER`), `--missing-values-evaluate-as-failing`, `--invert-filter-expression`, `--invalidate-previous-filters`, masks (BED, interval list, VCF); WARP's joint-calling and DRAGEN hard filters |
 | VariantRecalibrator, ApplyVQSR | SNP, INDEL and BOTH modes; WARP's and sarek's arguments (`--resource:name,known=...,training=...,truth=...,prior=...`, tranches, `--max-gaussians`, `--trust-all-polymorphic`) |
 | ReblockGVCF, MergeVcfs, SortSam (coordinate), GatherBamFiles | |

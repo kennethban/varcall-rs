@@ -146,6 +146,20 @@ pub fn sort_merge(mut v: Vec<Interval>) -> Vec<Interval> {
     out
 }
 
+/// The pieces of `--scatter-intervals` (one GATK run each, as nf-core/sarek's per-interval tasks): dictionary order,
+/// overlapping intervals merged (separate runs would call the overlap twice), abutting ones kept apart.
+pub fn scatter_pieces(mut v: Vec<Interval>) -> Vec<Interval> {
+    v.sort();
+    let mut out: Vec<Interval> = Vec::with_capacity(v.len());
+    for i in v {
+        match out.last_mut() {
+            Some(l) if l.tid == i.tid && i.start <= l.end => l.end = l.end.max(i.end),
+            _ => out.push(i),
+        }
+    }
+    out
+}
+
 /// `IntervalUtils.loadIntervals` padding (`--interval-padding`, `--interval-exclusion-padding`): every interval
 /// grows by `pad` on both sides, clipped to its contig (`createPaddedGenomeLoc`); merge afterwards.
 pub fn pad(v: &mut [Interval], pad: i64, dict: &Dict) {

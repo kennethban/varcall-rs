@@ -912,10 +912,13 @@ struct Args {
     bypass: bool,
     overwrite: bool,
     command_line: bool,
+    /// arrays imported side by side (each interval is its own array: the content does not depend on it)
+    threads: usize,
 }
 
 const USAGE: &str = "usage: variant-rs genomicsdbimport --genomicsdb-workspace-path ws (--sample-name-map map | -V x.g.vcf.gz ...) \
--L interval... [--merge-input-intervals] [--batch-size N] [--consolidate] [--bypass-feature-reader] (GATK's names)";
+-L interval... [--merge-input-intervals] [--batch-size N] [--consolidate] [--bypass-feature-reader] (GATK's names) \
+[--threads N (intervals imported side by side; default all CPUs)]";
 
 fn parse_args(argv: &[String]) -> Args {
     let mut a = Args {
@@ -929,6 +932,7 @@ fn parse_args(argv: &[String]) -> Args {
         bypass: false,
         overwrite: false,
         command_line: true,
+        threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
     };
     let val = |i: usize| -> String { argv.get(i + 1).cloned().unwrap_or_else(|| refuse(&format!("{} needs a value\n{USAGE}", argv[i]))) };
     let flag = |i: &mut usize| -> bool {
@@ -957,6 +961,10 @@ fn parse_args(argv: &[String]) -> Args {
             }
             "-L" | "--intervals" => {
                 a.intervals.push(val(i));
+                i += 1;
+            }
+            "--threads" => {
+                a.threads = val(i).parse().unwrap_or_else(|_| refuse("--threads: not an integer"));
                 i += 1;
             }
             "--batch-size" => {
@@ -1121,10 +1129,14 @@ pub fn run(argv: &[String]) {
     let n = samples.len() as i64;
     let b = if a.batch_size <= 0 { n } else { a.batch_size.min(n) };
     let batches: Vec<(i64, i64)> = if a.consolidate { vec![(0, n)] } else { (0..n).step_by(b as usize).map(|lb| (lb, (lb + b).min(n))).collect() };
+    // the arrays of a batch side by side (they share nothing); batches one after another, so an array's fragments
+    // keep their batch order (fragments are ordered by their millisecond timestamp)
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(a.threads.max(1)).build().unwrap();
     let mut total = 0u64;
     for (bi, &(lb, ub)) in batches.iter().enumerate() {
         let rows: Vec<(i64, String)> = (lb..ub).map(|r| (r, samples[r as usize].1.clone())).collect();
-        for iv in &ivs {
+        use rayon::prelude::*;
+        total += pool.install(|| ivs.par_iter().map(|iv| {
             let contig = &dict.names[iv.tid];
             let off = contigs[iv.tid].2;
             let d = ws.join(format!("{contig}${}${}", iv.start, iv.end));
@@ -1140,13 +1152,12 @@ pub fn run(argv: &[String]) {
                 &d.join(format!("genomicsdb_meta_dir/genomicsdb_meta_{}.json", gdb_write::uuid())),
                 &meta_json(&[("lb_row_idx", 0), ("max_valid_row_idx_in_array", ub - 1)]),
             );
-            total += write_fragment(&d, &vid, &attrs, &rows, contig, iv.start, iv.end, !a.bypass);
-            // fragments are ordered by their millisecond timestamp
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+            write_fragment(&d, &vid, &attrs, &rows, contig, iv.start, iv.end, !a.bypass)
+        }).sum::<u64>());
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     write_text(&ws.join("callset.json"), &callset_json(&samples, a.bypass));
-    eprintln!("[genomicsdbimport] {} samples, {} arrays, {} batches, {total} cells, in {:.1}s", samples.len(), ivs.len(), batches.len(), t0.elapsed().as_secs_f64());
+    eprintln!("[genomicsdbimport] {} samples, {} arrays, {} batches, {total} cells, {} threads, in {:.1}s", samples.len(), ivs.len(), batches.len(), a.threads, t0.elapsed().as_secs_f64());
 }
 
 #[cfg(test)]

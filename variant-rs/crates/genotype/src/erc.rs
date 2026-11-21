@@ -198,7 +198,16 @@ impl GenotypingEngine {
                 self.upstream_deletions.push((loc, loc + del));
             }
         }
-        let genotype = genotyper::subset_and_call(pls, &out_alleles);
+        let mut genotype = genotyper::subset_and_call(pls, &out_alleles);
+        // GATKVariantContextUtils.makeGenotypeCall (USE_PLS_TO_ASSIGN): a most likely genotype with <NON_REF> in it is
+        // written hom-ref with all PLs 0 (its GQ stays). Seen once in three 30x genomes (M3, NA12892 chr10:128583486).
+        if let Some((i, j)) = genotype.alleles {
+            if out_alleles[i] == nr || out_alleles[j] == nr {
+                stats::inc(&stats::ERC_NON_REF_CALL_TO_HOM_REF);
+                genotype.alleles = Some((0, 0));
+                genotype.pl = vec![0; genotype.pl.len()];
+            }
+        }
         let mleac = out_alts.iter().map(|&k| af.mle_alt_counts[k - 1]).collect();
         Some(Call { alleles: out_alleles, log10_p_error: log10_conf, genotype, others: Vec::new(), mleac })
     }

@@ -19,8 +19,9 @@ kernel (stage 4). Each machine is now held by something no small change moves:
 Going further means a larger project: pinned buffers filled and read in place by every GPU stage (the workstation),
 or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25%.
 
-**Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1) and several GPUs (M1) are in; the PairHMM
-kernel (stage 3) and MarkDuplicates / BaseRecalibrator on the workstation (stage 5) are open.
+**Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1), several GPUs (M1) and a cohort (M3: a 30x
+trio, FASTQ -> joint VCF in ~34 min on the server) are in; the PairHMM kernel (stage 3) and MarkDuplicates /
+BaseRecalibrator on the workstation (stage 5) are open.
 
 **Coverage:** the GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next). C1
 VQSR, C2 VariantFiltration, C3 GenomicsDBImport and C4 CreateSomaticPanelOfNormals are done, and the pipeline runs
@@ -122,11 +123,15 @@ its reverse pass and a fallback. Not pursued; details in `docs/notes/align-rs.md
 * **M4, threads per step on large servers — done 2026-11-19:** the steps after alignment run one sample at a time,
   so they take the machine's threads (at most 128, `cpus`) and each alignment task its share (`align_cpus`):
   MarkDuplicates 75 -> 56 s, BaseRecalibrator 30 -> 19 s; 6 GPUs 505 -> 484 s.
-* **M3, many samples:** the pipeline already runs samples side by side, one GPU per GPU step; to check at cohort
-  scale.
+* **M3, many samples — done 2026-11-21:** the CEPH trio (NA12878, NA12891, NA12892; 30x, 36 FASTQ lanes) with joint
+  calling and VQSR on the server (6 L40S): ~34 min FASTQ -> filtered joint VCF (alignment 13.7 min, the GVCFs at
+  21 min, the joint steps 13 min); all 18 outputs identical to GATK 4.7 (`tests/harness/m3`). Found on the way: the
+  joint steps used ~4 cores (GenomicsDBImport ~2.5 h): the intervals are now imported side by side, and
+  GenotypeGVCFs genotypes each interval as its own GATK run (sarek's scatter), side by side; a HaplotypeCaller GVCF
+  rule (a call with `<NON_REF>` written 0/0, PLs 0) seen once in the three genomes. Larger cohorts not measured.
 
-Order: alignment done for now (stages 2 and 4 tried and not pursued; M2); stage 1, M1 and M4 done; stages 3 and 5
-and M3 open, as measured.
+Order: alignment done for now (stages 2 and 4 tried and not pursued; M2); stage 1, M1, M3 and M4 done; stages 3
+and 5 open, as measured.
 
 ## Coverage: GATK tools to add next
 

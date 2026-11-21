@@ -176,8 +176,10 @@ process HARDFILTER {
 }
 
 // Joint germline calling (--joint_germline), as nf-core/sarek's: the samples' GVCFs into one GenomicsDB workspace,
-// GenotypeGVCFs over it, then VQSR (SNPs, then INDELs) when its resources are given. Sarek runs each step per scatter
-// interval and merges; here each runs once over all intervals (one workspace array per interval, the same calls).
+// GenotypeGVCFs over it, then VQSR (SNPs, then INDELs) when its resources are given. Sarek runs the import and
+// GenotypeGVCFs per scatter interval and merges; here each runs once, its intervals side by side inside: one workspace
+// array per interval, and with scatter_intervals GenotypeGVCFs genotypes each interval as its own GATK run (as
+// sarek's tasks; otherwise as one GATK run over all intervals, one interval after another).
 
 // -L for the joint steps: the calling intervals, or every contig of the reference (sarek's intervals without a list)
 def joint_intervals() { params.intervals_arg ? "-L ${sh(params.intervals_arg)}" : '-L contigs.list' }
@@ -197,7 +199,8 @@ process GENOMICSDBIMPORT {
     """
     ${contigs_list()}
     VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} GenomicsDBImport ${vs} --genomicsdb-workspace-path joint_germline.gdb \
-        ${joint_intervals()} --tmp-dir . ${params.wes ? '--merge-input-intervals ' : ''}--genomicsdb-shared-posixfs-optimizations true --bypass-feature-reader
+        ${joint_intervals()} --tmp-dir . ${params.wes ? '--merge-input-intervals ' : ''}--genomicsdb-shared-posixfs-optimizations true --bypass-feature-reader \
+        --threads ${task.cpus}
     """
 }
 
@@ -214,7 +217,7 @@ process GENOTYPEGVCFS {
     """
     ${contigs_list()}
     VARIANT_RS_BUILD=${params.variant_rs_build} ${params.variant_rs} GenotypeGVCFs -R ${sh(params.fasta)} -V gendb://${gdb} ${joint_intervals()} \
-        ${params.dbsnp ? "--dbsnp ${sh(params.dbsnp)} " : ''}-O joint_germline.vcf.gz
+        ${params.dbsnp ? "--dbsnp ${sh(params.dbsnp)} " : ''}${params.hc_scatter ? '--scatter-intervals ' : ''}--threads ${task.cpus} -O joint_germline.vcf.gz
     """
 }
 
@@ -226,7 +229,7 @@ process VARIANTRECALIBRATOR {
     tuple val(mode), path(vcf), path(tbi)
 
     output:
-    tuple val(mode), path("joint_germline_${mode}.recal.vcf.gz"), path("joint_germline_${mode}.tranches")
+    tuple val(mode), path("joint_germline_${mode}.recal.vcf.gz"), path("joint_germline_${mode}.recal.vcf.gz.tbi"), path("joint_germline_${mode}.tranches")
 
     script:
     // sarek's annotations (joint_germline.config); default tranches and Gaussians
@@ -242,7 +245,7 @@ process APPLYVQSR {
     publishDir "${params.outdir}/germline/joint", mode: params.publish_dir_mode
 
     input:
-    tuple path(vcf), path(tbi), path(snp_recal), path(snp_tranches), path(indel_recal), path(indel_tranches)
+    tuple path(vcf), path(tbi), path(snp_recal), path(snp_recal_tbi), path(snp_tranches), path(indel_recal), path(indel_recal_tbi), path(indel_tranches)
 
     output:
     tuple path("joint_germline_recalibrated.vcf.gz"), path("joint_germline_recalibrated.vcf.gz.tbi")
@@ -444,8 +447,8 @@ workflow {
             def joint = GENOTYPEGVCFS(GENOMICSDBIMPORT(gvcfs))
             if (params.vqsr_snp_resources && params.vqsr_indel_resources) {
                 def recal = VARIANTRECALIBRATOR(channel.of('SNP', 'INDEL').combine(joint))
-                def snp = recal.filter { it[0] == 'SNP' }.map { mode, r, t -> tuple(r, t) }
-                def indel = recal.filter { it[0] == 'INDEL' }.map { mode, r, t -> tuple(r, t) }
+                def snp = recal.filter { it[0] == 'SNP' }.map { mode, r, i, t -> tuple(r, i, t) }
+                def indel = recal.filter { it[0] == 'INDEL' }.map { mode, r, i, t -> tuple(r, i, t) }
                 APPLYVQSR(joint.combine(snp).combine(indel))
             }
         } else if (!params.gvcf) {

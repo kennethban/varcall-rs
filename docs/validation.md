@@ -48,13 +48,14 @@ outputs per PairHMM are compared with GATK's. The truth in `tests/truth` comes f
 | BaseRecalibrator / ApplyBQSR | HG002 PCR+ 30x WGS, NA12878 chr20 (16 read groups), WARP's `-OQ` / static quantization | table and 721,883,698 records identical |
 | MarkDuplicates | HG002 PCR+ 30x WGS, 12-lane inputs, query-grouped (WARP), CRAM, edge cases | records and metrics identical |
 | Mutect2 + filters | DREAM synthetic tumors 1-4, HCC1143, SEQC2 WES; tumor-only, PoN, mitochondria mode, `--bam-output` | VCF, stats, filtering stats identical |
-| GenotypeGVCFs, ReblockGVCF | HG002 whole-genome GVCF (47 shards), 3 and 11 samples, GenomicsDB workspaces | identical |
+| GenotypeGVCFs, ReblockGVCF | HG002 whole-genome GVCF (47 shards), 3 and 11 samples, GenomicsDB workspaces; `--scatter-intervals` vs GATK once per interval (sarek's BED, WARP's chr20-22) | identical |
 | GenomicsDBImport | 3 and 11 samples (raw and reblocked GVCFs), whole-genome GVCF (three arrays, an array starting mid-contig); WARP's sample-map commands (batch 1 and 50, `--consolidate`), sarek's (`-V`, BED intervals, `--merge-input-intervals`, `--bypass-feature-reader`) | every cell, `vidmap.json`, `callset.json` identical (10 workspaces); GenotypeGVCFs (GATK's and variant-rs's) on them gives GATK's output |
 | CreateSomaticPanelOfNormals | the four DREAM normals (b37 chr20): Mutect2 tumor-only, GenomicsDBImport (one and three arrays), the panel with five argument sets | normal VCFs, workspace cells, received records and panels identical |
 | VariantRecalibrator / ApplyVQSR | NA12878 30x VCF (5.06 M records); 1000 Genomes 30x joint calls chr20:5-17 Mb (50 of 3202 samples, 500 k records); WARP's, sarek's and best-practice (InbreedingCoeff) settings, SNP / INDEL / BOTH, ApplyVQSR chained | tranches, recal VCF and filtered VCF identical (27 outputs) |
 | VariantFiltration / MakeSitesOnlyVcf | NA12878 30x VCF, the 1000 Genomes cohort slice, 11-sample joint calls; WARP's ExcessHet, exome-mask and DRAGEN filters, GATK's hard-filtering examples, the expression language's edge cases (missing values, lists, strings, inversion, previous filters, masks) | identical; where GATK fails, variant-rs fails |
 | MergeVcfs, SortSam, GatherBamFiles, GatherBQSRReports | WARP's and sarek's command lines | identical |
 | Pipeline | NA12878 chr20 slice (2 lanes), HCC1143 tumor / normal, SEQC2 WES; joint calling of NA12878 and HCC1143_normal (GVCFs, GenomicsDBImport, GenotypeGVCFs, VQSR); each step vs GATK | identical |
+| Pipeline, whole-genome cohort | the CEPH trio NA12878, NA12891, NA12892 (30x each, 36 FASTQ lanes), joint calling with VQSR over the 356 calling regions; each step vs GATK from the pipeline's own input to it (`tests/harness/m3`) | all 18 outputs identical: MarkDuplicates BAMs (769-787 M records), metrics, recal tables, GVCFs (411-479 M records), joint VCF (6,744,875 records), VQSR recal files, tranches, filtered VCF |
 
 Accuracy follows from identity. On HG002 against the GIAB v4.2.1 benchmark (chr1–22), variant-rs equals GATK:
 precision 0.9887, recall 0.9923, F 0.9905.

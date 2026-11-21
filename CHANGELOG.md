@@ -36,10 +36,21 @@ named in its entry; a change of reference version is a new minor version at leas
 * variant-rs: CreateSomaticPanelOfNormals, with GenomicsDBImport of Mutect2 VCFs (flag INFO fields): GATK's
   `mutect2_pon.wdl` chain identical to GATK on the DREAM normals.
 * Pipeline: joint germline calling (`joint_germline`, as nf-core/sarek's): GVCFs, GenomicsDBImport, GenotypeGVCFs and
-  VQSR, each once over all intervals.
+  VQSR. GenotypeGVCFs genotypes each interval as its own GATK run (`scatter_intervals`), as sarek's per-interval tasks
+  do; the VQSR recal files are published with their indexes.
+* variant-rs GenomicsDBImport: the intervals (arrays) imported side by side (`--threads`, default all CPUs); the
+  workspace's cells are unchanged. A whole-genome trio (356 intervals): ~2.5 h -> 6.5 min.
+* variant-rs GenotypeGVCFs `--scatter-intervals` (with `--threads`): each `-L` interval genotyped as its own GATK run,
+  side by side, records in interval order: identical to GATK run once per interval and concatenated (nf-core/sarek's
+  scatter). GATK's single run differs from that (QD's random jitter is one stream across all intervals), so without
+  the flag variant-rs stays one run.
 * align-rs: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s); extension on its own thread pool.
 
 ### Fixed
+
+* variant-rs HaplotypeCaller `-ERC GVCF`: a site whose most likely genotype includes `<NON_REF>` is written `0/0` with
+  all PLs 0, as GATK's `makeGenotypeCall` does (its GQ stays). Once in three 30x genomes (M3: NA12892,
+  chr10:128583486, a tandem repeat with no informative reads).
 
 * variant-rs GenotypeGVCFs: the input records' IDs (a GVCF's rsIDs from HaplotypeCaller `--dbsnp`) are dropped as
   GATK drops them; the ID is `--dbsnp`'s matches only. Seen in the pipeline's joint calling test.

@@ -10,7 +10,8 @@ per sample   MarkDuplicates over all lanes -> BaseRecalibrator (whole genome)
 germline     HaplotypeCaller, recal table applied on the fly (no recalibrated BAM), each interval its own GATK run
              (as sarek's scatter, but in one process) -> hard filters
 joint        (--joint_germline) HaplotypeCaller GVCFs -> GenomicsDBImport -> GenotypeGVCFs -> VQSR (SNPs, then INDELs),
-             as sarek's joint germline calling, each step once over all intervals
+             as sarek's joint germline calling: the intervals imported side by side, each interval genotyped as
+             its own GATK run (sarek's per-interval tasks, in one process)
 somatic      ApplyBQSR -> Mutect2 (tumor + matched normal, or tumor only, with F1R2 counts)
              GetPileupSummaries -> CalculateContamination; LearnReadOrientationModel -> FilterMutectCalls
 ```
@@ -71,10 +72,10 @@ index is indexed in memory). HaplotypeCaller runs on the normal samples, Mutect2
 | `tools` | `haplotypecaller`, `mutect2` (comma-separated) |
 | `fasta`, `known_sites` | reference; BQSR known sites, comma-separated (dbSNP, Mills, known indels) |
 | `intervals` | `-L` for HaplotypeCaller and Mutect2 (BQSR is whole genome) |
-| `scatter_intervals` | `true`: HaplotypeCaller runs each interval as its own GATK run (`--scatter-intervals`), as sarek scatters it; `false`: one GATK run over all intervals; `auto` (default): `true` for up to 1,000 intervals (whole-genome calling regions), `false` above (exome targets: one run 30 s, per target 317 s) |
+| `scatter_intervals` | `true`: HaplotypeCaller, and joint calling's GenotypeGVCFs, run each interval as its own GATK run (`--scatter-intervals`, side by side), as sarek scatters them; `false`: one GATK run over all intervals; `auto` (default): `true` for up to 1,000 intervals (whole-genome calling regions), `false` above (exome targets: one run 30 s, per target 317 s) |
 | `hc_workers` | HaplotypeCaller contig workers (0: variant-rs default, 8 at 16+ threads) |
 | `dbsnp`, `gvcf` | HaplotypeCaller (and joint GenotypeGVCFs) `--dbsnp`; `-ERC GVCF` (then no hard filters) |
-| `joint_germline` | joint calling over all germline samples, as sarek's `--joint_germline`: their GVCFs into one GenomicsDB workspace (one array per interval; every contig of the reference without `intervals`), GenotypeGVCFs, then VQSR when its resources are given; no per-sample hard filters |
+| `joint_germline` | joint calling over all germline samples, as sarek's `--joint_germline`: their GVCFs into one GenomicsDB workspace (one array per interval, imported side by side; every contig of the reference without `intervals`), GenotypeGVCFs (per interval with `scatter_intervals`, as sarek's tasks), then VQSR when its resources are given; no per-sample hard filters |
 | `wes` | joint calling on exome targets: GenomicsDBImport `--merge-input-intervals` (sarek's `--wes`) |
 | `vqsr_snp_resources`, `vqsr_indel_resources` | VariantRecalibrator's resources as `--resource:name,known=…,training=…,truth=…,prior=… file` arguments (sarek's `known_snps_vqsr` / `known_indels_vqsr` plus `dbsnp_vqsr`); with both, VQSR runs with sarek's annotations and ApplyVQSR at truth sensitivity 99.9 (SNPs, then INDELs) |
 | `germline_resource`, `pon`, `pileup_sites` | Mutect2 / GetPileupSummaries resources |
@@ -114,7 +115,7 @@ identical to the one-GPU run's, and the SEQC2 exome pair identical to the workst
 tasks given GPUs that do not exist fall back to the CPU, with the same outputs.
 
 Outputs: `preprocessing/<sample>/` (MarkDuplicates BAM + metrics, recal table), `germline/<sample>/` (VCF, filtered
-VCF; the GVCF with `joint_germline`), `germline/joint/` (`joint_germline.vcf.gz`, the VQSR recal files and tranches,
+VCF; the GVCF with `joint_germline`), `germline/joint/` (`joint_germline.vcf.gz`, the VQSR recal files (indexed) and tranches,
 `joint_germline_recalibrated.vcf.gz`), `somatic/<tumor>_vs_<normal>/` (Mutect2 VCF + stats, F1R2, priors,
 contamination, segments, filtered VCF), `somatic/pileups/`.
 
@@ -141,6 +142,7 @@ germline whole genome as above, `pipeline/run.sh` with its defaults unless noted
 | 6 GPUs, 64 threads every step, before the HaplotypeCaller GPU engine pool | 9.9 min (593 s) | HaplotypeCaller 3.5 |
 | 1 GPU, 64 threads every step, before the engine pool | 20.9 min | ALIGN 15.3 min (12 lanes, one task), MarkDuplicates 1.3, BaseRecalibrator 0.5, HaplotypeCaller 3.5 |
 | NVIDIA Parabricks 4.8.0-1 `germline`, 4 GPUs, 64 threads (2026-11-18) | 16.3 min | its own outputs: 99.8% of its calls have the same site, alleles and genotype as GATK's, 3% are identical records |
+| joint germline, CEPH trio (NA12878, NA12891, NA12892; 30x each, 36 FASTQ lanes) with VQSR (2026-11-21) | **~34 min** | ALIGN 13.7 min (18 tasks of 2 lanes); GVCFs done at 21 min (per sample: MarkDuplicates 1.8 min, BaseRecalibrator 0.5-0.9, HaplotypeCaller 4.6-5.2); GenomicsDBImport 5.1, GenotypeGVCFs 5.0, VariantRecalibrator 1.9 (SNP) / 0.5 (INDEL) side by side, ApplyVQSR 1.0; all 18 outputs identical to GATK (`tests/harness/m3`) |
 | somatic exome, SEQC2 tumor / normal BAMs (the defaults: 128 threads per step) | **63 s** | MarkDuplicates 11 s, BaseRecalibrator 3.5, ApplyBQSR 11-12, Mutect2 9.8, HaplotypeCaller on the normal 41.9; all 17 outputs identical to the workstation's |
 
 The sections that follow are the measurement log: how each number was taken, and what changed between runs.

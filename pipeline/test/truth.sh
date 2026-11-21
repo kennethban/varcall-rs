@@ -4,7 +4,8 @@
 #   somatic_bam: from data/wes (SEQC2 exome pair, chr22; read-group SM WES_FD_*, not the samplesheet's FD_*), as the
 #   pipeline's --step markduplicates; Mutect2 on the pair, HaplotypeCaller on the normal, over the chr22 target BED
 #   joint: NA12878 (the germline lanes) and HCC1143_normal (the somatic lanes) as --joint_germline runs them: GVCFs
-#   per interval, GenomicsDBImport (sarek's arguments), GenotypeGVCFs, VQSR SNP then INDEL (sarek's annotations, 99.9)
+#   per interval, GenomicsDBImport (sarek's arguments), GenotypeGVCFs per interval, VQSR SNP then INDEL (sarek's
+#   annotations, 99.9)
 set -eo pipefail
 cd "$(dirname "$0")"
 scen=$1; L=out/$scen/lanes; O=truth/$scen; mkdir -p $O
@@ -85,7 +86,14 @@ elif [ $scen = joint ]; then
   rm -rf $O/joint_germline.gdb
   t gdb $G GenomicsDBImport $(for s in $samples; do echo -n "-V $O/$s.g.vcf.gz "; done) --genomicsdb-workspace-path $O/joint_germline.gdb \
     -L joint.intervals --tmp-dir . --genomicsdb-shared-posixfs-optimizations true --bypass-feature-reader
-  t gg $G GenotypeGVCFs -R $R -V gendb://$O/joint_germline.gdb -L joint.intervals --dbsnp $D -O $O/joint_germline.vcf.gz
+  # GenotypeGVCFs once per interval (the pipeline's scatter_intervals, sarek's per-interval tasks), records in interval
+  # order under the first run's header
+  i=0; parts=()
+  while read -r iv; do
+    i=$((i+1)); t gg_$i $G GenotypeGVCFs -R $R -V gendb://$O/joint_germline.gdb -L $iv --dbsnp $D -O $O/gg_$i.vcf.gz; parts+=($O/gg_$i.vcf.gz)
+  done < joint.intervals
+  { zcat ${parts[0]} | grep "^#"; for p in "${parts[@]}"; do zcat $p | grep -v "^#"; done; } | bgzip > $O/joint_germline.vcf.gz
+  tabix -f -p vcf $O/joint_germline.vcf.gz
   t vr_snp $G VariantRecalibrator -V $O/joint_germline.vcf.gz -O $O/joint_germline_SNP.recal.vcf.gz --tranches-file $O/joint_germline_SNP.tranches -R $R \
     --resource:hapmap,known=false,training=true,truth=true,prior=15.0 $V/hapmap_3.3.hg38.vcf.gz --resource:omni,known=false,training=true,truth=true,prior=12.0 $V/1000G_omni2.5.hg38.vcf.gz \
     --resource:1000G,known=false,training=true,truth=false,prior=10.0 $V/1000G_phase1.snps.high_confidence.hg38.vcf.gz --resource:dbsnp,known=true,training=false,truth=false,prior=2.0 $D \

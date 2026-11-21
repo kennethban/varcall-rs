@@ -403,12 +403,14 @@ fn most_likely_alleles(vc: &MRec, keep: usize) -> Vec<usize> {
 // driver
 
 const USAGE: &str = "usage: variant-rs genotypegvcfs -R ref.fa -V in.g.vcf.gz -O out.vcf.gz [-D dbsnp.vcf.gz] [-G StandardAnnotation \
--G AS_StandardAnnotation] [-L interval ...] [--only-output-calls-starting-in-intervals] [--merge-input-intervals]";
+-G AS_StandardAnnotation] [-L interval ...] [--only-output-calls-starting-in-intervals] [--merge-input-intervals] \
+[--scatter-intervals (each -L interval is its own GATK run; gendb:// input)] [--threads N (with --scatter-intervals)]";
 
 pub fn run(argv: &[String]) {
     let t0 = std::time::Instant::now();
     let (mut input, mut output, mut reference, mut dbsnp) = (None::<String>, None::<String>, None::<String>, None::<String>);
     let (mut groups, mut ivs, mut starts_in, mut merge_ivs) = (Vec::<String>::new(), Vec::<String>::new(), false, false);
+    let (mut scatter, mut threads) = (false, std::thread::available_parallelism().map_or(1, |n| n.get()));
     let mut i = 0;
     while i < argv.len() {
         let v = || argv.get(i + 1).cloned().unwrap_or_else(|| panic!("{} needs a value\n{USAGE}", argv[i]));
@@ -423,6 +425,12 @@ pub fn run(argv: &[String]) {
                 i += 1;
                 continue;
             }
+            "--scatter-intervals" => {
+                scatter = true;
+                i += 1;
+                continue;
+            }
+            "--threads" => threads = v().parse().unwrap_or_else(|_| panic!("--threads: not an integer")),
             "-V" | "--variant" => input = Some(v()),
             "-O" | "--output" => output = Some(v()),
             "-R" | "--reference" => reference = Some(v()),
@@ -434,6 +442,10 @@ pub fn run(argv: &[String]) {
         i += 2;
     }
     let (input, output, reference) = (input.expect(USAGE), output.expect(USAGE), reference.expect(USAGE));
+    if scatter && (!input.starts_with("gendb://") || ivs.is_empty()) {
+        eprintln!("genotypegvcfs: --scatter-intervals needs a gendb:// input and -L");
+        std::process::exit(2);
+    }
     let gendb: Option<crate::gdb_store::Workspace> = input.strip_prefix("gendb://").map(|p| crate::gdb_store::Workspace::open(std::path::Path::new(p)));
     let as_annotations = groups.iter().any(|g| g == "AS_StandardAnnotation");
     let dict = crate::intervals::Dict::from_reference(&reference);
@@ -443,6 +455,8 @@ pub fn run(argv: &[String]) {
     for l in &ivs {
         user.extend(crate::intervals::parse_l_arg(l, &dict).unwrap_or_else(|e| panic!("{e}")));
     }
+    // --scatter-intervals: one run per piece (overlaps merged, abutting intervals apart, as HaplotypeCaller's)
+    let pieces = crate::intervals::scatter_pieces(user.clone());
     let user = crate::intervals::sort_merge(user);
     let traversal: Vec<crate::intervals::Interval> = if merge_ivs {
         let mut t: Vec<crate::intervals::Interval> = Vec::new();
@@ -455,10 +469,6 @@ pub fn run(argv: &[String]) {
         t
     } else {
         user.iter().map(|x| crate::intervals::Interval { tid: x.tid, start: x.start, end: x.end }).collect()
-    };
-    let overlaps = |set: &[crate::intervals::Interval], c: &str, s: i64, e: i64| -> bool {
-        let Some(&t) = dict.index.get(c) else { return false };
-        set.iter().any(|iv| iv.tid == t && iv.start <= e && s <= iv.end)
     };
     let mut lines: Box<dyn Iterator<Item = String>> = Box::new(std::iter::empty());
     let mut hdr: Vec<String> = Vec::new();
@@ -534,15 +544,17 @@ pub fn run(argv: &[String]) {
     }
     header.push('\n');
     let contigs: std::collections::HashSet<String> = dict.names.iter().cloned().collect();
-    let mut ann = Annotator {
-        as_ann: as_annotations,
-        types,
-        rng: hc_genotype::javamath::JavaRandom::new(47382911),
-        dbsnp: dbsnp.as_ref().map(|p| crate::dbsnp::Dbsnp::load(p, &contigs)),
+    let db = dbsnp.as_ref().map(|p| std::sync::Arc::new(crate::dbsnp::Dbsnp::load(p, &contigs)));
+    // one GATK run's state: the genotyper (its upstream deletions) and the annotator (QD's random jitter)
+    let new_run = || {
+        (
+            Genotyper::new(30.0, 6, as_annotations),
+            Annotator { as_ann: as_annotations, types: types.clone(), rng: hc_genotype::javamath::JavaRandom::new(47382911), dbsnp: db.clone() },
+        )
     };
+    let (mut gt, mut ann) = new_run();
     let gz = crate::output::block_compressed(&output);
     let mut out = crate::output::OutFile::create(&output, &header, if gz { Some(2) } else { None }).unwrap_or_else(|e| panic!("{e}"));
-    let mut gt = Genotyper::new(30.0, 6, as_annotations);
     let mut buf = String::with_capacity(8 << 20);
     let (mut n_in, mut n_out) = (0u64, 0u64);
     let is_gendb = gendb.is_some();
@@ -556,19 +568,10 @@ pub fn run(argv: &[String]) {
             writeln!(d, "{l}").unwrap();
         }
         n_in += 1;
-        let rec = parse_mrec(l, n_samples);
-        if !is_gendb && !user.is_empty() && !overlaps(&traversal, &rec.contig, rec.start, rec.stop) {
-            return;
+        let f = Filter { dict: &dict, user: &user, traversal: &traversal, starts_in, is_gendb };
+        if genotype_line(l, n_samples, &f, &order, &mut gt, &mut ann, &mut buf) {
+            n_out += 1;
         }
-        if !rec.alleles[1..].iter().any(|a| a != NON_REF) {
-            return;
-        }
-        let Some((o, attrs)) = genotype_record(&rec, &mut gt, &mut ann) else { return };
-        if starts_in && !user.is_empty() && !overlaps(&user, &o.contig, o.start, o.start) {
-            return;
-        }
-        encode(&o, &attrs, &order, &mut buf);
-        n_out += 1;
         if buf.len() >= 4 << 20 {
             out.add_text(buf.as_bytes()).unwrap();
             buf.clear();
@@ -587,29 +590,44 @@ pub fn run(argv: &[String]) {
             let fasta = crate::reference::Fasta::open(&reference);
             crate::gdb_merge::whole_workspace_records(ws, &fasta, false, |l| handle(l));
         }
-        Some(ws) => {
+        Some(ws) if !scatter => {
             let fasta = crate::reference::Fasta::open(&reference);
             for iv in &traversal {
-                let contig = &dict.names[iv.tid];
-                // the arrays (imported intervals contig$start$end) overlapping the traversal interval, in order
-                let mut arrs: Vec<(i64, i64, crate::gdb_store::Array)> = ws
-                    .arrays
-                    .iter()
-                    .filter_map(|p| {
-                        let name = p.file_name()?.to_string_lossy().into_owned();
-                        let mut f = name.rsplitn(3, '$');
-                        let (hi, lo, c) = (f.next()?.parse::<i64>().ok()?, f.next()?.parse::<i64>().ok()?, f.next()?);
-                        (c == contig && lo <= iv.end && iv.start <= hi).then(|| (lo, hi, crate::gdb_store::open_array(p)))
-                    })
-                    .collect();
-                arrs.sort_by_key(|x| x.0);
-                let mut scanners: Vec<(i64, i64, crate::gdb_merge::Scanner)> =
-                    arrs.iter().map(|(lo, hi, a)| (*lo, *hi, crate::gdb_merge::Scanner::new(ws, a, contig))).collect();
-                crate::gdb_merge::interval_records(ws, &mut scanners, contig, iv.start, iv.end, &fasta, |l| handle(l));
+                interval_lines(ws, &dict, iv, &fasta, |l| handle(l));
+            }
+        }
+        Some(_) => {}
+    }
+    drop(handle);
+    // --scatter-intervals: each piece of -L genotyped as its own GATK run would (fresh genotyper and random jitter,
+    // -L that piece only), side by side; the records written in interval order, as nf-core/sarek
+    // concatenates its per-interval runs
+    if let (Some(ws), true) = (&gendb, scatter) {
+        use rayon::prelude::*;
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads.max(1)).build().unwrap();
+        let one = |iv: &crate::intervals::Interval| -> (String, u64, u64) {
+            let fasta = crate::reference::Fasta::open(&reference);
+            let (mut gt, mut ann) = new_run();
+            let me = [crate::intervals::Interval { tid: iv.tid, start: iv.start, end: iv.end }];
+            let f = Filter { dict: &dict, user: &me, traversal: &me, starts_in, is_gendb: true };
+            let (mut text, mut n_in, mut n_out) = (String::new(), 0u64, 0u64);
+            interval_lines(ws, &dict, iv, &fasta, |l| {
+                if !l.is_empty() {
+                    n_in += 1;
+                    n_out += genotype_line(l, n_samples, &f, &order, &mut gt, &mut ann, &mut text) as u64;
+                }
+            });
+            (text, n_in, n_out)
+        };
+        // a window of intervals at a time, so the text held stays small
+        for w in pieces.chunks(4 * threads.max(1)) {
+            for (text, i, o) in pool.install(|| w.par_iter().map(one).collect::<Vec<_>>()) {
+                out.add_text(text.as_bytes()).unwrap();
+                n_in += i;
+                n_out += o;
             }
         }
     }
-    drop(handle);
     if let Some(mut d) = dump {
         use std::io::Write;
         d.flush().unwrap();
@@ -617,6 +635,57 @@ pub fn run(argv: &[String]) {
     out.add_text(buf.as_bytes()).unwrap();
     out.finish().unwrap();
     eprintln!("genotypegvcfs: {n_in} records in, {n_out} out ({:.1}s)", t0.elapsed().as_secs_f64());
+}
+
+/// Which records a run keeps: -L (traversal: the records read; user: --only-output-calls-starting-in-intervals)
+struct Filter<'a> {
+    dict: &'a crate::intervals::Dict,
+    user: &'a [crate::intervals::Interval],
+    traversal: &'a [crate::intervals::Interval],
+    starts_in: bool,
+    is_gendb: bool,
+}
+
+fn overlaps(dict: &crate::intervals::Dict, set: &[crate::intervals::Interval], c: &str, s: i64, e: i64) -> bool {
+    let Some(&t) = dict.index.get(c) else { return false };
+    set.iter().any(|iv| iv.tid == t && iv.start <= e && s <= iv.end)
+}
+
+/// One merged record (a VCF line) through the genotyper; the output record appended to `buf`. Whether one was.
+fn genotype_line(l: &str, n_samples: usize, f: &Filter, order: &[usize], gt: &mut Genotyper, ann: &mut Annotator, buf: &mut String) -> bool {
+    let rec = parse_mrec(l, n_samples);
+    if !f.is_gendb && !f.user.is_empty() && !overlaps(f.dict, f.traversal, &rec.contig, rec.start, rec.stop) {
+        return false;
+    }
+    if !rec.alleles[1..].iter().any(|a| a != NON_REF) {
+        return false;
+    }
+    let Some((o, attrs)) = genotype_record(&rec, gt, ann) else { return false };
+    if f.starts_in && !f.user.is_empty() && !overlaps(f.dict, f.user, &o.contig, o.start, o.start) {
+        return false;
+    }
+    encode(&o, &attrs, order, buf);
+    true
+}
+
+/// The merged records of a workspace over one traversal interval: the arrays (imported intervals
+/// contig$start$end) overlapping it, in order
+fn interval_lines(ws: &crate::gdb_store::Workspace, dict: &crate::intervals::Dict, iv: &crate::intervals::Interval, fasta: &crate::reference::Fasta, each: impl FnMut(&str)) {
+    let contig = &dict.names[iv.tid];
+    let mut arrs: Vec<(i64, i64, crate::gdb_store::Array)> = ws
+        .arrays
+        .iter()
+        .filter_map(|p| {
+            let name = p.file_name()?.to_string_lossy().into_owned();
+            let mut f = name.rsplitn(3, '$');
+            let (hi, lo, c) = (f.next()?.parse::<i64>().ok()?, f.next()?.parse::<i64>().ok()?, f.next()?);
+            (c == contig && lo <= iv.end && iv.start <= hi).then(|| (lo, hi, crate::gdb_store::open_array(p)))
+        })
+        .collect();
+    arrs.sort_by_key(|x| x.0);
+    let mut scanners: Vec<(i64, i64, crate::gdb_merge::Scanner)> =
+        arrs.iter().map(|(lo, hi, a)| (*lo, *hi, crate::gdb_merge::Scanner::new(ws, a, contig))).collect();
+    crate::gdb_merge::interval_records(ws, &mut scanners, contig, iv.start, iv.end, fasta, each);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -675,7 +744,7 @@ pub(crate) struct Annotator {
     /// INFO header types of the input ("Integer", "Float", ...)
     pub types: std::collections::HashMap<String, String>,
     pub rng: hc_genotype::javamath::JavaRandom,
-    pub dbsnp: Option<crate::dbsnp::Dbsnp>,
+    pub dbsnp: Option<std::sync::Arc<crate::dbsnp::Dbsnp>>,
 }
 
 /// Histogram (bin 0.1, BIN_EPSILON 0.01): bin -> count

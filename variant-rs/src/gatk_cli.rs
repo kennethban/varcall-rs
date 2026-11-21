@@ -303,8 +303,9 @@ const TOOLS: &[Tool] = &[
             m("--merge-input-intervals", "--merge-input-intervals", 1),
         ],
         ignore: &["--tmp-dir"],
-        extras: &[],
-        threads: false,
+        // --scatter-intervals: each -L interval its own GATK run (nf-core/sarek's per-interval tasks), side by side
+        extras: &[("--scatter-intervals", false), ("--threads", true)],
+        threads: true,
         picard: false,
         intervals: Iv::Lists,
     },
@@ -436,8 +437,9 @@ const TOOLS: &[Tool] = &[
             "--tmp-dir",
             "--reference",
         ],
-        extras: &[],
-        threads: false,
+        // the intervals (arrays) imported side by side
+        extras: &[("--threads", true)],
+        threads: true,
         picard: false,
         intervals: Iv::Lists,
     },
@@ -1049,7 +1051,7 @@ mod tests {
         let gg = run("GenotypeGVCFs", &["-R", "r.fa", "-O", "o.vcf.gz", "-D", "d.vcf.gz", "-G", "StandardAnnotation", "-G", "AS_StandardAnnotation",
             "--only-output-calls-starting-in-intervals", "-V", "x.g.vcf.gz", "-L", "chr8", "--merge-input-intervals"]).unwrap();
         assert_eq!(gg, s(&["genotypegvcfs", "-R", "r.fa", "-O", "o.vcf.gz", "-D", "d.vcf.gz", "-G", "StandardAnnotation", "-G", "AS_StandardAnnotation",
-            "--only-output-calls-starting-in-intervals", "-V", "x.g.vcf.gz", "-L", "chr8", "--merge-input-intervals"]));
+            "--only-output-calls-starting-in-intervals", "-V", "x.g.vcf.gz", "-L", "chr8", "--merge-input-intervals", "--threads", "8"]));
         // BamProcessing.wdl's SortSam
         let ss = run("SortSam", &["INPUT=x.bam", "OUTPUT=y.bam", "SORT_ORDER=coordinate", "CREATE_INDEX=true", "CREATE_MD5_FILE=true", "MAX_RECORDS_IN_RAM=300000"]).unwrap();
         assert_eq!(ss, s(&["sortsam", "-I", "x.bam", "-O", "y.bam", "--SORT_ORDER", "coordinate", "--CREATE_INDEX", "true", "--CREATE_MD5_FILE", "true", "--threads", "8"]));

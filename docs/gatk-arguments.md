@@ -73,7 +73,7 @@ lists. What variant-rs does not cover at all: [reference.md](reference.md#what-i
 
 * **Mapped:** `--variant` / `-V`, `--reference` / `-R`, `--output` / `-O`, `--dbsnp` / `-D`, `--annotation-group` / `-G`, `--intervals` / `-L`, `--only-output-calls-starting-in-intervals`, `--merge-input-intervals`
 * **Ignored:** `--verbosity`, `--QUIET`, `--seconds-between-progress-updates`, `--use-jdk-deflater`, `--use-jdk-inflater`, `--cloud-prefetch-buffer`, `--cloud-index-prefetch-buffer`, `--gcs-max-retries`, `--gcs-project-for-requester-pays`, `--disable-bam-index-caching`, `--create-output-variant-index`, `--create-output-bam-index`, `--max-variants-per-shard`, `--tmp-dir`
-* **variant-rs's own options:** none
+* **variant-rs's own options:** `--scatter-intervals`, `--threads`
 
 ## ReblockGVCF
 
@@ -103,7 +103,7 @@ lists. What variant-rs does not cover at all: [reference.md](reference.md#what-i
 
 * **Mapped:** `--genomicsdb-workspace-path`, `--sample-name-map`, `--variant` / `-V`, `--intervals` / `-L`, `--merge-input-intervals`, `--batch-size`, `--consolidate`, `--bypass-feature-reader`, `--overwrite-existing-genomicsdb-workspace`, `--add-output-vcf-command-line`
 * **Ignored:** `--verbosity`, `--QUIET`, `--seconds-between-progress-updates`, `--use-jdk-deflater`, `--use-jdk-inflater`, `--cloud-prefetch-buffer`, `--cloud-index-prefetch-buffer`, `--gcs-max-retries`, `--gcs-project-for-requester-pays`, `--disable-bam-index-caching`, `--create-output-variant-index`, `--create-output-bam-index`, `--max-variants-per-shard`, `--reader-threads`, `--genomicsdb-shared-posixfs-optimizations`, `--genomicsdb-segment-size`, `--genomicsdb-vcf-buffer-size`, `--max-num-intervals-to-import-in-parallel`, `--validate-sample-name-map`, `--tmp-dir`, `--reference`
-* **variant-rs's own options:** none
+* **variant-rs's own options:** `--threads`
 
 ## CreateSomaticPanelOfNormals
 
