@@ -7,7 +7,7 @@
 #     finish and agree (the two-stage front end's end-of-contig race was hit once in 294,884 such runs).
 # usage: scatter_intervals.sh [OUTDIR]
 REPO=$(cd "$(dirname "$0")/../.." && pwd); P=${VARCALL_DATA:?set VARCALL_DATA to the test data directory}; G=${VARIANT_RS:-$REPO/target/release/variant-rs}
-O=${1:-$P/gatk-rs/tests/out/scatter}; T=$P/gatk-rs/tests/scatter_truth; mkdir -p $O $T
+O=${1:-$P/scatter/out}; T=$P/scatter/truth; mkdir -p $O $T
 GATK="java -Xmx8g -jar ${GATK_JAR:?set GATK_JAR to the GATK 4.7.0.0 jar}"
 R=$P/ref_hg38/Homo_sapiens_assembly38.fasta; BAM=$P/pipeline/nf/test/truth/germline/NA12878.recal.bam
 cat > $O/odd.intervals <<'EOF'

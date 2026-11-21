@@ -135,7 +135,7 @@ and 5 open, as measured.
 
 ## Coverage: GATK tools to add next
 
-Researched 2026-11-20 against nf-core/sarek 3.12.0 (`~/project/gatk/sarek/src`), Broad's WARP (develop: JointGenotyping
+Researched 2026-11-20 against nf-core/sarek 3.12.0 (`$VARCALL_DATA/sarek/src`), Broad's WARP (develop: JointGenotyping
 1.7.4, Whole-Genome / Exome Germline Single Sample 3.3.9 / 3.2.9) and the GATK 4.7.0.0 source. What the pipelines run
 by default, and whether GATK's output can be reproduced byte for byte:
 

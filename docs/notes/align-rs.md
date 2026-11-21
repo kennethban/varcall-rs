@@ -93,7 +93,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
   empty batch as bwa-mem2's two pipeline workers do, BOM / junk before '@', spaces in sequence lines, CRLF, Latin-1
   names and qualities copied verbatim, gzip with trailing bytes), `tests/alt.sh` (.alt parsing), `tests/gpufail.sh`.
   `--lanes` refuses two lanes with one output file before doing any work.
-* Stage by stage: bwa-mem2 built from `$VARCALL_DATA/ext/bwa-mem2-2.2.1` with dump hooks (SMEMs, chains, regions after
+* Stage by stage: bwa-mem2 built from `$VARCALL_DATA/tools/bwa-mem2-2.2.1` with dump hooks (SMEMs, chains, regions after
   extension, pestat, final records), compared with the port's dumps.
 
 ## Milestones

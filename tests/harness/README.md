@@ -62,6 +62,12 @@ All public. Sizes are what the harness keeps, outputs included.
 | `hcorder/`, `hclong/`, `plan_edge/` | HaplotypeCaller / planner edge cases cut from HG002 | `truth.sh` / `run.sh` (make their inputs) |
 | `containers/variant-rs/truth/` | GATK 4.7.0.0 HaplotypeCaller on HG002 chr8:1-15M, run in sarek's GATK image (`containers/test_images.sh`) | GATK, from `hg002/` |
 | `pipeline/nf/test/` (3.5 GB) | the pipeline tests' FASTQs (NA12878 chr20 slice in two lanes, HCC1143 lanes, SEQC2 WES), GATK truth, lane digests | `pipeline/test/make_fastq.sh`, `pipeline/test/truth.sh` (in the repository) |
+| `scatter/` | GATK truth for HaplotypeCaller `--scatter-intervals` (`variant-rs/tests/scatter_intervals.sh`) | made by that test |
+| `sarek/` (36 GB) | nf-core/sarek 3.12.0 source (`src/`) and its end-to-end runs with variant-rs (`e2e/`); `bin/nextflow` | the nf-core/sarek repository; `e2e/` runs |
+| `tools/` | GATK 4.7.0.0 release (`gatk-release/`), bwa-mem2 2.2.1 (with the dump hooks of `docs/notes/align-rs.md`), `nextflow` (link to `sarek/bin`) | the GATK and bwa-mem2 releases |
+| `upstream/` (1 GB) | the source code read while porting: GATK, Picard, htsjdk, GenomicsDB, GKL, commons-math, JEXL | their repositories at the reference versions |
+| `runs/` | ad-hoc pipeline runs | |
+| `archive/` (14 GB) | the prototype-era folders (before the code moved into this repository, 2026-11-17), kept as they were | |
 
 Reference genomes are large but shared: `ref_hg38` (pipeline, HCC1143, align-rs), `wgs/ref` and `bqsr/ref` (the
 1000 Genomes GRCh38 analysis set: NA12878 BQSR and MarkDuplicates), `hg002/ref` (no-alt set), `somatic/dream/data`
