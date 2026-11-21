@@ -119,6 +119,15 @@ run; outputs identical, `VARIANT_RS_TRACE_CPU=1` prints the CPU by step):
 | Smaller bucket ends, direct bucket reads, cheaper pass 1 | 255 s | 66 s | 40 s | 148 s | 6,090 s |
 | And BGZF level 2 in the pipeline, as sarek's | 246 s | 67 s | 40 s | 139 s | 5,677 s |
 
+The same on the server (L40S machine, 2 x EPYC 9654; m1's 12 lanes, inputs in the page cache, tracing off: on, it
+made the 128-thread run 53.5 -> 69.3 s): records and metrics identical to m1's MarkDuplicates BAM in every run.
+
+| MarkDuplicates, server | 64 threads | 128 threads |
+|---|---:|---:|
+| Before | 77.5 s | 58.5 s, 56.4 s |
+| After, level 5 | 71.4 s | 53.5 s |
+| After, level 2 (the pipeline) | 60.7 s | 48.1 s |
+
 * **Done:** the on-disk ends packed (35 bytes a fragment, 50 a pair; the buckets 60 -> 43 GB) and read straight into
   their arrays; pass 1's mate lookup without a per-record allocation, the @PG / RG tags found in one scan. The
   pipeline writes the BAM at level 2, as sarek does through the gatk launcher (`-Dsamjdk.compression_level=2`;
