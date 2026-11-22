@@ -45,6 +45,7 @@ run markdup_cram     bash $HARNESS/markdup/cram/run.sh
 run bqsr_qualhi      bash $HARNESS/bqsr/qualhi/cmp.sh $O/qualhi
 run hc_contig_order  bash $HARNESS/hcorder/cmp.sh $O/hcorder
 run hc_long_reads    bash $HARNESS/hclong/cmp.sh $O/hclong
+run hc_segments      bash $HARNESS/hg002/segments.sh $O/segments
 run m2_long_reads    bash $HARNESS/somatic/longread/cmp.sh $O/m2long
 run fmc_gvcf         bash $HARNESS/somatic/fmcgvcf/cmp.sh $O/fmcgvcf
 run aln_badfq        bash $REPO/align-rs/tests/badfq.sh ${ALIGN_RS:-$REPO/target/release/align-rs} $O/badfq
