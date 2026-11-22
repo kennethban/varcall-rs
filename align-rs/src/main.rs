@@ -29,6 +29,9 @@ use std::io::Write;
 static PROF: [std::sync::atomic::AtomicU64; 9] = [const { std::sync::atomic::AtomicU64::new(0) }; 9];
 static DROP_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static DROP_MAX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// dropper threads, and the structures that may wait for them (a batch sends four)
+const N_DROPPERS: usize = 4;
+const DROP_CAP: usize = 16;
 /// lanes handed to the final-pass thread and not yet finished (ALIGN_RS_MEMLOG)
 static FINAL_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// batches written (ALIGN_RS_MEMLOG)
@@ -473,16 +476,27 @@ fn main() {
             }
             prof::stage_done("BAM final pass");
         }).unwrap();
-        let (dropper, drop_rx) = std::sync::mpsc::channel::<Box<dyn Send>>();
-        sc.spawn(move || {
-            for x in drop_rx {
-                let t = std::time::Instant::now();
-                drop(x);
-                padd(8, t);
-                DROP_PENDING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            prof::stage_done("dropper");
-        });
+        // large structures are freed off the stage threads. One thread was ~75% busy at 1.5 s a batch and fell
+        // behind on full lanes (the backlog held ~1 GB a batch: 48 GB of WSL filled in 5 minutes), so several
+        // threads share the queue, and it is bounded: a stage waits rather than memory growing.
+        let (dropper, drop_rx) = std::sync::mpsc::sync_channel::<Box<dyn Send>>(DROP_CAP);
+        let drop_rx = std::sync::Arc::new(std::sync::Mutex::new(drop_rx));
+        for k in 0..N_DROPPERS {
+            let drop_rx = drop_rx.clone();
+            sc.spawn(move || {
+                loop {
+                    let x = drop_rx.lock().unwrap().recv();
+                    let Ok(x) = x else { break };
+                    let t = std::time::Instant::now();
+                    drop(x);
+                    padd(8, t);
+                    DROP_PENDING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if k == 0 {
+                    prof::stage_done("dropper");
+                }
+            });
+        }
         #[cfg(gpu)]
         let gpu_sam: Option<&gpu::Gpu> = gpu_dev.as_ref().filter(|_| std::env::var("ALIGN_RS_GPU_MATESW").map_or(true, |v| v != "0"));
         // mate-rescue stage: insert-size statistics and the batch's rescue alignments (GPU), so that they overlap

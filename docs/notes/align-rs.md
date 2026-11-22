@@ -403,3 +403,13 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     * Not done: bwa-mem3 #580 extends the bound to unequal lengths (a single-gap lower bound; band |d| + x, at least
       |d| + 3); there it took the CIGAR pass's cells down another ~26%, under 1% of bwa-mem3's wall.
 
+15. **The dropper fell behind on full lanes (2026-11-22): fixed.** Large per-batch structures are handed to a
+    dropper thread to free. On the workstation's first full 12-lane run since stage 7 (the pipeline rerun for
+    PLAN.md's time table), WSL went down twice ~6 minutes in: anonymous memory grew ~1 GB a batch until the 48 GB
+    were full. `ALIGN_RS_MEMLOG=2` on 4 lanes showed it: drops pending 1 -> 25 in 100 s, anon 18 -> 34 GB. On the
+    `mid` set the one thread was already 74% busy (23.0 s of 31.0 s); the 11-19 code (2e455f7) under the same
+    driver 48% (18.8 of 39.1 s): batches are ~20% faster since stage 7 and there is ~20% more to free, so on full
+    lanes it passed 100%. Four dropper threads now share a bounded queue (16 structures, ~4 batches): a stage
+    waits rather than memory growing. The 4 lanes then ran at drops pending <= 2, anon ~24 GB (about half of it
+    lazily freed); the 12-lane pipeline run peaked at 34.6 GB RSS. Records identical (`tests/cmp.sh`, the pipeline
+    VCF md5).

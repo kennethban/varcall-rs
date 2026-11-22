@@ -28,19 +28,24 @@ on 1 L40S 106 -> 94 s (as fast as 2 GPUs) and on the workstation 400 -> 355 s.
 VQSR, C2 VariantFiltration, C3 GenomicsDBImport and C4 CreateSomaticPanelOfNormals are done, and the pipeline runs
 joint germline calling with them (2026-11-21). No further tool is planned.
 
-## Where the time goes (2026-11-19)
+## Where the time goes (2026-11-22)
 
-NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` at 2e455f7:
+NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` at 98e7200 plus the dropper fix (after stages 3, 5, 6 and
+7 items 1-3); VCF data lines identical in every run (md5 741f6ebc50be, filtered 17d3db3ded77):
 
-| Step | Workstation, 1 RTX 5070 Ti, 32 threads (2026-11-17, before the align-rs work below) | Server, 6 L40S, 64 threads per step |
+| Step | Workstation, 1 RTX 5070 Ti, 32 threads (2026-11-19 stage 0 -> now) | Server, 6 L40S, `run.sh` defaults (2026-11-19 -> now) |
 |---|---:|---:|
-| Alignment | 36.1 min (12 lanes in one task) | 3.8-4.4 min (6 tasks of 2 lanes, side by side) |
-| MarkDuplicates | 4.1 min | 1.3 min |
-| BaseRecalibrator | 1.2 min | 0.5 min |
-| HaplotypeCaller | 7.0 min | 3.5 min |
-| Total | 48.8 min | 9.9 min |
+| Alignment | 32.1 -> 29.7 min (12 lanes in one task; peak RSS 34.6 GB) | 4.0-4.6 -> 3.9-4.7 min (6 tasks of 2 lanes, side by side) |
+| MarkDuplicates | 3.9 -> 3.3 min | 0.9 -> 0.8 min |
+| BaseRecalibrator | 1.4 -> 1.25 min | 0.3 -> 0.3 min |
+| HaplotypeCaller | 6.9 -> 5.5 min | 1.7 -> 1.6 min |
+| Total | 44.6 -> **40.1 min** | 465 -> **460 s** |
 
-What limits each step, measured on the server:
+The server's run is paced by the CPU (6 alignments on 384 threads; GPUs 19-32% busy on average), so the kernel
+work of stages 3 and 7 does not show there; the workstation gains 10%. Server folder `runs/wgs5`, workstation
+`wgs/stage7`.
+
+What limits each step, measured on the server (2026-11-19; HaplotypeCaller has had its engine pool since):
 
 * **HaplotypeCaller is limited by how the GPU is fed.** Its 8 contig workers share one CUDA PairHMM engine behind
   one lock (`crates/cudahmm/src/lib.rs`): one stream, one pinned buffer, and the packing of a batch on the CPU
@@ -231,8 +236,8 @@ ideas, in order:
   GenotypeGVCFs genotypes each interval as its own GATK run (sarek's scatter), side by side; a HaplotypeCaller GVCF
   rule (a call with `<NON_REF>` written 0/0, PLs 0) seen once in the three genomes. Larger cohorts not measured.
 
-Order: stages 1, 3, 5 and 6, M1, M3 and M4 done; stages 2 and 4 tried and not pursued; stage 7 (align-rs kernels) open,
-starting with the mate-SW prototype.
+Order: stages 1, 3, 5 and 6, M1, M3 and M4 done; stages 2 and 4 tried and not pursued; stage 7 items 1-3 done, item 4
+(idle extension lanes) next, after a warp-efficiency profile.
 
 ## Coverage: GATK tools to add next
 
