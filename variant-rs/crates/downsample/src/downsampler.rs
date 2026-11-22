@@ -166,6 +166,11 @@ impl<T> PositionalDownsampler<T> {
         idx + 1 < self.pending.len() || self.input_done
     }
 
+    /// Start and reads of the head group (the next one to be finalized), if any.
+    pub fn head_group(&self) -> Option<(i64, &[T])> {
+        self.pending.front().map(|g| (g.start, &g.reads[..]))
+    }
+
     /// Does finalizing the head group draw from the RNG? (`None` if there is no complete head group.)
     pub fn head_draws(&self) -> Option<bool> {
         if self.pending.is_empty() || !self.group_complete(0) {

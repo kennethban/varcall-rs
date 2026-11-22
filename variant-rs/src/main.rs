@@ -41,6 +41,7 @@ mod plan;
 mod reblock;
 mod reference;
 mod rng;
+mod segment;
 mod sortsam;
 mod tabix;
 mod vcfheader;
@@ -228,6 +229,10 @@ struct Job {
     name: String,
     len: i64,
     intervals: Vec<(i64, i64)>,
+    /// a segment of the contig inside the domain's RNG stream (`segment.rs`); None: the whole contig
+    seg: Option<frontend::SegSpec>,
+    /// the pre-scan found drawing groups in it: it is claimed only on its generator turn
+    groups: bool,
 }
 
 struct Domain {
@@ -601,12 +606,97 @@ fn main() {
     let rank = |name: &str| if reads_order { bam_dict.index[name] } else { ref_dict.index[name] };
     let mut jobs: Vec<Job> = Vec::new();
     let mut domains: Vec<Domain> = Vec::new();
+    // segments of contigs in single-run VCF mode (segment.rs); VARIANT_RS_SEGMENTS=0 turns them off
+    let seg_on = domain_ivs.len() == 1
+        && !args.erc
+        && args.contamination == 0.0
+        && args.region_out.is_none()
+        && args.dump.is_none()
+        && args.shard_dir.is_none()
+        && std::env::var("VARIANT_RS_SEGMENTS").ok().as_deref() != Some("0");
     for (di, (name, ivs)) in domain_ivs.iter().enumerate() {
         let first = jobs.len();
         for (rt, list) in intervals::group_by_contig(ivs) {
             let cname = &ref_dict.names[rt];
             let tid = *bam_dict.index.get(cname).unwrap_or_else(|| panic!("contig {cname} is not in the BAM header"));
-            jobs.push(Job { domain: di, didx: jobs.len() - first, tid, name: cname.clone(), len: ref_dict.lens[rt], intervals: list });
+            jobs.push(Job { domain: di, didx: jobs.len() - first, tid, name: cname.clone(), len: ref_dict.lens[rt], intervals: list, seg: None, groups: false });
+        }
+        if seg_on {
+            // single-run mode: cut long contigs into segments of the one RNG stream (segment.rs)
+            let t0 = Instant::now();
+            let whole: Vec<Job> = jobs.drain(first..).collect();
+            let est_workers = if args.workers > 0 { args.workers } else { (args.threads / 2).clamp(1, 8).max((args.threads / 4).min(32)) };
+            let total: i64 = whole.iter().map(|j| j.len).sum();
+            let piece: i64 = match std::env::var("VARIANT_RS_SEGMENT_MB").ok().and_then(|v| v.parse::<f64>().ok()) {
+                Some(mb) => (mb * 1e6) as i64,
+                None => (total / (8 * est_workers as i64)).clamp(2_000_000, 16_000_000),
+            };
+            // pre-scan of the drawing groups, in chunks of up to 20 Mb, longest first
+            const CHUNK: i64 = 20_000_000;
+            let scan: Vec<(usize, i64, i64)> = {
+                let mut v: Vec<(usize, i64, i64)> = Vec::new();
+                for (i, j) in whole.iter().enumerate().filter(|(_, j)| j.intervals.len() == 1) {
+                    let (a, b) = j.intervals[0];
+                    let n = ((b - a + 1 + CHUNK - 1) / CHUNK).max(1);
+                    for c in 0..n {
+                        v.push((i, a + (b - a + 1) * c / n, a + (b - a + 1) * (c + 1) / n - 1));
+                    }
+                }
+                v.sort_by_key(|&(_, a, b)| std::cmp::Reverse(b - a));
+                v
+            };
+            let found: Vec<Mutex<Option<Vec<i64>>>> = (0..whole.len()).map(|_| Mutex::new(None)).collect();
+            let next = AtomicUsize::new(0);
+            let io_ns = Arc::new(AtomicU64::new(0));
+            std::thread::scope(|sc| {
+                for _ in 0..args.threads.clamp(1, 64).min(scan.len().max(1)) {
+                    sc.spawn(|| loop {
+                        let k = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&(i, a, b)) = scan.get(k) else { return };
+                        let g = segment::scan_groups(&inputs, whole[i].tid, a, b, args.max_reads_per_start.max(1), io_ns.clone());
+                        let mut f = found[i].lock().unwrap();
+                        let v = f.get_or_insert_with(Vec::new);
+                        v.extend(g);
+                        v.sort_unstable();
+                    });
+                }
+            });
+            let (mut n_groups, mut n_cut) = (0usize, 0usize);
+            for (i, j) in whole.into_iter().enumerate() {
+                let g = found[i].lock().unwrap().take();
+                let segs = match &g {
+                    Some(g) if j.intervals[0] == (1, j.len) => segment::plan(j.len, g, piece),
+                    _ => vec![],
+                };
+                n_groups += g.as_ref().map_or(0, |g| g.len());
+                if segs.len() <= 1 {
+                    let groups = g.is_some_and(|g| !g.is_empty());
+                    jobs.push(Job { didx: jobs.len() - first, groups, ..j });
+                    continue;
+                }
+                n_cut += 1;
+                for sg in segs {
+                    let lo = sg.from.map_or(1, |f| (f - frontend::SEG_WARMUP).max(1));
+                    jobs.push(Job {
+                        domain: j.domain,
+                        didx: jobs.len() - first,
+                        tid: j.tid,
+                        name: j.name.clone(),
+                        len: j.len,
+                        intervals: vec![(lo, j.len)],
+                        seg: Some(frontend::SegSpec { own_from: sg.from, cuts: sg.cuts }),
+                        groups: sg.groups,
+                    });
+                }
+            }
+            eprintln!(
+                "segments: {} contig(s) cut into {} jobs (pieces ~{:.1} Mb), {} candidate drawing groups, pre-scan {:.1}s",
+                n_cut,
+                jobs.len() - first,
+                piece as f64 / 1e6,
+                n_groups,
+                t0.elapsed().as_secs_f64()
+            );
         }
         let n = jobs.len() - first;
         domains.push(Domain { name: name.clone(), first, last: jobs.len().wrapping_sub(1), rng: Arc::new(rng::DomainRng::new(n)), contam: Arc::new(rng::DomainRng::with(n, hc_genotype::well::Well19937c::gatk())) });
@@ -617,7 +707,7 @@ fn main() {
         for w in jobs.windows(2) {
             let (a, b) = (&w[0], &w[1]);
             let (ra, rb) = (rank(&a.name), rank(&b.name));
-            let ok = ra < rb || (ra == rb && a.intervals.last().unwrap().1 < b.intervals[0].0);
+            let ok = ra < rb || (ra == rb && (a.intervals.last().unwrap().1 < b.intervals[0].0 || b.seg.as_ref().is_some_and(|s| s.own_from.is_some())));
             if !ok {
                 panic!("shards {} and {} are out of order or overlap on {}: the merged output would not be sorted",
                        domains_name(&domain_ivs, a.domain), domains_name(&domain_ivs, b.domain), b.name);
@@ -748,10 +838,62 @@ fn main() {
     let sched: Mutex<(Vec<usize>, Vec<usize>)> = Mutex::new((domains.iter().map(|d| d.first).collect(), vec![0; domains.len()]));
     // time each domain's first contig was claimed (for the "domains" report)
     let dom_start: Mutex<Vec<f64>> = Mutex::new(vec![f64::NAN; domains.len()]);
+    // segments (one domain): a job the pre-scan found drawing groups in is claimed only a few turns ahead of its
+    // generator turn (earlier, its worker would wait at its first group; a little ahead, the work before its first
+    // group is done by then), or when nothing else is left; others are claimed in order
+    let deferred: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let lookahead = (n_workers / 8).max(1);
     let claim = |prev_dom: Option<usize>| -> Option<usize> {
         let mut s = sched.lock().unwrap();
         if let Some(d) = prev_dom {
             s.1[d] -= 1;
+        }
+        if seg_on && domains.len() == 1 {
+            drop(s);
+            let rng = &domains[0].rng;
+            loop {
+                let turn = rng.turn();
+                let mut s = sched.lock().unwrap();
+                let mut df = deferred.lock().unwrap();
+                df.retain(|&k| !rng.is_absorbed(jobs[k].didx));
+                df.sort_unstable();
+                let rest = s.0[0] > domains[0].last;
+                let pick = match df.iter().position(|&k| jobs[k].didx <= turn + lookahead) {
+                    Some(i) => Some(df.remove(i)),
+                    None if rest && !df.is_empty() => Some(df.remove(0)),
+                    None => {
+                        let mut pick = None;
+                        while s.0[0] <= domains[0].last {
+                            let k = s.0[0];
+                            s.0[0] += 1;
+                            if rng.is_absorbed(jobs[k].didx) {
+                                continue;
+                            }
+                            if jobs[k].groups && jobs[k].didx > turn + lookahead {
+                                df.push(k);
+                                continue;
+                            }
+                            pick = Some(k);
+                            break;
+                        }
+                        pick
+                    }
+                };
+                if let Some(k) = pick {
+                    s.1[0] += 1;
+                    let mut st = dom_start.lock().unwrap();
+                    if st[0].is_nan() {
+                        st[0] = t_all.elapsed().as_secs_f64();
+                    }
+                    return Some(k);
+                }
+                if df.is_empty() {
+                    return None;
+                }
+                drop(df);
+                drop(s);
+                rng.wait_turn_change(turn, 20);
+            }
         }
         for &d in &dom_order {
             if s.0[d] <= domains[d].last && s.1[d] < per_dom_cap {
@@ -772,13 +914,15 @@ fn main() {
     let dump_file: Mutex<Option<BufWriter<File>>> = Mutex::new(args.dump.as_ref().map(|p| BufWriter::with_capacity(1 << 20, File::create(p).unwrap())));
     let failed = std::sync::atomic::AtomicBool::new(false);
     let _ = AtomicUsize::new(0);
+    let contig_times = std::env::var_os("VARIANT_RS_CONTIG_TIMES").is_some();
+    let ref_cache: Mutex<std::collections::HashMap<usize, std::sync::Weak<RefSeq>>> = Mutex::new(std::collections::HashMap::new());
 
     std::thread::scope(|scope| {
         for _ in 0..n_workers {
             let res_tx = res_tx.clone();
             let (jobs, domains, inputs, fasta, tables, header, claim) = (&jobs, &domains, &inputs, &fasta, &tables, header, &claim);
             let hc_opts = &hc_opts;
-            let (inflate_ns, tmp_dir, dump_file, failed) = (&inflate_ns, &tmp_dir, &dump_file, &failed);
+            let (inflate_ns, tmp_dir, dump_file, failed, ref_cache) = (&inflate_ns, &tmp_dir, &dump_file, &failed, &ref_cache);
             let raw_wanted = args.gvcf_raw.is_some();
             let dump_on = args.dump.is_some();
             let erc = args.erc;
@@ -798,15 +942,30 @@ fn main() {
                     let t0 = Instant::now();
                     // reference: the intervals +/- 700 (regions are within intervals; assembly needs the padded
                     // region +/- 500, region padding is 100)
-                    let (lo, hi) = (job.intervals[0].0 - 700, job.intervals.last().unwrap().1 + 700);
-                    let (seq, clen) = fasta.fetch(&job.name, lo, hi);
-                    assert_eq!(clen, job.len);
-                    let refseq = Arc::new(RefSeq { from: lo.max(1), seq, contig_len: clen });
+                    let refseq = if job.seg.is_some() {
+                        // segments of a contig share the whole contig's sequence while any of them runs
+                        let mut c = ref_cache.lock().unwrap();
+                        match c.get(&job.tid).and_then(|w| w.upgrade()) {
+                            Some(r) => r,
+                            None => {
+                                let (seq, clen) = fasta.fetch(&job.name, 1, job.len);
+                                assert_eq!(clen, job.len);
+                                let r = Arc::new(RefSeq { from: 1, seq, contig_len: clen });
+                                c.insert(job.tid, Arc::downgrade(&r));
+                                r
+                            }
+                        }
+                    } else {
+                        let (lo, hi) = (job.intervals[0].0 - 700, job.intervals.last().unwrap().1 + 700);
+                        let (seq, clen) = fasta.fetch(&job.name, lo, hi);
+                        assert_eq!(clen, job.len);
+                        Arc::new(RefSeq { from: lo.max(1), seq, contig_len: clen })
+                    };
                     let safe = job.name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_");
                     let cfg = backend::BackendCfg {
                         contig: job.name.clone(),
                         tid: job.tid as i32,
-                        contig_len: clen,
+                        contig_len: refseq.contig_len,
                         refseq: refseq.clone(),
                         use_gpu,
                         erc,
@@ -834,8 +993,8 @@ fn main() {
                     let mut dump_guard = if dump_on { Some(dump_file.lock().unwrap()) } else { None };
                     let dump = dump_guard.as_mut().and_then(|g| g.as_mut());
                     let tf = Instant::now();
-                    let sink = Sink { erc, tx: btx, batch: Vec::new(), n_active: 0, rng: None, resolved: 0, domain: domain.clone(), didx: job.didx };
-                    let (fr, mut sink) = frontend::run(&ctx, job.tid, &job.name, &job.intervals, &refseq, cap, dump, sink, two_stage);
+                    let sink = Sink { erc, tx: btx, batch: Vec::new(), n_active: 0, rng: None, resolved: 0, domain: domain.clone(), didx: job.didx, n_absorbed: 0, void: false, t_all, first_req: f64::NAN, first_got: f64::NAN, rng_wait: 0.0 };
+                    let (fr, mut sink) = frontend::run(&ctx, job.tid, &job.name, &job.intervals, &refseq, cap, dump, sink, two_stage, job.seg.clone());
                     sink.send_batch();
                     if erc {
                         match sink.rng.take() {
@@ -845,9 +1004,11 @@ fn main() {
                     } else {
                         sink.tx.send(backend::BackMsg::End { rng: sink.rng.take() }).unwrap();
                     }
+                    let (first_req, first_got, rng_wait) = (sink.first_req, sink.first_got, sink.rng_wait);
                     drop(sink);
                     drop(dump_guard);
                     let front_secs = tf.elapsed().as_secs_f64();
+                    let front_done = t_all.elapsed().as_secs_f64();
                     let out = match back.join() {
                         Ok(o) => o,
                         Err(_) => {
@@ -855,6 +1016,14 @@ fn main() {
                             panic!("back end of {} failed", job.name);
                         }
                     };
+                    if contig_times {
+                        let now = t_all.elapsed().as_secs_f64();
+                        eprintln!(
+                            "contig-time\t{}\t{}\tclaim={:.1}\tfirst_req={:.1}\tfirst_got={:.1}\trng_wait={:.1}\tfront_done={:.1}\tdone={:.1}\tgroups={}\tdraws={}\tjob={}\tseg={:?}\tspec={:?}\tvoid={}",
+                            job.name, job.len, now - t0.elapsed().as_secs_f64(), first_req, first_got, rng_wait, front_done, now, fr.ds.drawing_groups, fr.ds.draws,
+                            job.didx, fr.seg_range, job.seg.as_ref().map(|s| (s.own_from, s.cuts.first().copied())), domain.is_absorbed(job.didx)
+                        );
+                    }
                     res_tx
                         .send(ContigResult {
                             order: k,
@@ -940,7 +1109,12 @@ fn main() {
                 }
             }
         };
+        let void = |k: usize| domains[jobs[k].domain].rng.is_absorbed(jobs[k].didx);
         for r in res_rx {
+            if void(r.order) {
+                // a segment whose range the previous one took over
+                continue;
+            }
             if r.vcf_resolved {
                 ready.insert(r.order, r);
             } else {
@@ -967,7 +1141,14 @@ fn main() {
                     break;
                 }
             }
-            while let Some(mut r) = ready.remove(&next) {
+            loop {
+                if next < jobs.len() && void(next) {
+                    ready.remove(&next);
+                    unresolved.remove(&next);
+                    next += 1;
+                    continue;
+                }
+                let Some(mut r) = ready.remove(&next) else { break };
                 tot.add(&r.stats);
                 fc.add(&r.filters);
                 loci += r.loci;
@@ -1082,6 +1263,15 @@ struct Sink {
     resolved: usize,
     domain: Arc<rng::DomainRng>,
     didx: usize,
+    /// segments: ranges of the following segments taken over; this segment was absorbed (void)
+    n_absorbed: usize,
+    void: bool,
+    /// per-contig timing (VARIANT_RS_CONTIG_TIMES): run start, first generator request, first generator received
+    /// (s since run start), summed wait for the generator
+    t_all: Instant,
+    first_req: f64,
+    first_got: f64,
+    rng_wait: f64,
 }
 
 impl Sink {
@@ -1107,21 +1297,46 @@ impl frontend::FrontSink for Sink {
         }
     }
 
-    fn rng_for_draw(&mut self, resolved_before: usize) -> &mut hc_downsample::JavaRandom {
+    fn absorb_next(&mut self) {
+        self.n_absorbed += 1;
+        self.domain.set_absorbs(self.didx, self.n_absorbed);
+    }
+
+    fn is_absorbed(&self) -> bool {
+        self.domain.is_absorbed(self.didx)
+    }
+
+    fn rng_for_draw(&mut self, resolved_before: usize) -> Option<&mut hc_downsample::JavaRandom> {
+        if self.void {
+            return None;
+        }
+        let tw = Instant::now();
+        let first = self.rng.is_none() && self.first_req.is_nan();
+        if first {
+            self.first_req = self.t_all.elapsed().as_secs_f64();
+        }
         if self.erc {
             // GVCF mode makes no QD draws: only the order of contigs matters
             if self.rng.is_none() {
-                self.rng = Some(self.domain.take(self.didx));
+                self.rng = Some(self.domain.take(self.didx).expect("GVCF mode has no segments"));
             }
         } else if self.rng.is_none() || resolved_before > self.resolved {
             self.send_batch();
             let (reply, rx) = std::sync::mpsc::sync_channel(1);
             let t = crate::frontend::hft_now();
             self.tx.send(backend::BackMsg::Resolve { before: resolved_before, rng: self.rng.take(), reply }).unwrap();
-            self.rng = Some(rx.recv().expect("back end failed"));
+            self.rng = rx.recv().expect("back end failed");
+            if self.rng.is_none() {
+                self.void = true;
+                return None;
+            }
             crate::frontend::hft_add(9, t);
             self.resolved = resolved_before;
         }
-        self.rng.as_mut().unwrap()
+        if first {
+            self.first_got = self.t_all.elapsed().as_secs_f64();
+        }
+        self.rng_wait += tw.elapsed().as_secs_f64();
+        self.rng.as_mut()
     }
 }

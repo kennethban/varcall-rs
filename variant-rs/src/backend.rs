@@ -141,7 +141,7 @@ pub struct HcOpts {
 /// genotyping (after every earlier contig of the domain is done) and hands it on at its end.
 fn hold_contam_rng(cfg: &BackendCfg, engine: &mut hc_genotype::GenotypingEngine) {
     if cfg.opts.contamination > 0.0 && engine.contam_rng.is_none() {
-        engine.contam_rng = Some(cfg.contam.take(cfg.domain_idx));
+        engine.contam_rng = Some(cfg.contam.take(cfg.domain_idx).expect("contamination: segments are not split"));
     }
 }
 
@@ -579,7 +579,8 @@ impl QdText {
 pub enum BackMsg {
     Batch(Vec<FilledRegion>),
     /// make the QD draws of the regions with id < `before`, then hand the generator to the front end
-    Resolve { before: usize, rng: Option<JavaRandom>, reply: std::sync::mpsc::SyncSender<JavaRandom> },
+    /// (reply `None`: the segment was absorbed by the previous one, see `rng::DomainRng::absorb`)
+    Resolve { before: usize, rng: Option<JavaRandom>, reply: std::sync::mpsc::SyncSender<Option<JavaRandom>> },
     /// end of the contig (with the generator if the front end holds it)
     End { rng: Option<JavaRandom> },
 }
@@ -598,21 +599,34 @@ pub fn run(cfg: BackendCfg, rx: Receiver<BackMsg>) -> BackendOut {
         let mut held: Option<JavaRandom> = None;
         let (domain, idx) = (cfg.domain.clone(), cfg.domain_idx);
         let mut end_rng = None;
+        let mut absorbed = false;
         staged(&cfg, rx, |m| match m {
             Staged::Done(c) => {
                 hold_contam_rng(&cfg, &mut engine);
                 crate::cpuprof::measure(6, || genotype_vcf_batch(c, &cfg, &mut engine, &mut text, &mut st))
             }
             Staged::Fwd(BackMsg::Resolve { before, rng, reply }) => {
-                let mut r = rng.or(held.take()).unwrap_or_else(|| domain.take(idx));
-                text.resolve(before, &mut r);
-                reply.send(r).unwrap();
+                let r = rng.or(held.take()).or_else(|| if absorbed { None } else { domain.take(idx) });
+                match r {
+                    Some(mut r) => {
+                        text.resolve(before, &mut r);
+                        let _ = reply.send(Some(r));
+                    }
+                    None => {
+                        absorbed = true;
+                        let _ = reply.send(None);
+                    }
+                }
             }
             Staged::Fwd(BackMsg::End { rng }) => end_rng = rng.or(held.take()),
             Staged::Fwd(BackMsg::Batch(_)) => unreachable!(),
         });
         release_contam_rng(&cfg, &mut engine);
         st.qd_jitter = engine.n_qd_jitter;
+        if absorbed || domain.is_absorbed(idx) {
+            // void: the previous segment covers this range; its generator turn was skipped
+            return BackendOut { vcf_text: Vec::new(), vcf_resolved: true, gvcf: None, raw: None, stats: st };
+        }
         // the generator is done with this contig once every placeholder is drawn
         let resolved = match end_rng {
             Some(mut r) => {

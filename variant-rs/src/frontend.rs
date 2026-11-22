@@ -274,7 +274,88 @@ pub trait FrontSink {
     /// The generator for the draws of a drawing group (a start position with more than `target` reads).
     /// Before it returns, every QD jitter draw of the regions with id < `resolved_before` (the regions that
     /// GATK applies before this group's draws) must have been made.
-    fn rng_for_draw(&mut self, resolved_before: usize) -> &mut JavaRandom;
+    /// `None`: this segment was absorbed by the previous one (its results are void; the front end stops).
+    fn rng_for_draw(&mut self, resolved_before: usize) -> Option<&mut JavaRandom>;
+    /// Segments: this segment takes over the range of the next one (`rng::DomainRng::absorb`).
+    fn absorb_next(&mut self) {}
+    /// Segments: has the previous segment taken over this one's range?
+    fn is_absorbed(&self) -> bool {
+        false
+    }
+}
+
+/// A segment of a contig inside one RNG stream (single-run mode, VCF): the front end reads from `own_from` -
+/// `SEG_WARMUP` and owns the active regions starting in [b(own_from), b(cuts[0])), where b(c) is the first locus
+/// x >= c whose isActive value is 0 at every locus of [x - f, x + f] (f: the band-pass filter size). Splitting a
+/// contig there changes nothing:
+///
+/// * The isActive value of a locus depends only on the kept reads covering it. The smoothed value at x only receives
+///   the spread of loci within f of x (the HQ soft-clip states too, as GATK centres them on the added locus), and
+///   none of them adds anything: it is 0, x is inactive in every run, and no active region contains it. Every
+///   popped value is final (a region pops with >= 350 + f loci of lookahead).
+/// * After b, the activity status of every locus is the same in both runs (same kept reads), so the first active
+///   stretch after b starts at the same locus: an inactive region always ends at a status change, whatever the
+///   phase of the inactive chunks before it, and regions are then cut from the probabilities alone. Before b, the
+///   previous segment is the continuous run. So both segments together give the whole-contig active regions.
+///   Inactive regions give no VCF line and no draw (VCF mode only).
+/// * Kept reads: no drawing group may lie in [cut - `SEG_ZONE`, stop of the previous segment], nor have a read
+///   ending at or after cut - `SEG_ZONE`. The previous segment, which sees those groups (it is the continuous run
+///   there), takes the next range over when one does (`absorb`), so this segment's results are then void. Earlier
+///   drawing groups of the warm-up (reads ending before the zone) are drawn from a private generator: they change
+///   nothing at or after the zone.
+/// * Draw order: the previous segment stops only once the read-pull horizon X of its last owned region (GATK draws
+///   a group before that region's QD jitter iff the group starts <= X) is below the current read start s, and every
+///   group up to s has been seen (no absorption). So all its QD draws precede this segment's first group draw, as in
+///   GATK, and the generator is handed on in segment order.
+#[derive(Clone)]
+pub struct SegSpec {
+    /// None: from the start of the contig (no warm-up)
+    pub own_from: Option<i64>,
+    /// the cuts after this segment's range, in order (the first ends it; later ones in case it absorbs)
+    pub cuts: Vec<i64>,
+}
+
+/// Reads before a segment's cut that its front end evaluates (warm-up), so that loci >= cut - SEG_ZONE are complete.
+pub const SEG_WARMUP: i64 = 2000;
+/// A drawing group starting or with a read ending at or after cut - SEG_ZONE (and up to the previous segment's stop)
+/// makes the previous segment absorb the next one.
+pub const SEG_ZONE: i64 = 1000;
+/// The previous segment reads at least this far past the first region it does not own.
+pub const SEG_STOP_MIN: i64 = 1000;
+
+struct SegState {
+    own_from: Option<i64>,
+    cuts: VecDeque<i64>,
+    /// boundary loci: the segment owns the active regions starting in [from_b, end_b)
+    from_b: Option<i64>,
+    end_b: Option<i64>,
+    /// first region starting at or after `end_b`
+    end_idx: Option<usize>,
+    scanned: usize,
+    /// consecutive loci (ending at `last_locus`) with isActive 0
+    zero_run: i64,
+    last_locus: i64,
+    /// filled regions starting at or after `end_b`: dropped at the stop, released if the next range is absorbed
+    held: Vec<FilledRegion>,
+    /// stop rule: lookahead locus N of the first region not owned, an upper bound on its first covered locus C,
+    /// distinct kept-read starts seen after it
+    n_look: Option<i64>,
+    c_bound: Option<i64>,
+    starts_after: usize,
+    last_start: i64,
+    stopped: bool,
+    n_proc: u64,
+    dummy: JavaRandom,
+    absorbed: usize,
+}
+
+impl SegState {
+    fn reset_stop(&mut self) {
+        self.n_look = None;
+        self.c_bound = None;
+        self.starts_after = 0;
+        self.last_start = i64::MIN;
+    }
 }
 
 /// `VARIANT_RS_TRACE_FRONT=1`: HaplotypeCaller front-end time split (nanoseconds, summed over contigs and threads).
@@ -312,6 +393,8 @@ pub struct FrontResult {
     pub n_active_loci: u64,
     pub assigned: u64,
     pub ds: hc_downsample::DownsampleStats,
+    /// segments: (start of the first owned region, start of the first region not owned, segments absorbed, stopped)
+    pub seg_range: Option<(i64, i64, usize, bool)>,
 }
 
 /// Initial size of the ring buffer of per-locus accumulators. It must exceed twice the longest read reference span;
@@ -423,6 +506,10 @@ struct Front<'a, S: FrontSink> {
     /// several samples: `HashMap.hash` of each sample name (Java `String.hashCode` spread)
     sample_hash: Vec<i32>,
     af: hc_genotype::genotyper::AfCalculator,
+    /// a segment of the contig (single-run mode), see `SegSpec`
+    seg: Option<SegState>,
+    /// set when a segment stops (or is void): the read stage stops reading
+    stop: &'a AtomicBool,
 }
 
 /// `ReferenceConfidenceModel.calcGenotypeLikelihoodsOfRefVsAny` of one sample's pileup, as the integer PLs of
@@ -474,11 +561,138 @@ impl<'a, S: FrontSink> Front<'a, S> {
     }
 
     fn emit_inner(&mut self, upto_stream: i64, eof: bool) {
-        let Front { filler, regions, sink, res, .. } = self;
+        let Front { filler, regions, sink, res, seg, .. } = self;
         filler.drain(regions, upto_stream, eof, &mut |fr: FilledRegion| {
+            if let Some(sg) = seg.as_mut() {
+                // regions are scanned for the segment bounds when they pop, before they are filled
+                // a region pops >= 350 loci after its start, so a boundary at or before its start is known by then
+                if sg.from_b.is_none_or(|b| fr.start < b) || sg.stopped {
+                    return;
+                }
+                if sg.end_b.is_some_and(|b| fr.start >= b) {
+                    sg.held.push(fr);
+                    return;
+                }
+            }
             res.assigned += fr.reads.len() as u64;
             sink.region(fr)
         });
+    }
+
+    /// The first region starting at or after the end boundary, among the regions popped so far.
+    fn seg_scan(&mut self) {
+        let Some(sg) = self.seg.as_mut() else { return };
+        let Some(b) = sg.end_b else { return };
+        while sg.end_idx.is_none() && sg.scanned < self.regions.len() {
+            if self.regions[sg.scanned].start >= b {
+                sg.end_idx = Some(sg.scanned);
+            } else {
+                sg.scanned += 1;
+            }
+        }
+    }
+
+    /// Boundary loci (see `SegSpec`), after the isActive value of `pos`.
+    fn seg_locus(&mut self, pos: i64, prob: f64) {
+        let f = self.profile.fsize;
+        let Some(sg) = self.seg.as_mut() else { return };
+        if prob != 0.0 {
+            sg.zero_run = 0;
+        } else if pos == sg.last_locus + 1 {
+            sg.zero_run += 1;
+        } else {
+            sg.zero_run = 1;
+        }
+        sg.last_locus = pos;
+        if sg.zero_run < 2 * f + 1 {
+            return;
+        }
+        let x = pos - f;
+        if sg.from_b.is_none() && x >= sg.own_from.unwrap() {
+            sg.from_b = Some(x);
+        }
+        // (possibly the same locus: then the segment owns nothing)
+        if sg.from_b.is_some() && sg.end_b.is_none() && sg.cuts.front().is_some_and(|&c| x >= c) {
+            sg.end_b = Some(x);
+        }
+    }
+
+    /// Takes the next segment's range over (a drawing group near the cut).
+    fn seg_absorb(&mut self) {
+        let sg = self.seg.as_mut().unwrap();
+        sg.cuts.pop_front();
+        sg.absorbed += 1;
+        sg.end_b = None;
+        if let Some(e) = sg.end_idx.take() {
+            sg.scanned = e;
+        }
+        sg.reset_stop();
+        let held = std::mem::take(&mut sg.held);
+        self.sink.absorb_next();
+        for fr in held {
+            self.res.assigned += fr.reads.len() as u64;
+            self.sink.region(fr);
+        }
+        self.seg_scan();
+    }
+
+    /// The segment stops reading (its range is done, or it was absorbed).
+    fn seg_stop(&mut self) {
+        let sg = self.seg.as_mut().unwrap();
+        sg.stopped = true;
+        sg.held.clear();
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        // the read stage may wait for loci to be evaluated: nothing is evaluated any more
+        self.frontier.store(i64::MAX / 4, std::sync::atomic::Ordering::Release);
+    }
+
+    fn seg_stopped(&self) -> bool {
+        self.seg.as_ref().is_some_and(|s| s.stopped)
+    }
+
+    /// Stop rule of a segment, after processing a kept read starting at `rstart` (see `SegSpec`).
+    fn seg_check_stop(&mut self, r: &ReadRec) {
+        let Some(sg) = self.seg.as_mut() else { return };
+        if sg.stopped {
+            return;
+        }
+        sg.n_proc += 1;
+        if sg.n_proc % 1024 == 0 && sg.own_from.is_some() && self.sink.is_absorbed() {
+            self.seg_stop();
+            return;
+        }
+        let sg = self.seg.as_mut().unwrap();
+        let (Some(e), Some(z)) = (sg.end_idx, sg.end_b) else { return };
+        let rstart = r.start;
+        if self.downsampling {
+            if sg.n_look.is_none() {
+                match self.ready_at.get(e).copied().flatten() {
+                    Some(a @ ReadyAt::Locus(_)) => sg.n_look = lookahead_locus(Some(a), self.intervals),
+                    _ => return,
+                }
+                if sg.n_look.is_none() {
+                    return;
+                }
+            }
+            let n = sg.n_look.unwrap();
+            if let Some((ps, pe)) = pileup_span(r.start, r.end, r.flag, r.mate_start, r.tlen) {
+                if pe >= n {
+                    let c = ps.max(n);
+                    sg.c_bound = Some(sg.c_bound.map_or(c, |b| b.min(c)));
+                }
+            }
+            let Some(c) = sg.c_bound else { return };
+            if rstart > c && rstart != sg.last_start {
+                sg.starts_after += 1;
+                sg.last_start = rstart;
+            }
+            if sg.starts_after < 3 {
+                return;
+            }
+        }
+        if rstart >= z + SEG_STOP_MIN {
+            self.seg_stop();
+        }
     }
 
     /// Registers the regions popped at `locus` with the readiness tracker.
@@ -595,6 +809,7 @@ impl<'a, S: FrontSink> Front<'a, S> {
             if prob > 0.0 {
                 self.res.n_active_loci += 1;
             }
+            self.seg_locus(pos, prob);
             if let Some(d) = self.dump.as_mut() {
                 match hq {
                     Some(v) => writeln!(d, "{}\t{}\t{:.16e}\tHIGH_QUALITY_SOFT_CLIPS\t{:.16e}", self.contig, pos, prob, v).unwrap(),
@@ -607,6 +822,7 @@ impl<'a, S: FrontSink> Front<'a, S> {
                 let force = pos != self.profile.stop + 1;
                 self.profile.pop_ready(force, &mut self.regions);
             }
+            self.seg_scan();
             self.track(Some(pos), n_before);
             self.profile.add(pos, prob, hq);
             self.next_final += 1;
@@ -616,8 +832,12 @@ impl<'a, S: FrontSink> Front<'a, S> {
     /// One read leaving the downsampler (kept order), evaluation side: region read cache, loci before it. Every
     /// earlier kept read must have been scattered.
     fn process(&mut self, r: &Arc<ReadRec>) {
+        if self.seg_stopped() {
+            return;
+        }
         let t = hft_now();
         self.process_inner(r);
+        self.seg_check_stop(r);
         hft_add(2, t);
     }
 
@@ -683,12 +903,46 @@ impl<'a, S: FrontSink> Front<'a, S> {
     /// the regions; its kept reads are appended to `out`. Every kept read before the group must have been
     /// processed and scattered.
     fn draw(&mut self, p: i64, ds: &mut Ds, out: &mut Vec<Arc<ReadRec>>) {
+        if let Some(sg) = self.seg.as_mut() {
+            if sg.stopped {
+                ds.finalize_head(&mut sg.dummy, out);
+                return;
+            }
+            // a group near the cut after this range: the next segment's warm-up would not see GATK's kept reads
+            let max_end = ds.head_group().map_or(p, |(_, rs)| rs.iter().map(|r| r.end).max().unwrap_or(p));
+            while let Some(&c) = self.seg.as_ref().unwrap().cuts.front() {
+                if p >= c - SEG_ZONE || max_end >= c - SEG_ZONE {
+                    self.seg_absorb();
+                } else {
+                    break;
+                }
+            }
+            let sg = self.seg.as_mut().unwrap();
+            // a group of the warm-up, ending before the zone: it changes nothing this segment owns
+            if sg.own_from.is_some_and(|c0| p < c0 - SEG_ZONE) {
+                ds.finalize_head(&mut sg.dummy, out);
+                return;
+            }
+        }
         // loci < p are complete; fill the regions whose padded span ends before p
         self.finalize(p - 1);
         self.emit(p, false);
         let k = self.regions_before(p, ds);
-        let rng = self.sink.rng_for_draw(k);
-        ds.finalize_head(rng, out);
+        let absorbed = match self.sink.rng_for_draw(k) {
+            Some(rng) => {
+                ds.finalize_head(rng, out);
+                false
+            }
+            None => true,
+        };
+        if absorbed {
+            // the previous segment took this range over: void
+            self.seg_stop();
+            ds.finalize_head(&mut self.seg.as_mut().unwrap().dummy, out);
+        } else if let Some(sg) = self.seg.as_ref() {
+            // not absorbed, so the previous segment stopped before p: the first owned region is known
+            assert!(sg.from_b.is_some(), "segment of {} at {p}: drawing group before its first region", self.contig);
+        }
     }
 }
 
@@ -974,15 +1228,21 @@ fn release(ds: &mut Ds, upto: i64, out: &mut Vec<Arc<ReadRec>>, link: &mut impl 
 }
 
 /// The read stage: decoded reads -> PositionalDownsampler -> `link`, in BAM order. Returns the downsampling stats.
-fn read_loop(rrx: std::sync::mpsc::Receiver<Vec<Arc<ReadRec>>>, mut ds: Option<Ds>, link: &mut impl Link) -> hc_downsample::DownsampleStats {
+fn read_loop(rrx: std::sync::mpsc::Receiver<Vec<Arc<ReadRec>>>, mut ds: Option<Ds>, link: &mut impl Link, stop: &AtomicBool) -> hc_downsample::DownsampleStats {
     let t_loop = hft_now();
     let mut out: Vec<Arc<ReadRec>> = Vec::new();
     let mut rrx = rrx.into_iter();
-    loop {
+    let mut stopped = false;
+    'reads: loop {
         let t_w = hft_now();
         let Some(batch) = rrx.next() else { break };
         hft_add(1, t_w);
         for r in batch {
+            // a segment that has done its range (or is void) reads no further: no more draws
+            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                stopped = true;
+                break 'reads;
+            }
             match ds.as_mut() {
                 None => {
                     out.push(r);
@@ -998,6 +1258,7 @@ fn read_loop(rrx: std::sync::mpsc::Receiver<Vec<Arc<ReadRec>>>, mut ds: Option<D
         }
     }
     let stats = match ds.as_mut() {
+        Some(d) if stopped => d.stats,
         Some(d) => {
             d.finish();
             release(d, i64::MAX, &mut out, link);
@@ -1178,8 +1439,10 @@ pub fn run<S: FrontSink>(
     dump: Option<&mut BufWriter<File>>,
     sink: S,
     two_stage: bool,
+    seg: Option<SegSpec>,
 ) -> (FrontResult, S) {
     let t = ctx.tables;
+    let stop = AtomicBool::new(false);
     let contig_len = refseq.contig_len;
     let padded = crate::intervals::pad_merge(intervals, REGION_PADDING, contig_len);
     let ring = Ring::new(ctx.samples.len().max(1));
@@ -1210,6 +1473,26 @@ pub fn run<S: FrontSink>(
         resolved: 0,
         sample_hash: ctx.samples.iter().map(|s| java_string_hash(s)).collect(),
         af: Default::default(),
+        seg: seg.map(|sp| SegState {
+            own_from: sp.own_from,
+            cuts: sp.cuts.into(),
+            from_b: if sp.own_from.is_none() { Some(1) } else { None },
+            end_b: None,
+            end_idx: None,
+            scanned: 0,
+            zero_run: 0,
+            last_locus: i64::MIN,
+            held: Vec::new(),
+            n_look: None,
+            c_bound: None,
+            starts_after: 0,
+            last_start: i64::MIN,
+            stopped: false,
+            n_proc: 0,
+            dummy: JavaRandom::gatk(),
+            absorbed: 0,
+        }),
+        stop: &stop,
     };
     let ds: Option<Ds> = if max_reads_per_start > 0 { Some(PositionalDownsampler::new(max_reads_per_start)) } else { None };
     let new_scatter = || Scatter { t, intervals, refseq, ring: &ring, scatter_iv: 0, local_ivs: Vec::new() };
@@ -1332,7 +1615,7 @@ pub fn run<S: FrontSink>(
             .unwrap()
     };
     if !two_stage {
-        let stats = read_loop(rrx, ds, &mut Serial { f: &mut f, sc: new_scatter() });
+        let stats = read_loop(rrx, ds, &mut Serial { f: &mut f, sc: new_scatter() }, &stop);
         f.res.ds = stats;
     } else {
         // Read stage (own thread): downsampling and scatter into the locus accumulators. Evaluation stage (this
@@ -1354,14 +1637,14 @@ pub fn run<S: FrontSink>(
         let stats = std::thread::scope(|scope| {
             // owned here, so that a failing stage unblocks the other one
             let (mrx, ptx, gtx) = (mrx, ptx, gtx);
-            let (frontier, scattered, abort) = (&frontier, &scattered, &abort);
+            let (frontier, scattered, abort, stop) = (&frontier, &scattered, &abort, &stop);
             let sc = new_scatter();
             let reader = std::thread::Builder::new()
                 .name("hc-read".into())
                 .spawn_scoped(scope, move || {
                     let _guard = AbortOnDrop(abort);
                     let mut link = Staged { sc, batch: Vec::with_capacity(256), tx: mtx, reply: prx, grown: grx, frontier, scattered, abort };
-                    read_loop(rrx, ds, &mut link)
+                    read_loop(rrx, ds, &mut link, stop)
                 })
                 .unwrap();
             {
@@ -1371,6 +1654,10 @@ pub fn run<S: FrontSink>(
                     match m {
                         Msg::Reads(b) => {
                             for r in b {
+                                if f.seg_stopped() {
+                                    n += 1;
+                                    continue;
+                                }
                                 let t = hft_now();
                                 let ok = wait_until(abort, || scattered.load(std::sync::atomic::Ordering::Acquire) >= n);
                                 hft_add(12, t);
@@ -1403,14 +1690,20 @@ pub fn run<S: FrontSink>(
     }
     let t_end = hft_now();
     f.res.filters = decoder.join().expect("BAM decoding failed");
-    f.finalize(i64::MAX);
-    let n_before = f.regions.len();
-    if !f.profile.is_empty() {
-        f.profile.pop_ready(true, &mut f.regions);
+    if !f.seg_stopped() {
+        f.finalize(i64::MAX);
+        let n_before = f.regions.len();
+        if !f.profile.is_empty() {
+            f.profile.pop_ready(true, &mut f.regions);
+        }
+        f.seg_scan();
+        f.track(None, n_before);
+        f.emit(i64::MAX, true);
     }
-    f.track(None, n_before);
-    f.emit(i64::MAX, true);
     hft_add(7, t_end);
+    if let Some(sg) = &f.seg {
+        f.res.seg_range = Some((sg.from_b.unwrap_or(-1), sg.end_b.unwrap_or(contig_len + 1), sg.absorbed, sg.stopped));
+    }
     f.res.regions = std::mem::take(&mut f.regions);
     (f.res, f.sink)
 }
