@@ -95,14 +95,11 @@ impl KbTree {
         if n == 0 {
             return (-1, 0);
         }
-        let (mut begin, mut end) = (0usize, n);
-        while begin < end {
-            let mid = (begin + end) >> 1;
-            if cmp(node.pos[mid], k) < 0 {
-                begin = mid + 1;
-            } else {
-                end = mid;
-            }
+        // the binary search's result, the first key not below k: a node's keys are sorted (equal ones inserted
+        // after), so it is the number of keys below k, counted without branches
+        let mut begin = 0usize;
+        for i in 0..KB_N {
+            begin += ((i < n) & (node.pos[i] < k)) as usize;
         }
         if begin == n {
             return (n as i32 - 1, 1);
@@ -376,6 +373,176 @@ fn chn_end(c: &Chain) -> i32 {
     l.qbeg + l.len
 }
 
+/// ALIGN_RS_CHAINFLT_CHECK=1: every chain filter also runs bwa's pairwise loop and must agree (a check of the
+/// grouped one)
+fn flt_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ALIGN_RS_CHAINFLT_CHECK").is_ok_and(|v| v == "1"))
+}
+
+/// chains from which `chain_flt` tests kept chains by group (below it, bwa's loop)
+const FLT_GROUP_MIN: usize = 16;
+
+/// mem_chain_flt's test of each chain against the chains kept before it; chains by descending weight, as flat
+/// arrays. Sets `first` and `kept` (2 or 3 for a kept chain) and returns the kept chains' indexes, ascending.
+struct Flt<'a> {
+    opt: &'a ChainOpt,
+    beg: &'a [i32],
+    end: &'a [i32],
+    wt: &'a [i32],
+    alt: &'a [bool],
+}
+
+impl Flt<'_> {
+    /// whether kept chain (bj, ej, altj) overlaps chain i (bi, ei, alti) enough to count (bwa's large_ovlp)
+    #[inline]
+    fn large(&self, bj: i32, ej: i32, altj: bool, bi: i32, ei: i32, alti: bool) -> bool {
+        let b_max = bj.max(bi);
+        let e_min = ej.min(ei);
+        if e_min > b_max && (!altj || alti) {
+            let min_l = (ei - bi).min(ej - bj);
+            ((e_min - b_max) as f32) >= min_l as f32 * self.opt.mask_level && min_l < self.opt.max_chain_gap as i32
+        } else {
+            false
+        }
+    }
+
+    /// whether kept chain j drops chain i (given a large overlap)
+    #[inline]
+    fn drops(&self, wj: i32, wi: i32) -> bool {
+        (wi as f32) < wj as f32 * self.opt.drop_ratio && wj - wi >= self.opt.min_seed_len << 1
+    }
+
+    /// bwa's loop: i against every kept chain in order, until one drops it
+    #[allow(clippy::needless_range_loop)] // i indexes four arrays
+    fn pairwise(&self, first: &mut [i32], kept: &mut [i32]) -> Vec<usize> {
+        let n = self.beg.len();
+        kept[0] = 3;
+        let mut kept_idx: Vec<usize> = vec![0];
+        for i in 1..n {
+            let mut large_ovlp = false;
+            let mut k = 0;
+            let (bi, ei, wi, alti) = (self.beg[i], self.end[i], self.wt[i], self.alt[i]);
+            while k < kept_idx.len() {
+                let j = kept_idx[k];
+                if self.large(self.beg[j], self.end[j], self.alt[j], bi, ei, alti) {
+                    large_ovlp = true;
+                    if first[j] < 0 {
+                        first[j] = i as i32;
+                    }
+                    if self.drops(self.wt[j], wi) {
+                        break;
+                    }
+                }
+                k += 1;
+            }
+            if k == kept_idx.len() {
+                kept_idx.push(i);
+                kept[i] = if large_ovlp { 2 } else { 3 };
+            }
+        }
+        kept_idx
+    }
+
+    /// The same result with kept chains grouped by (beg, end, is_alt), which alone decide `large`: weights do not
+    /// increase along the kept chains and `drops` holds for a heavier chain whenever for a lighter one
+    /// (drop_ratio >= 0), so if any chain with a large overlap drops i, the first does: the first group with a large
+    /// overlap decides, by its first chain (groups are in order of their first chain). A chain that is kept sets
+    /// `first` of every kept chain with a large overlap not yet set; each group lists its chains not yet set.
+    #[allow(clippy::needless_range_loop)] // i indexes four arrays
+    fn grouped(&self, first: &mut [i32], kept: &mut [i32]) -> Vec<usize> {
+        const NIL: u32 = u32::MAX;
+        let n = self.beg.len();
+        // per group: key, first chain, list of chains with first unset (head, tail; linked by `next`)
+        let mut gb: Vec<i32> = Vec::new();
+        let mut ge: Vec<i32> = Vec::new();
+        let mut galt: Vec<bool> = Vec::new();
+        let mut g0: Vec<u32> = Vec::new();
+        let mut head: Vec<u32> = Vec::new();
+        let mut tail: Vec<u32> = Vec::new();
+        let mut next: Vec<u32> = vec![NIL; n];
+        let mut kept_idx: Vec<usize> = vec![0];
+        kept[0] = 3;
+        gb.push(self.beg[0]);
+        ge.push(self.end[0]);
+        galt.push(self.alt[0]);
+        g0.push(0);
+        head.push(0);
+        tail.push(0);
+        for i in 1..n {
+            let (bi, ei, wi, alti) = (self.beg[i], self.end[i], self.wt[i], self.alt[i]);
+            let ng = gb.len();
+            // the first group with a large overlap
+            let mut g = 0;
+            while g < ng && !self.large(gb[g], ge[g], galt[g], bi, ei, alti) {
+                g += 1;
+            }
+            if g < ng {
+                let j = g0[g] as usize;
+                if self.drops(self.wt[j], wi) {
+                    // dropped by j, the first chain with a large overlap: only j's first can be set
+                    if first[j] < 0 {
+                        first[j] = i as i32;
+                        // j is its group's first chain and still unset, so the head of its list
+                        head[g] = next[j];
+                        if head[g] == NIL {
+                            tail[g] = NIL;
+                        }
+                    }
+                    continue;
+                }
+            }
+            // kept: every chain with a large overlap and first unset gets i
+            let large_ovlp = g < ng;
+            let mut mine = NIL;
+            while g < ng {
+                if gb[g] == bi && ge[g] == ei && galt[g] == alti {
+                    mine = g as u32;
+                }
+                if head[g] != NIL && self.large(gb[g], ge[g], galt[g], bi, ei, alti) {
+                    let mut x = head[g];
+                    while x != NIL {
+                        first[x as usize] = i as i32;
+                        x = next[x as usize];
+                    }
+                    head[g] = NIL;
+                    tail[g] = NIL;
+                }
+                g += 1;
+            }
+            // (groups before the first large one have no large overlap; i's own group, if among them, is found here)
+            if mine == NIL {
+                for (h, ((&b, &e), &al)) in gb.iter().zip(&ge).zip(&galt).enumerate().take(ng) {
+                    if b == bi && e == ei && al == alti {
+                        mine = h as u32;
+                        break;
+                    }
+                }
+            }
+            kept_idx.push(i);
+            kept[i] = if large_ovlp { 2 } else { 3 };
+            let iu = i as u32;
+            if mine == NIL {
+                gb.push(bi);
+                ge.push(ei);
+                galt.push(alti);
+                g0.push(iu);
+                head.push(iu);
+                tail.push(iu);
+            } else {
+                let m = mine as usize;
+                if head[m] == NIL {
+                    head[m] = iu;
+                } else {
+                    next[tail[m] as usize] = iu;
+                }
+                tail[m] = iu;
+            }
+        }
+        kept_idx
+    }
+}
+
 /// mem_chain_flt for one read's chains (one seqid, so one range)
 pub fn chain_flt(opt: &ChainOpt, mut a: Vec<Chain>) -> Vec<Chain> {
     if a.is_empty() {
@@ -397,47 +564,29 @@ pub fn chain_flt(opt: &ChainOpt, mut a: Vec<Chain>) -> Vec<Chain> {
         let w: Vec<i32> = a.iter().map(|c| c.w).collect();
         crate::ksort::introsort(&mut idx, |x, y| w[*x] > w[*y]);
     }
-    let mut taken: Vec<Option<Chain>> = a.into_iter().map(Some).collect();
-    let mut a: Vec<Chain> = idx.into_iter().map(|i| taken[i].take().unwrap()).collect();
-    // the pairwise test below on flat per-chain arrays (a repetitive read has thousands of chains, and reaching a
-    // chain's ends through its seed list missed the cache for every pair)
+    let mut a: Vec<Chain> = idx.into_iter().map(|i| std::mem::take(&mut a[i])).collect();
     let beg: Vec<i32> = a.iter().map(chn_beg).collect();
     let end: Vec<i32> = a.iter().map(chn_end).collect();
     let wt: Vec<i32> = a.iter().map(|c| c.w).collect();
     let alt: Vec<bool> = a.iter().map(|c| c.is_alt).collect();
     let mut first: Vec<i32> = vec![-1; n];
     let mut kept: Vec<i32> = vec![0; n];
-    kept[0] = 3;
-    let mut kept_idx: Vec<usize> = vec![0];
-    for i in 1..n {
-        let mut large_ovlp = false;
-        let mut k = 0;
-        let (bi, ei, wi, alti) = (beg[i], end[i], wt[i], alt[i]);
-        let li = ei - bi;
-        while k < kept_idx.len() {
-            let j = kept_idx[k];
-            let b_max = beg[j].max(bi);
-            let e_min = end[j].min(ei);
-            if e_min > b_max && (!alt[j] || alti) {
-                let lj = end[j] - beg[j];
-                let min_l = li.min(lj);
-                if ((e_min - b_max) as f32) >= min_l as f32 * opt.mask_level && min_l < opt.max_chain_gap as i32 {
-                    large_ovlp = true;
-                    if first[j] < 0 {
-                        first[j] = i as i32;
-                    }
-                    if (wi as f32) < wt[j] as f32 * opt.drop_ratio && wt[j] - wi >= opt.min_seed_len << 1 {
-                        break;
-                    }
-                }
-            }
-            k += 1;
+    let f = Flt { opt, beg: &beg, end: &end, wt: &wt, alt: &alt };
+    let check = flt_check();
+    let kept_idx = if opt.drop_ratio >= 0.0 && (n >= FLT_GROUP_MIN || check) {
+        let ki = f.grouped(&mut first, &mut kept);
+        if check {
+            let (mut first2, mut kept2) = (vec![-1; n], vec![0; n]);
+            let ki2 = f.pairwise(&mut first2, &mut kept2);
+            assert!(
+                ki == ki2 && first == first2 && kept == kept2,
+                "ALIGN_RS_CHAINFLT_CHECK: grouped chain filter differs ({n} chains): kept {ki:?} vs {ki2:?}"
+            );
         }
-        if k == kept_idx.len() {
-            kept_idx.push(i);
-            kept[i] = if large_ovlp { 2 } else { 3 };
-        }
-    }
+        ki
+    } else {
+        f.pairwise(&mut first, &mut kept)
+    };
     for &ci in &kept_idx {
         let f = first[ci];
         if f >= 0 {

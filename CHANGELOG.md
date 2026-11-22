@@ -78,6 +78,10 @@ named in its entry; a change of reference version is a new minor version at leas
 * align-rs: fewer allocations per read in extension (4 instead of 5 + 3 per chain: bwa's seed-to-region map is
   computed, the seed orders are one vector) and in chaining's reorder; `bns_pos2rid` answers from a table of 64 kb
   blocks, searching only blocks where a reference starts. Same records; a 30x lane on the workstation 135.3 -> 122.4 s.
+* align-rs: `mem_chain_flt` tests a chain against groups of kept chains with the same read interval, the first group
+  that overlaps deciding the drop (exact: the kept chains' weights do not increase); bwa's loop below 16 chains and
+  under `ALIGN_RS_CHAINFLT_CHECK=1`. The chaining B-tree's node search counts the keys below without branches. Same
+  records; a 30x lane's user CPU -5%.
 
 ### Fixed
 

@@ -253,11 +253,18 @@ Measured on the workstation, outputs unchanged in every case; details in `docs/n
    records, `mid` set 27.9-32.4 -> 24.5-25.5 s, a 30x lane 149.5 -> 138.8 s (CPU -21%); the whole genome 40.1 ->
    36.9 min. Then fewer allocations in extension's setup and replay, `pos2rid` by a block table and chaining's reorder
    without a copy (notes section 19): a lane 135.3 -> 122.4 s (two runs each, alternating), user CPU -5.6%. Two
-   variants that grew single allocations made mimalloc fault pages in again and were left out. Left: chaining's
-   pairwise filter (`chain_flt`) and B-tree; SIMD for the CIGAR DP (5.3%, at most ~3%).
+   variants that grew single allocations made mimalloc fault pages in again and were left out. Then chaining
+   (notes section 20): `chain_flt` tests kept chains by group of equal read interval (13.4 billion pairs on the
+   `mid` set, 98% of them in 8% of the reads), the B-tree's node search without branches: `mid` set seeding and
+   chaining 168-185 -> 136 thread-s, a lane's user CPU -5%, its wall unchanged (127.6 -> 124.3 s on average).
+   Measured and dropped: LZ4 for the BAM spill (~1.2%), an early exit in mate rescue's `skip_dirs` (no change).
+   Left: SIMD for the CIGAR DP (CIGAR 11% and XA 8% of the CPU, the DP ~6-7%).
 4. **GPU work the machines do not wait on:** bwa-mem3's mate-rescue pruning (a third of the mate-SW cells on a
    dumped chunk) and a warp-uniform column loop in `k_extend` (its lanes read 3.44 local-memory lines a step).
-   Only for a GPU-bound setup.
+   Only for a GPU-bound setup. The other way round, for CPU-bound servers: chaining on the GPU (~16% of the CPU,
+   ~500 thread-s a lane; the seeds are already there). Not for the workstation: its GPU is busy 60-70% of a lane
+   (`nvidia-smi`; kernels ~83 of ~105 s), leaving ~35 s, and the kernel (bwa's B-tree, one thread per read, a few
+   repetitive reads doing most of the work) would have to match ~14 CPU threads in it.
 5. **Dropped:** bwa-mem3's certified extension band (x1.08 the kernel time here: the ungapped shortcut has taken
    the jobs it certifies cheaply) and pinned extension buffers (wall clock unchanged).
 

@@ -48,6 +48,19 @@ equal ends or keys, and the first call per mate run the full function, which rep
 calls on a 30x lane, of which 74% were incremental and 17% skipped. With the region sorts on one packed integer
 key, permuted in place: the lane 149.5 -> 138.8 s, its CPU time -21%.
 
+### A chain filter by group, exact by an order
+
+bwa-mem2's `mem_chain_flt` tests each chain, heaviest first, against every chain kept before it, until one with a
+large overlap on the read also outweighs it enough to drop it. On repetitive reads that is quadratic: 13.4 billion
+pairs on the `mid` set, 98% of them in the 8% of reads with 64 or more chains, and 91% of the pairs overlap (the
+overlap is on the read, 0-150, so a lookup by position would not cut them). But the kept chains repeat their read
+intervals (98 M kept, 21 M distinct), and the interval alone decides the overlap. The kept chains are in
+descending weight and the drop test holds for a heavier chain whenever for a lighter one, so if any chain with a
+large overlap drops the new one, the first does. align-rs groups the kept chains by interval (in order of their
+first chain): the first group that overlaps decides, and a chain kept sets `first` on each overlapping group's
+chains not yet set, once each. `ALIGN_RS_CHAINFLT_CHECK=1` runs bwa's loop beside it: equal on the `mid` set and a
+lane. Seeding and chaining 168-185 -> 141-148 thread-s, a lane's user CPU -5%.
+
 ### Replacing a linear scan, with a check mode
 
 After extension, bwa-mem2 replays bwa's skip test: for every seed, it scans the kept regions in order and stops at
@@ -207,7 +220,13 @@ pub fn cert_band(o: &ExtOpt, q: &[u8], r: &[u8]) -> i64 {
 * merging per-read vectors into fewer, larger ones (extension's left and right templates as pairs, `chain_flt`'s
   per-chain arrays as tuples): a repetitive read's allocation then lands in a larger mimalloc class, whose pages
   are purged and faulted in again (page faults ×3-5, a lane no faster). Allocation count is not the only cost:
-  each one's size class matters too.
+  each one's size class matters too;
+* LZ4 for the BAM spill (sorted pieces kept compressed until the final pass): on BAM records about as small as
+  zlib-rs level 1 (0.234 against 0.224 of the raw size) and only 1.3× / 1.8× as fast to compress / inflate, ~1.2%
+  of the CPU for a dependency; the spill uncompressed would need ~23 GB a lane;
+* an early exit from mate rescue's orientation scan (`skip_dirs`) once all four are skipped: no change, since the
+  costly calls are those that find no mate in range;
+* chaining on the workstation's GPU: see PLAN.md stage 8 item 4.
 
 Details of each: [notes/align-rs.md](notes/align-rs.md).
 

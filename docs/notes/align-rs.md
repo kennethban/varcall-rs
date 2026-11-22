@@ -518,3 +518,41 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       alternating: user CPU 515-529 -> 490-505 s, the extension pool 124-129 -> 110-113 thread-s, seeding and
       chaining 187-196 -> 180-185. A 30x lane, 2 each alternating: 135.3, 135.4 -> 117.9, 126.9 s, user CPU 3302,
       3321 -> 3122, 3132 s.
+20. **Chaining: `chain_flt` by group, the B-tree's node search (2026-11-22; PLAN.md stage 8 item 3).**
+    * Profile at ef6965b (samply, `mid` set, `runs/stage8/prof/samply/samp3*.txt`): 541 thread-s (762 at the
+      first profile); chaining 21.5% (`chain_flt` 11.5%, `chain_seeds` 10.0%), extension's CPU side 21.8%, CIGAR
+      10.4%, XA 7.6%, BAM spill and output ~7%, mate rescue 5.8% (its dedup 4.0%), mimalloc 11.4%.
+    * Counts in `chain_flt` (`mid` set; `runs/stage8/prof/chain_flt_counters.patch`): 8.66 M calls with two or
+      more chains, 246 M chains, 98.0 M kept; 13.39 billion pairs tested, 12.25 billion overlapping on the read,
+      11.75 billion with a large overlap, 148 M chains dropped; 13.13 billion pairs in the 692 k calls with 64 or
+      more chains; 21.0 M distinct (beg, end, is_alt) among the kept chains.
+    * **Grouped test.** `large` depends on the kept chain's (beg, end, is_alt) only. The chains are sorted by
+      weight, descending (`ks_introsort(mem_flt)`), so the kept chains' weights do not increase, and `drops`
+      ((wi < wj * drop_ratio) && wj - wi >= 2 min_seed_len) holds for wj whenever for a smaller wj (drop_ratio >= 0):
+      if any chain with a large overlap drops chain i, the first in order does, and bwa's loop sets `first` only on
+      the chains up to it. Groups of kept chains by interval, in order of their first chain: the first group with a
+      large overlap decides by its first chain (dropped: only that chain's `first` can be set; kept: every chain
+      with a large overlap and `first` unset gets i, each group listing its chains not yet set). bwa's loop for fewer
+      than 16 chains, a negative drop ratio and the check (`ALIGN_RS_CHAINFLT_CHECK=1`: both, compared on every
+      call; equal on the `mid` set and a whole lane). `chain_flt`'s reorder by weight also moves chains with
+      `mem::take` instead of through a `Vec<Option<Chain>>`.
+    * **B-tree node search** (`getp_aux`, at most 9 keys): the binary search's result, the first key not below k,
+      is the number of keys below k, since a node's keys are sorted (equal ones inserted after); counted without
+      branches.
+    * Results, records identical (`mid` set 8e37f2bc, lane 9b9c2839aed0, selftest identical). `mid` set, 3 each
+      alternating: seeding and chaining 168-185 -> 141-148 thread-s with the grouped test, then 136-146 -> 136-137
+      with the node search; user CPU 478-509 -> 461-475 s. A 30x lane, 2 each alternating (grouped test): 128.4,
+      126.8 -> 127.9, 120.7 s, user CPU 3081, 3103 -> 2950, 2925 s. Profile after the grouped test (`samp4`): 515
+      thread-s, `chain_flt` 5.2%, `chain_seeds` 10.5% (the B-tree ~5.5), CIGAR 11.0%, XA 8.1%, extension setup
+      7.8%, replay 6.5%, mate rescue 6.2%, BAM spill 5.8%.
+    * Measured and dropped:
+      - LZ4 (`lz4_flex`) for the BAM spill. 512 MB of BAM records in 4 MB pieces: zlib-rs level 1 ratio 0.224,
+        773 / 1,548 MB/s (compress / inflate); libdeflate level 1 0.165, 473 / 2,067; LZ4 0.234, 996 / 2,735.
+        About 6-7 of the spill's ~23 thread-s on the `mid` set (~1.2%), for a dependency. Uncompressed, a lane's
+        spill would be ~23 GB, two at once in the pipeline, with 80 GB free.
+      - An early exit from `skip_dirs` once all four orientations are skipped: the pairing + SAM pool 181-187
+        thread-s with and without it.
+    * GPU utilization on the workstation, one lane (`nvidia-smi`, 0.5 s): 60-70% while aligning (5-110 s),
+      ~155 W; kernels (align-rs's counters) extension 27.4 s, seeding 25.4 s, mate SW 26.8 s, SA 3.1 s; extension
+      copies 18.9 s in, 7.6 s out; idle during the final pass (9.1 s). Chaining on the GPU would have ~35 s a lane
+      for ~500 thread-s of CPU work (PLAN.md stage 8 item 4).
