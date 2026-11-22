@@ -497,3 +497,24 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       14.6 M skipped, 7.4 M full; `ALIGN_RS_DEDUP_CHECK=1` equal in all. `mid` set (alternating, 3 each against
       HEAD): wall 27.9-32.4 -> 24.5-25.5 s, user CPU 627-652 -> 524-528 s, the pairing + SAM pool 280-297 -> 182-184
       thread-s; a 30x lane 149.5 -> 138.8 s, user CPU 4163 -> 3298 s, records identical (md5 9b9c2839aed0).
+    * The whole genome on the workstation (`wgs/stage8`, at 5a34a7d): 36.9 min (40.1 before), alignment 29.7 ->
+      26.4 min (peak 34.6 -> 32.5 GB), VCF identical.
+19. **Fewer allocations, `pos2rid` by table (2026-11-22; PLAN.md stage 8 item 3).**
+    * **Extension setup / replay.** `setup_read` pushes a chain's regions in descending (score, index) order of its
+      seeds, so bwa's `seed_aln[j][srt[k]]` is base_j + n_j - 1 - k: computed in the replay, not stored. The chains'
+      seed orders are one per-read vector laid out as `av` (the per-chain sort in a reused per-thread buffer). A read
+      takes 4 allocations instead of 5 plus 3 per chain.
+    * **`pos2rid`** (chaining's `intv2rid` per seed, SAM, mate rescue): bwa's binary search gives the last reference
+      starting at or before pos, non-decreasing in pos, so a 64 kb block whose first and last positions give the
+      same reference gives it throughout: a table of them (47 k entries for hg38), the search only for blocks where
+      a reference starts.
+    * **Chaining's reorder** by the B-tree's order: chains moved out with `mem::take` instead of through a full
+      `Vec<Option<Chain>>` copy.
+    * **Left out: larger single allocations.** Extension's left / right templates as one vector of pairs took the
+      `mid` set from 0.26 to 1.3 M page faults and 25 to 36 s (`ALIGN_RS_MI_PURGE=-1` restored it: mimalloc purged
+      and refaulted that size class); `chain_flt`'s six per-chain arrays as two of tuples took a lane to 2.4 M page
+      faults and no gain (141.7 against 142.1 s). Both kept as separate vectors.
+    * Results: records identical (`mid` set 8e37f2bc, lane 9b9c2839aed0; selftest identical). `mid` set, 3 each
+      alternating: user CPU 515-529 -> 490-505 s, the extension pool 124-129 -> 110-113 thread-s, seeding and
+      chaining 187-196 -> 180-185. A 30x lane, 2 each alternating: 135.3, 135.4 -> 117.9, 126.9 s, user CPU 3302,
+      3321 -> 3122, 3132 s.

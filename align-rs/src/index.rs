@@ -232,7 +232,12 @@ pub struct Bns {
     pac: Map,
     /// anns[i].offset, packed (pos2rid's binary search touched one 80-byte Ann per step)
     offs: Vec<i64>,
+    /// per 2^RID_SHIFT-base block of the forward strand: the reference holding all of it, or -1 when a reference
+    /// starts inside it (pos2rid searches `offs` then)
+    rid_tab: Vec<i32>,
 }
+
+const RID_SHIFT: u32 = 16;
 
 impl Bns {
     pub fn load(prefix: &str) -> Bns {
@@ -293,7 +298,17 @@ impl Bns {
         }
         let pac = Map::open(&format!("{prefix}.pac"));
         let offs = anns.iter().map(|a| a.offset).collect();
-        Bns { l_pac, seed, anns, ambs, pac, offs }
+        let mut b = Bns { l_pac, seed, anns, ambs, pac, offs, rid_tab: Vec::new() };
+        // pos2rid is the last reference starting at or before pos: non-decreasing in pos, so a block whose first and
+        // last positions give the same reference gives it everywhere
+        b.rid_tab = (0..(l_pac + (1 << RID_SHIFT) - 1) >> RID_SHIFT)
+            .map(|k| {
+                let (s, e) = (k << RID_SHIFT, (((k + 1) << RID_SHIFT) - 1).min(l_pac - 1));
+                let r = b.pos2rid_search(s);
+                if b.pos2rid_search(e) == r { r } else { -1 }
+            })
+            .collect();
+        b
     }
 
     /// The 2-bit packed forward strand (.pac)
@@ -309,7 +324,22 @@ impl Bns {
     }
 
     /// `bns_pos2rid`
+    #[inline]
     pub fn pos2rid(&self, pos_f: i64) -> i32 {
+        if pos_f >= self.l_pac {
+            return -1;
+        }
+        if pos_f >= 0 {
+            let r = self.rid_tab[(pos_f >> RID_SHIFT) as usize];
+            if r >= 0 {
+                return r;
+            }
+        }
+        self.pos2rid_search(pos_f)
+    }
+
+    /// `bns_pos2rid`'s binary search
+    fn pos2rid_search(&self, pos_f: i64) -> i32 {
         if pos_f >= self.l_pac {
             return -1;
         }

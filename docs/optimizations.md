@@ -203,7 +203,11 @@ pub fn cert_band(o: &ExtOpt, q: &[u8], r: &[u8]) -> i64 {
   rerun the rest): a quarter of the DP jobs certify, since the ungapped shortcut has taken the easy ones, and probe
   plus rerun take ×1.08 the kernel time;
 * pinned extension buffers filled and read in place: the copies 3-4× faster, the wall clock unchanged, since
-  extension's GPU rounds already overlap its CPU work, which is the longer.
+  extension's GPU rounds already overlap its CPU work, which is the longer;
+* merging per-read vectors into fewer, larger ones (extension's left and right templates as pairs, `chain_flt`'s
+  per-chain arrays as tuples): a repetitive read's allocation then lands in a larger mimalloc class, whose pages
+  are purged and faulted in again (page faults ×3-5, a lane no faster). Allocation count is not the only cost:
+  each one's size class matters too.
 
 Details of each: [notes/align-rs.md](notes/align-rs.md).
 

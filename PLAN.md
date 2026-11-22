@@ -34,23 +34,26 @@ joint germline calling with them (2026-11-21). No further tool is planned.
 
 ## Where the time goes (2026-11-22)
 
-NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` after stages 3, 5, 6 and 7 (workstation: 98e7200 plus the
-dropper fix; server: 401e274); VCF data lines identical in every run (md5 741f6ebc50be, filtered 17d3db3ded77):
+NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` after stages 3, 5, 6 and 7 and stage 8's dedup
+(workstation: 5a34a7d; server: 401e274, before stage 8); VCF data lines identical in every run (md5 741f6ebc50be,
+filtered 17d3db3ded77):
 
 | Step | Workstation, 1 RTX 5070 Ti, 32 threads (2026-11-19 stage 0 -> now) | Server, 6 L40S, `run.sh` defaults (2026-11-19 -> now) |
 |---|---:|---:|
-| Alignment | 32.1 -> 29.7 min (12 lanes in one task; peak RSS 34.6 GB) | 4.0-4.6 -> 3.7-3.8 min (6 tasks of 2 lanes, side by side; 37 GB each) |
+| Alignment | 32.1 -> 26.4 min (12 lanes in one task; peak RSS 32.5 GB) | 4.0-4.6 -> 3.7-3.8 min (6 tasks of 2 lanes, side by side; 37 GB each) |
 | MarkDuplicates | 3.9 -> 3.3 min | 0.9 -> 0.8 min |
-| BaseRecalibrator | 1.4 -> 1.25 min | 0.3 -> 0.3 min |
-| HaplotypeCaller | 6.9 -> 5.5 min | 1.7 -> 1.7 min |
-| Total | 44.6 -> **40.1 min** | 465 -> **409 s** |
+| BaseRecalibrator | 1.4 -> 1.3 min | 0.3 -> 0.3 min |
+| HaplotypeCaller | 6.9 -> 5.6 min | 1.7 -> 1.7 min |
+| Total | 44.6 -> **36.9 min** | 465 -> **409 s** |
 
 The server's run is paced by the CPU (6 alignments on 384 threads; GPUs 23-32% busy on average), so the kernel work
 of stages 3 and 7 hardly shows there (465 -> 460 s, `runs/wgs5`); the dropper fix took it to 409 s (`runs/wgs6`:
-the alignment tasks no longer grow to 54-169 GB, and all six finish at ~3m45). The workstation gains 10%
-(`wgs/stage7`). With its memory held to 30 GB (a cgroup, `MemoryMax=30G`, 16 GB of swap; Nextflow told 30 GB)
-the same run took 41.6 min, VCF identical (`wgs/mem30`): alignment 31.0 min (peak 26.9 GB; the hg38 index's pages
-are dropped and re-read rather than swapped, swap at most 0.9 GB), BaseRecalibrator 1.4, the rest as before.
+the alignment tasks no longer grow to 54-169 GB, and all six finish at ~3m45). The workstation gained 10% from
+stages 3 and 7 (44.6 -> 40.1 min, `wgs/stage7`) and 8% from stage 8's incremental dedup (-> 36.9 min, alignment
+29.7 -> 26.4, `wgs/stage8`). With its memory held to 30 GB (a cgroup, `MemoryMax=30G`, 16 GB of swap; Nextflow
+told 30 GB) the run before stage 8 took 41.6 min, VCF identical (`wgs/mem30`): alignment 31.0 min (peak 26.9 GB;
+the hg38 index's pages are dropped and re-read rather than swapped, swap at most 0.9 GB), BaseRecalibrator 1.4, the
+rest as before.
 
 What limits each step, measured on the server (2026-11-19; HaplotypeCaller has had its engine pool since):
 
@@ -247,9 +250,11 @@ Measured on the workstation, outputs unchanged in every case; details in `docs/n
    moves it. samply over the `mid` set (762 thread-s): mate rescue's CPU side 19.7%, of it the region dedup 17.6%;
    chaining 19.2%; extension's CPU side ~14% (allocation and freeing about a third of it); CIGAR 8.4%; XA 6.1%; BAM
    deflate ~4.5%; mimalloc 13% over all of them. Done: the dedup (`docs/notes/align-rs.md` section 18), same
-   records, `mid` set 27.9-32.4 -> 24.5-25.5 s, a 30x lane 149.5 -> 138.8 s (CPU -21%). Left, by size: fewer
-   allocations in extension's setup and replay and in chaining; `pos2rid` by table (~2%); SIMD for the CIGAR DP
-   (5.3%, at most ~3%).
+   records, `mid` set 27.9-32.4 -> 24.5-25.5 s, a 30x lane 149.5 -> 138.8 s (CPU -21%); the whole genome 40.1 ->
+   36.9 min. Then fewer allocations in extension's setup and replay, `pos2rid` by a block table and chaining's reorder
+   without a copy (notes section 19): a lane 135.3 -> 122.4 s (two runs each, alternating), user CPU -5.6%. Two
+   variants that grew single allocations made mimalloc fault pages in again and were left out. Left: chaining's
+   pairwise filter (`chain_flt`) and B-tree; SIMD for the CIGAR DP (5.3%, at most ~3%).
 4. **GPU work the machines do not wait on:** bwa-mem3's mate-rescue pruning (a third of the mate-SW cells on a
    dumped chunk) and a warp-uniform column loop in `k_extend` (its lanes read 3.44 local-memory lines a step).
    Only for a GPU-bound setup.

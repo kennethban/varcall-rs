@@ -544,26 +544,32 @@ impl Extender for CpuExtender<'_> {
 }
 
 /// Per read between the setup and the replay
+/// `av` holds each chain's regions in turn, a chain's seeds in descending (score, index) order, so chain j's region
+/// of its k-th seed in that order is av[base_j + n_j - 1 - k] (bwa's `seed_aln`, computed instead of stored).
 struct ReadExt {
     av: Vec<Reg>,
-    srts: Vec<Vec<u32>>,
-    seed_aln: Vec<Vec<usize>>,
-    /// per region: the left / right extension template (w and h0 filled per round)
-    left: Vec<Option<Job>>,
-    right: Vec<Option<Job>>,
+    /// per chain in turn (as `av`): its seeds' indices in ascending (score, index) order (bwa's `srt`)
+    srts: Vec<u32>,
+    /// per side (left, right), per region: the extension template (w and h0 filled per round). Two vectors, not
+    /// one of pairs: a pair vector of a repetitive read's regions lands in a larger allocation class, which
+    /// mimalloc purges and faults in again (page faults 0.26 -> 1.3 M, wall +40% on the `mid` set)
+    tpl: [Vec<Option<Job>>; 2],
     /// ALIGN_RS_PROFILE: extension jobs run per region
     nj: Vec<u8>,
+}
+
+thread_local! {
+    /// setup_read's per-chain seed sort, reused
+    static SEED_ORDER: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn setup_read(o: &ExtOpt, bns: &Bns, chains: &[Chain], read: u32, l_query: i32) -> ReadExt {
     let l_pac = bns.l_pac;
     let n_seeds: usize = chains.iter().map(|c| c.seeds.len()).sum();
-    let mut st = ReadExt { av: Vec::with_capacity(n_seeds), srts: Vec::with_capacity(chains.len()), seed_aln: Vec::with_capacity(chains.len()), left: Vec::with_capacity(n_seeds), right: Vec::with_capacity(n_seeds), nj: Vec::new() };
+    let mut st = ReadExt { av: Vec::with_capacity(n_seeds), srts: Vec::with_capacity(n_seeds), tpl: [Vec::with_capacity(n_seeds), Vec::with_capacity(n_seeds)], nj: Vec::new() };
     for (j, c) in chains.iter().enumerate() {
         let n = c.seeds.len();
-        st.seed_aln.push(vec![usize::MAX; n]);
         if n == 0 {
-            st.srts.push(Vec::new());
             continue;
         }
         let (mut rmax0, mut rmax1) = (l_pac << 1, 0i64);
@@ -585,13 +591,17 @@ fn setup_read(o: &ExtOpt, bns: &Bns, chains: &[Chain], read: u32, l_query: i32) 
         }
         let (rmax0, rmax1, rid) = crate::prof::cpu(crate::prof::C_FETCHW, || fetch_window(bns, rmax0, c.seeds[0].rbeg, rmax1, c.rid));
         assert_eq!(rid, c.rid);
-        let mut srt: Vec<u64> = (0..n).map(|i| ((c.seeds[i].score as u64) << 32) | i as u64).collect();
-        srt.sort_unstable();
-        let srt: Vec<u32> = srt.iter().map(|&x| x as u32).collect();
+        let base = st.srts.len();
+        SEED_ORDER.with(|b| {
+            let mut srt = b.borrow_mut();
+            srt.clear();
+            srt.extend((0..n).map(|i| ((c.seeds[i].score as u64) << 32) | i as u64));
+            srt.sort_unstable();
+            st.srts.extend(srt.iter().map(|&x| x as u32));
+        });
         for k in (0..n).rev() {
-            let si = srt[k] as usize;
+            let si = st.srts[base + k] as usize;
             let s = c.seeds[si];
-            st.seed_aln[j][si] = st.av.len();
             let mut a = Reg { w: o.w, score: -1, truesc: -1, rid: c.rid, frac_rep: c.frac_rep, seedlen0: s.len, chain: j, rb: H0, re: H0, qb: H0 as i32, qe: H0 as i32, ..Default::default() };
             let left = if s.qbeg != 0 {
                 a.qb = s.qbeg;
@@ -617,10 +627,9 @@ fn setup_read(o: &ExtOpt, bns: &Bns, chains: &[Chain], read: u32, l_query: i32) 
                 None
             };
             st.av.push(a);
-            st.left.push(left);
-            st.right.push(right);
+            st.tpl[0].push(left);
+            st.tpl[1].push(right);
         }
-        st.srts.push(srt);
     }
     if crate::prof::on() {
         st.nj = vec![0; st.av.len()];
@@ -670,11 +679,11 @@ impl Part {
                         // for all its rounds, as bwa-mem2 sets sp->h0 before the right rounds; a retry must not
                         // start from the previous try's score
                         let sc = st.av[k].score;
-                        if let Some(j) = st.right[k].as_mut() {
+                        if let Some(j) = st.tpl[1][k].as_mut() {
                             j.h0 = u16::try_from(sc).expect("extension job: h0 out of range");
                         }
                     }
-                    if (if side == 0 { &st.left[k] } else { &st.right[k] }).is_some() {
+                    if st.tpl[side][k].is_some() {
                         self.pending.push((ri as u32, k as u32));
                     }
                 }
@@ -706,7 +715,7 @@ impl Part {
             .map(|&(ri, k)| {
                 let st = &sts[ri as usize];
                 // side 1: h0 was fixed when the side started (start_side)
-                if side == 0 { st.left[k as usize] } else { st.right[k as usize] }.unwrap()
+                st.tpl[side][k as usize].unwrap()
             })
             .collect();
         eadd(1, t);
@@ -801,14 +810,14 @@ impl Part {
             .enumerate()
             .map(|(i, st)| crate::prof::cpu(crate::prof::C_EREPLAY, || {
                 let ri = base + i;
-                let ReadExt { mut av, mut srts, seed_aln, nj, .. } = st;
+                let ReadExt { mut av, mut srts, nj, .. } = st;
                 let chains = &chains[ri];
                 for a in av.iter_mut() {
                     if a.rb != H0 && a.qb as i64 != H0 && a.qe as i64 != H0 && a.re != H0 {
                         a.seedcov = seedcov(a, &chains[a.chain]);
                     }
                 }
-                let mut v = replay_and_dedup(o, bns, chains, &reads[ri], av, &mut srts, &seed_aln, &nj);
+                let mut v = replay_and_dedup(o, bns, chains, &reads[ri], av, &mut srts, &nj);
                 // the regions live on through mate rescue and SAM: drop the pre-dedup capacity
                 v.shrink_to_fit();
                 v
@@ -912,7 +921,7 @@ fn replay_check() -> bool {
     *ON.get_or_init(|| std::env::var("ALIGN_RS_REPLAY_CHECK").is_ok_and(|v| v == "1"))
 }
 
-fn replay_and_dedup(o: &ExtOpt, bns: &Bns, chains: &[Chain], query: &[u8], mut av: Vec<Reg>, srts: &mut [Vec<u32>], seed_aln: &[Vec<usize>], nj: &[u8]) -> Vec<Reg> {
+fn replay_and_dedup(o: &ExtOpt, bns: &Bns, chains: &[Chain], query: &[u8], mut av: Vec<Reg>, srts: &mut [u32], nj: &[u8]) -> Vec<Reg> {
     let l_query = query.len() as i32;
     let t_skip = if crate::prof::fine() { crate::prof::tcpu() } else { 0 };
     // replay bwa's skip test: seeds in the same order; a seed (almost) inside an earlier kept region, with no
@@ -922,9 +931,10 @@ fn replay_and_dedup(o: &ExtOpt, bns: &Bns, chains: &[Chain], query: &[u8], mut a
     let mut lim = 0i32;
     let mut kept: Vec<(i64, u32)> = Vec::new(); // (rb, index in av) of the kept regions, by rb
     let mut max_len = 0i64;
-    for (j, c) in chains.iter().enumerate() {
+    let mut base = 0usize;
+    for c in chains {
         let n = c.seeds.len();
-        let srt2 = &mut srts[j];
+        let srt2 = &mut srts[base..base + n];
         for k in (0..n).rev() {
             let s = c.seeds[srt2[k] as usize];
             // a region containing the seed starts in [seed end - longest kept region, seed start]; a seed longer
@@ -991,7 +1001,7 @@ fn replay_and_dedup(o: &ExtOpt, bns: &Bns, chains: &[Chain], query: &[u8], mut a
                     vv += 1;
                 }
                 if vv == n {
-                    let ai = seed_aln[j][srt2[k] as usize];
+                    let ai = base + n - 1 - k;
                     av[ai].qb = -1;
                     av[ai].qe = -1;
                     srt2[k] = u32::MAX;
@@ -999,12 +1009,13 @@ fn replay_and_dedup(o: &ExtOpt, bns: &Bns, chains: &[Chain], query: &[u8], mut a
                 }
             }
             lim += 1;
-            let ai = seed_aln[j][srt2[k] as usize];
+            let ai = base + n - 1 - k;
             let p = &av[ai];
             let at = kept.partition_point(|x| x.0 <= p.rb);
             kept.insert(at, (p.rb, ai as u32));
             max_len = max_len.max(p.re - p.rb);
         }
+        base += n;
     }
     if !nj.is_empty() {
         use crate::prof::*;

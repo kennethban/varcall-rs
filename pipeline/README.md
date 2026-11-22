@@ -128,7 +128,7 @@ Nothing cached; outputs identical to the earlier runs' in the measurement log be
 
 | Run | Input | Wall | Steps | Reference |
 |---|---|---:|---|---|
-| germline whole genome (2026-11-22) | NA12878 30x, 12 FASTQ lanes, Broad hg38 | **40.1 min** | ALIGN 29.7 min (peak 34.6 GB), MarkDuplicates 3.3, BaseRecalibrator 1.25, HaplotypeCaller 5.5, hard filters 0.1 (2026-11-19: 44.6 min) | stock tools on the same machine: ~5.2 h (bwa-mem2 + samtools ~113 min, sarek's stock GATK steps ~196 min) |
+| germline whole genome (2026-11-22, at 5a34a7d) | NA12878 30x, 12 FASTQ lanes, Broad hg38 | **36.9 min** | ALIGN 26.4 min (peak 32.5 GB), MarkDuplicates 3.3, BaseRecalibrator 1.3, HaplotypeCaller 5.6, hard filters 0.1 (earlier on 2026-11-22: 40.1 min; 2026-11-19: 44.6 min) | stock tools on the same machine: ~5.2 h (bwa-mem2 + samtools ~113 min, sarek's stock GATK steps ~196 min) |
 | same, memory held to 30 GB (a cgroup, 16 GB of swap; Nextflow told 30 GB) | same | **41.6 min** | ALIGN 31.0 min (peak 26.9 GB, swap at most 0.9 GB: the hg38 index's pages are dropped and re-read), BaseRecalibrator 1.4, the rest as above; VCF identical | |
 | somatic exome (2026-11-19) | SEQC2 HCC1395 tumor / normal BAMs | **2.8 min** | MarkDuplicates 0.2-0.3 min, BaseRecalibrator 0.1, ApplyBQSR 0.3, HaplotypeCaller 0.5, Mutect2 0.4, the rest seconds | nf-core/sarek: 46.5 min with stock GATK, 15.3 min with variant-rs |
 

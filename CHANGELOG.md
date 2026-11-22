@@ -75,6 +75,9 @@ named in its entry; a change of reference version is a new minor version at leas
   loop would drop, distinct keys), and skips the call when nothing was rescued; region sorts use one packed integer
   key and permute in place. Same records; a 30x lane on the workstation 149.5 -> 138.8 s, its CPU time -21%.
   `ALIGN_RS_DEDUP_CHECK=1` / `ALIGN_RS_SORT_CHECK=1` compare with the full function / the previous sort.
+* align-rs: fewer allocations per read in extension (4 instead of 5 + 3 per chain: bwa's seed-to-region map is
+  computed, the seed orders are one vector) and in chaining's reorder; `bns_pos2rid` answers from a table of 64 kb
+  blocks, searching only blocks where a reference starts. Same records; a 30x lane on the workstation 135.3 -> 122.4 s.
 
 ### Fixed
 

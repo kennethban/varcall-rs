@@ -326,12 +326,11 @@ pub fn chain_seeds(bns: &Bns, opt: &ChainOpt, smems: &[Smem], coords: &[i64], l_
         }
     }
     let frac = l_rep as f32 / l_seq as f32;
-    let order = tree.traverse();
-    let mut taken: Vec<Option<Chain>> = chains.into_iter().map(Some).collect();
-    order
+    // in the tree's order (each chain once: the moved-out slot is left empty)
+    tree.traverse()
         .into_iter()
         .map(|i| {
-            let mut c = taken[i].take().unwrap();
+            let mut c = std::mem::take(&mut chains[i]);
             c.frac_rep = frac;
             c
         })
