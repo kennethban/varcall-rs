@@ -34,26 +34,25 @@ joint germline calling with them (2026-11-21). No further tool is planned.
 
 ## Where the time goes (2026-11-22)
 
-NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` after stages 3, 5, 6 and 7 and stage 8's dedup
-(workstation: 5a34a7d; server: 401e274, before stage 8); VCF data lines identical in every run (md5 741f6ebc50be,
-filtered 17d3db3ded77):
+NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` after stages 3, 5, 6, 7 and 8 (workstation: 7d6ffa6;
+server: 401e274, before stage 8); VCF data lines identical in every run (md5 741f6ebc50be, filtered 17d3db3ded77):
 
 | Step | Workstation, 1 RTX 5070 Ti, 32 threads (2026-11-19 stage 0 -> now) | Server, 6 L40S, `run.sh` defaults (2026-11-19 -> now) |
 |---|---:|---:|
-| Alignment | 32.1 -> 26.4 min (12 lanes in one task; peak RSS 32.5 GB) | 4.0-4.6 -> 3.7-3.8 min (6 tasks of 2 lanes, side by side; 37 GB each) |
-| MarkDuplicates | 3.9 -> 3.3 min | 0.9 -> 0.8 min |
+| Alignment | 32.1 -> 23.6 min (12 lanes in one task; peak RSS 32.5 GB) | 4.0-4.6 -> 3.7-3.8 min (6 tasks of 2 lanes, side by side; 37 GB each) |
+| MarkDuplicates | 3.9 -> 3.5 min | 0.9 -> 0.8 min |
 | BaseRecalibrator | 1.4 -> 1.3 min | 0.3 -> 0.3 min |
-| HaplotypeCaller | 6.9 -> 5.6 min | 1.7 -> 1.7 min |
-| Total | 44.6 -> **36.9 min** | 465 -> **409 s** |
+| HaplotypeCaller | 6.9 -> 5.7 min | 1.7 -> 1.7 min |
+| Total | 44.6 -> **34.3 min** | 465 -> **409 s** |
 
 The server's run is paced by the CPU (6 alignments on 384 threads; GPUs 23-32% busy on average), so the kernel work
-of stages 3 and 7 hardly shows there (465 -> 460 s, `runs/wgs5`); the dropper fix took it to 409 s (`runs/wgs6`:
-the alignment tasks no longer grow to 54-169 GB, and all six finish at ~3m45). The workstation gained 10% from
-stages 3 and 7 (44.6 -> 40.1 min, `wgs/stage7`) and 8% from stage 8's incremental dedup (-> 36.9 min, alignment
-29.7 -> 26.4, `wgs/stage8`). With its memory held to 30 GB (a cgroup, `MemoryMax=30G`, 16 GB of swap; Nextflow
-told 30 GB) the run before stage 8 took 41.6 min, VCF identical (`wgs/mem30`): alignment 31.0 min (peak 26.9 GB;
-the hg38 index's pages are dropped and re-read rather than swapped, swap at most 0.9 GB), BaseRecalibrator 1.4, the
-rest as before.
+of stages 3 and 7 hardly shows there (465 -> 460 s, `runs/wgs5`); the dropper fix took it to 409 s (`runs/wgs6`: the
+alignment tasks no longer grow to 54-169 GB, and all six finish at ~3m45). The workstation gained 10% from stages 3
+and 7 (44.6 -> 40.1 min, `wgs/stage7`), 8% from stage 8's incremental dedup (-> 36.9 min, alignment 29.7 -> 26.4,
+`wgs/stage8`) and 7% from the rest of stage 8 (-> 34.3 min, alignment -> 23.6, `wgs/stage9`). With its memory held to
+30 GB (a cgroup, `MemoryMax=30G`, 16 GB of swap; Nextflow told 30 GB) the run before stage 8 took 41.6 min, VCF
+identical (`wgs/mem30`): alignment 31.0 min (peak 26.9 GB; the hg38 index's pages are dropped and re-read rather than
+swapped, swap at most 0.9 GB), BaseRecalibrator 1.4, the rest as before.
 
 What limits each step, measured on the server (2026-11-19; HaplotypeCaller has had its engine pool since):
 
@@ -260,9 +259,10 @@ Measured on the workstation, outputs unchanged in every case; details in `docs/n
    Measured and dropped: LZ4 for the BAM spill (~1.2%), an early exit in mate rescue's `skip_dirs` (no change).
    Then the CIGAR DP in AVX2 (notes section 21): F's recurrence along a row is a max-plus prefix scan, exact in
    integers, so 8 cells at a time with the same direction bytes; the CIGAR/NM/MD step -28%, a lane's user CPU -3%.
-   Stopped here (2026-11-22): what is left is spread thin (extension setup 7.8%, replay 6.5%, mate rescue 6.2%, BAM
-   spill 5.8%) or needs the GPU (item 4). Next, before more CPU work: a per-batch split of extension's and mate
-   rescue's time into GPU work, GPU waits and CPU work, the two stages that pace a lane.
+   The whole genome at 7d6ffa6: 36.9 -> 34.3 min, alignment 26.4 -> 23.6 min, VCF identical. Stopped here
+   (2026-11-22): what is left is spread thin (extension setup 7.8%, replay 6.5%, mate rescue 6.2%, BAM spill 5.8%) or
+   needs the GPU (item 4). Next, before more CPU work: a per-batch split of extension's and mate rescue's time into
+   GPU work, GPU waits and CPU work, the two stages that pace a lane.
 4. **GPU work the machines do not wait on:** bwa-mem3's mate-rescue pruning (a third of the mate-SW cells on a
    dumped chunk) and a warp-uniform column loop in `k_extend` (its lanes read 3.44 local-memory lines a step).
    Only for a GPU-bound setup. The other way round, for CPU-bound servers: chaining on the GPU (~16% of the CPU,

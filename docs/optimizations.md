@@ -94,7 +94,8 @@ rescue 104 s, SA + chaining 93 s, seeding 92 s, read 65 s, SAM 51 s, write 39 s.
   below cut a lane's user CPU by 5% with its wall clock unchanged.
 * **It does move the whole genome.** The pipeline aligns a sample's 12 lanes in one process and overlaps each
   lane's final pass with the next lane, so all 32 threads stay busy and CPU saved becomes time saved: the mate
-  rescue dedup took the genome's alignment from 29.7 to 26.4 minutes.
+  rescue dedup took the genome's alignment from 29.7 to 26.4 minutes, and the chain filter, B-tree search and SIMD
+  CIGAR fill, which barely moved one lane, from 26.4 to 23.6.
 
 The GPU was busy 60-70% of a lane on the workstation (`nvidia-smi`; kernels ~83 of ~105 s, seeding, extension and
 mate SW each 25-27 s), and idle in the final pass.

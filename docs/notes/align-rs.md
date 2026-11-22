@@ -579,3 +579,9 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       174-179; total user CPU unchanged (the other pools took the cores). A 30x lane, 2 each alternating:
       CIGAR/NM/MD 584, 589 -> 439, 405 thread-s; user CPU 3040, 3051 -> 3012, 2904 s; wall 116.9, 134.3 -> 124.9,
       123.5 s (a lane's wall varies by ~15 s run to run).
+    * The whole genome on the workstation at 7d6ffa6 (`wgs/stage9`; the chain filter, the B-tree search and this):
+      2060 s = 34.3 min (36.9 at 5a34a7d); alignment 26.4 -> 23.6 min (peak 32.5 GB), MarkDuplicates 3.3 -> 3.5,
+      BaseRecalibrator 1.3, HaplotypeCaller 5.6 -> 5.7, hard filters 5 s. VCF data lines identical (741f6ebc50be,
+      filtered 17d3db3ded77, 4,951,704 records), recalibration table identical, duplicate metrics identical but for
+      Picard's start time. The lanes' CPU savings, which hardly moved one lane's wall clock, show here: 12 lanes in
+      one process keep every thread busy.

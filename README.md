@@ -5,7 +5,7 @@
 
 Short-read alignment and germline / somatic variant calling in Rust and CUDA, with **outputs byte-identical to
 bwa-mem2 and GATK 4.7**: the same BAM records, VCF lines, metrics and tables. A 30x whole genome goes from FASTQ to a
-filtered VCF in 37 minutes on one workstation, instead of about 5 hours.
+filtered VCF in 34 minutes on one workstation, instead of about 5 hours.
 
 * **align-rs** reimplements `bwa-mem2 mem` 2.2.1, plus `samtools sort` and `samtools index`. It runs seeding, SA
   lookups, seed extension and mate rescue on the GPU.
@@ -31,7 +31,7 @@ One workstation: 16-core Ryzen 9 9950X3D, RTX 5070 Ti, Linux (WSL2 with 48 GB; h
 
 | Whole pipeline | Data | Reference tools | varcall-rs | |
 |---|---|---|---:|---:|
-| germline: FASTQ → filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **36.9 min** | **8.5×** |
+| germline: FASTQ → filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **34.3 min** | **9.1×** |
 | somatic: BAMs → filtered Mutect2 calls (+ HaplotypeCaller on the normal) | SEQC2 exome tumor / normal | nf-core/sarek with GATK: 46.5 min | **2.8 min** | **17×** |
 
 | Single step | Data | Reference tool | varcall-rs | |
