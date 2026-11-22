@@ -9,7 +9,7 @@
 
 # --- build stage (the first steps are the same in containers/variant-rs/Dockerfile, so the two builds share them)
 FROM nvidia/cuda:12.9.1-devel-ubuntu22.04 AS build
-ARG HTSLIB_VERSION=1.21
+ARG HTSLIB_VERSION=1.25
 ARG RUST_VERSION=1.99.1
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         curl ca-certificates build-essential pkg-config zlib1g-dev libbz2-dev liblzma-dev libdeflate-dev bzip2 \

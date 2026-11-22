@@ -6,7 +6,7 @@
 |---|---|---|
 | Rust | 1.99 | everything |
 | a C compiler, make | gcc 13 | the htslib shims (`align-rs/hts`, `variant-rs/csrc`) |
-| htslib | 1.25 (1.21 in the images) | align-rs BAM output, variant-rs CRAM input |
+| htslib | 1.25 | align-rs BAM output, variant-rs CRAM input |
 | CUDA toolkit (nvcc) | 12.9 | the GPU code (optional) |
 | NVIDIA driver | one that supports CUDA 12.9 | running on the GPU |
 
@@ -32,6 +32,9 @@ What a 30x human genome (NA12878, 12 lanes, hg38) needed, measured by Nextflow (
 | HaplotypeCaller | 7.3 GB | 20.6 GB |
 | hard filters | 0.1 GB | 0.2 GB |
 | wall clock | 34.3 min | 9.3 min |
+
+The somatic exome pair (SEQC2, from BAMs) needs much less: at most 5.1 GB (Mutect2) on the workstation, 13.5 GB with
+128 threads.
 
 * **Memory:** align-rs needs the most: the hg38 index is 17 GB and is memory-mapped, plus ~15 GB of batches in
   flight at 32 threads. Each alignment task needs its own, so with one task per GPU, plan ~36 GB per GPU. The other

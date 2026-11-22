@@ -46,7 +46,7 @@ germline run takes 41.6 min). The output is identical in every row.
 The germline baseline adds up measured steps: bwa-mem2 + samtools on one lane times 12, and sarek's GATK steps on the
 same genome. On a server (2 × EPYC 9654, 384 threads, 2.2 TiB of RAM, NVMe; L40S GPUs with 48 GB) with 6 L40S and 384
 threads, the germline pipeline takes **6.8 min**; with 4 L40S and 128 threads, **9.3 min** (NVIDIA Parabricks
-`germline`: 16.3 min on 4 of these GPUs with 64 threads, and its own outputs, not GATK's). How each pipeline number
+`germline`: 16.8 min on the same 4 GPUs and 128 threads, and its own outputs, not GATK's). How each pipeline number
 was measured: [pipeline/README.md](pipeline/README.md#benchmarks).
 
 ## Getting started

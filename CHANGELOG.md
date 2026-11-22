@@ -91,9 +91,13 @@ named in its entry; a change of reference version is a new minor version at leas
   Intel (SYCL), Apple (Metal) or Vulkan would need.
 * docs: hardware needs (`docs/building.md#hardware`: memory per step, GPU memory, disk); the machines' specs; one
   30x lane re-measured: 124 s vs 587 s for bwa-mem2 + samtools (4.7x; was 211 s).
+* docs: the somatic exome re-measured: 167 s on the workstation, 109 s on 4 GPUs and 128 threads; outputs unchanged.
+* docs: Parabricks re-run on the same 4 GPUs and 128 threads as varcall-rs: 16.8 min (9.3 for varcall-rs).
 
 ### Fixed
 
+* The Docker images build htslib 1.25, the version the outputs are checked against (was 1.21, which the align-rs
+  image no longer compiled with: `alnhts.c` uses `BAM_MAX_QNAME_LEN`, which 1.21 does not define).
 * align-rs: memory grew without bound on long runs (a workstation's 12 lanes filled 48 GB in ~6 minutes and took
   WSL down): the thread freeing each batch's structures fell behind. Four threads now share a bounded queue. On
   the 6-GPU server the alignment tasks drop from 54-169 GB to 37 GB each and the germline pipeline from 460 to 409 s.
