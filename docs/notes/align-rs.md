@@ -413,3 +413,18 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     waits rather than memory growing. The 4 lanes then ran at drops pending <= 2, anon ~24 GB (about half of it
     lazily freed); the 12-lane pipeline run peaked at 34.6 GB RSS. Records identical (`tests/cmp.sh`, the pipeline
     VCF md5).
+
+16. **Idle lanes in the extension kernel: measured, not pursued (2026-11-22; PLAN.md stage 7 item 4).** `k_extend`
+    runs one job per thread, size-sorted and grid-strided; a lane whose job ends early (m == 0, z-drop, a narrower
+    band) waits for the warp's longest. Nsight Compute needs admin rights on the server, so a build with
+    `-DEXT_WARPSTAT` counts, at every DP cell, row and job step, the warp's step and its active lanes. One 30x lane
+    on the L40S: lanes busy 52.9% at the cells (133 G warp steps), 64.1% at the rows, 100% at job starts; the
+    counting costs ~5% (kernel 27.0 s against 25.5-26.0).
+    Whether the idle half costs time: `ALIGN_RS_DUMP_EXT=FILE` writes one batch's extension call (the 20th with at
+    least 200,000 jobs: reads, round, jobs, results), and `runs/stage7/bench_ext.cu` replays it in the kernel's
+    order (the ungapped shortcut's jobs left out: 2.0 M of 2.8 M jobs) with only k lanes of each warp given a job.
+    The work is the same for every k; the warp steps grow as 32 / k. L40S: k 32 55.6 ms (410 GCUPS), 24 57.4, 16
+    61.2, 8 73.1, 4 118.1 ms, every result identical. The kernel is paced by its working lanes (each lane's DP
+    row is in local memory: its loads and stores, not issue slots), so idle lanes are nearly free: packing every
+    lane (53% -> 100%, as k 17 -> 32) would save ~9% of the kernel before the refill's own cost, ~2 s of a lane on
+    a GPU the 6-alignment server does not wait for. Not done.

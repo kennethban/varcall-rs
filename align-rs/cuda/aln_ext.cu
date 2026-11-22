@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <atomic>
+#include <vector>
 
 // Run-time settings, chosen in aln_gpu_init from the device (gpu_settings) unless set in the environment. None
 // changes any result: they only spread the same work differently.
@@ -53,10 +54,22 @@ __device__ __forceinline__ int ref_base(const uint8_t *pac, int64_t l_pac, int64
 // thread t runs job order[t] (jobs of similar size side by side, so that a warp's threads finish together) and
 // writes its result in the job's own slot
 // The jobs the ungapped shortcut took (k_extkey: *nug of them) are sorted last and skipped.
-__global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const int *nug, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, JobOut *out, int *nleft, int jw, int jend_bonus, int jdir) {
-  n -= *nug;
+#ifdef EXT_WARPSTAT
+// build with -DEXT_WARPSTAT: lane use in k_extend. At each DP cell step, row step and job start, the warp's first
+// active lane counts one warp step and the lanes active with it: lanes / (32 x steps) is the warp efficiency.
+__device__ unsigned long long g_ws[6];
+#define WS_STEP(a, b) do { const unsigned am_ = __activemask(); if ((int)(threadIdx.x & 31) == __ffs(am_) - 1) { a += 1; b += __popc(am_); } } while (0)
+#else
+#define WS_STEP(a, b) do {} while (0)
+#endif
+__device__ __forceinline__ void k_extend_body(const Job *jobs, const uint32_t *order, int n, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, JobOut *out, int *nleft, int jw, int jend_bonus, int jdir
+#ifdef EXT_WARPSTAT
+                                              , unsigned long long *ws
+#endif
+) {
   // grid-stride: a fixed number of blocks per SM (aln_gpu_extend), so the threads' DP rows fit L1
   for (int t0 = blockIdx.x * blockDim.x + threadIdx.x; t0 < n; t0 += gridDim.x * blockDim.x) {
+    WS_STEP(ws[4], ws[5]);
     const int t = order[t0];
     const Job jb = jobs[t];
     const int qlen = jb.qlen, tlen = (int)jb.rlen;
@@ -101,6 +114,7 @@ __global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const in
     int max_i = -1, max_j = -1, max_ie = -1, gscore = -1, max_off = 0;
     int beg = 0, end = qlen;
     for (int i = 0; i < tlen; ++i) {
+        WS_STEP(ws[2], ws[3]);
         int f = 0, h1, m = 0, mj = -1;
         const int tb = ref_base(pac, l_pac, jb.rstart + (int64_t)i * jdir);
         const int8_t *mrow = c_mat + tb * 5;
@@ -110,6 +124,7 @@ __global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const in
         if (beg == 0) { h1 = h0 - (o_del + e_del * (i + 1)); if (h1 < 0) h1 = 0; } else h1 = 0;
         int j;
         for (j = beg; j < end; ++j) {
+            WS_STEP(ws[0], ws[1]);
             uint32_t x = eh[j];
             int M = EH_H(x), e = EH_E(x), h, tt;
             M = M ? M + mrow[EH_Q(x)] : 0;
@@ -143,6 +158,20 @@ __global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const in
     r.score = max; r.qle = max_j + 1; r.tle = max_i + 1; r.gtle = max_ie + 1; r.gscore = gscore; r.max_off = max_off;
     out[t] = r;
   }
+}
+__global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const int *nug, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, JobOut *out, int *nleft, int jw, int jend_bonus, int jdir) {
+  n -= *nug;
+#ifdef EXT_WARPSTAT
+  unsigned long long ws[6] = {0, 0, 0, 0, 0, 0};
+#endif
+  k_extend_body(jobs, order, n, reads, off, pac, l_pac, out, nleft, jw, jend_bonus, jdir
+#ifdef EXT_WARPSTAT
+                , ws
+#endif
+  );
+#ifdef EXT_WARPSTAT
+  for (int k = 0; k < 6; ++k) if (ws[k]) atomicAdd(&g_ws[k], ws[k]);
+#endif
 }
 
 // ALIGN_RS_GPU_SERIAL=1 (profiling): one wrapper at a time on the device, so that each kernel's time is its own cost
@@ -221,7 +250,7 @@ static int64_t *d_os[3] = {0, 0, 0};
 // extension and mate SW in turn (each stage points at one: d_rs / d_os[stage]). A buffer no stage points at
 // is replaced oldest first; a batch replaced too early is uploaded again.
 #define RB_N 6
-struct ReadBuf { uint64_t key; uint64_t age; uint8_t *rs; size_t cap_rs; int64_t *os; size_t cap_os; };
+struct ReadBuf { uint64_t key; uint64_t age; uint8_t *rs; size_t cap_rs; int64_t *os; size_t cap_os; int64_t n_bytes; int n_reads; };
 static ReadBuf g_rb[RB_N];
 static int g_stage_rb[3] = {-1, -1, -1};
 static uint64_t g_rb_clock = 0;
@@ -253,7 +282,7 @@ extern "C" int aln_gpu_set_reads(int slot, uint64_t key, const uint8_t *reads, i
     if (grow(&b.rs, &b.cap_rs, (size_t)reads_bytes + 1) || grow(&b.os, &b.cap_os, (size_t)n_reads + 1)) return -1;
     CK(cudaMemcpy(b.rs, reads, reads_bytes, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(b.os, off, (n_reads + 1) * sizeof(int64_t), cudaMemcpyHostToDevice));
-    b.key = key; b.age = ++g_rb_clock;
+    b.key = key; b.age = ++g_rb_clock; b.n_bytes = reads_bytes; b.n_reads = n_reads;
     g_stage_rb[slot] = pick; d_rs[slot] = b.rs; d_os[slot] = b.os;
     return 0;
 }
@@ -371,6 +400,21 @@ extern "C" int aln_gpu_extend(const Job *jobs, int n_jobs, int w, int end_bonus,
     t_h2d += a * 1e-3; t_kernel += b * 1e-3; t_d2h += c * 1e-3;
     t_kern[0] += b * 1e-3;
     t_ext_call[0] += a * 1e-3; t_ext_call[1] += srt * 1e-3; t_ext_call[2] += (b - srt) * 1e-3; t_ext_call[3] += c * 1e-3;
+    // ALIGN_RS_DUMP_EXT=FILE: the 20th call with at least 200,000 jobs (its reads, round, jobs and results), for
+    // timing k_extend on its own
+    static std::atomic<int> n_big{0};
+    if (n_jobs >= 200000 && n_big.fetch_add(1) == 19)
+        if (const char *p = getenv("ALIGN_RS_DUMP_EXT")) {
+            const ReadBuf &rb = g_rb[g_stage_rb[1]];
+            std::vector<uint8_t> rs(rb.n_bytes); std::vector<int64_t> os(rb.n_reads + 1);
+            CK(cudaMemcpy(rs.data(), rb.rs, rs.size(), cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(os.data(), rb.os, os.size() * sizeof(int64_t), cudaMemcpyDeviceToHost));
+            FILE *f = fopen(p, "wb");
+            int64_t hdr[6] = {rb.n_reads, rb.n_bytes, n_jobs, w, end_bonus, dir};
+            fwrite(hdr, sizeof hdr, 1, f); fwrite(os.data(), sizeof(int64_t), os.size(), f); fwrite(rs.data(), 1, rs.size(), f);
+            fwrite(jobs, sizeof(Job), n_jobs, f); fwrite(out, sizeof(JobOut), n_jobs, f); fclose(f);
+            fprintf(stderr, "[align-rs-gpu] extension jobs dumped to %s: %d jobs, %d reads\n", p, n_jobs, rb.n_reads);
+        }
     return nleft;
 }
 // ALIGN_RS_TRACE: this thread's extension device time since the last call (s): upload, sort, kernel, download
@@ -379,6 +423,14 @@ extern "C" void aln_gpu_ext_take(double *out) {
 }
 
 extern "C" void aln_gpu_report() {
+#ifdef EXT_WARPSTAT
+    {
+        unsigned long long w[6]; cudaMemcpyFromSymbol(w, g_ws, sizeof w);
+        auto ef = [](unsigned long long st, unsigned long long ln) { return st ? 100.0 * ln / (32.0 * st) : 0.0; };
+        fprintf(stderr, "[align-rs-gpu] k_extend warp efficiency: DP cells %.1f%% (%llu warp steps), rows %.1f%% (%llu), jobs %.1f%% (%llu)\n",
+                ef(w[0], w[1]), w[0], ef(w[2], w[3]), w[2], ef(w[4], w[5]), w[4]);
+    }
+#endif
     fprintf(stderr, "[align-rs-gpu] extension: H2D %.2f s, kernel %.2f s, D2H %.2f s; ungapped shortcut: %lld jobs%s\n", t_h2d, t_kernel, t_d2h,
             ungapped_mode() == 2 ? g_ug_checked.load() : g_ug_jobs.load(), ungapped_mode() == 2 ? " checked against the DP, all identical" : ungapped_mode() == 0 ? " (off)" : "");
 }

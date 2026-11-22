@@ -183,7 +183,7 @@ after it.
   realignment Smith-Waterman together are ~12-15% of HaplotypeCaller's CPU: integer DP that ports exactly, worth
   ~50 s of the workstation's 400, at the cost of splitting each region's task at a batched GPU call. Not started.
 
-### Stage 7: align-rs kernels from the 2026-11-21 research — open
+### Stage 7: align-rs kernels from the 2026-11-21 research — done 2026-11-22
 
 A survey of GPU work on BWA-MEM-style alignment (2022-2026) found no GPU port that is both faster than align-rs and
 byte-identical to bwa-mem2 (Pham et al. ICS 2023 and G3SA ICS 2025 extend with a static band and no per-row
@@ -215,7 +215,11 @@ ideas, in order:
    tests identical (`docs/notes/align-rs.md` section 14). bwa-mem3 #580 (unequal lengths, 1.2 M of the 3.9 M DP
    calls here) would take another ~25% of the cells; not done.
 4. **Lanes that finish early take the next job** in the extension kernel (AGAThA, PPoPP 2024): only if its warps
-   idle; measure warp efficiency first.
+   idle; measure warp efficiency first. **Measured 2026-11-22, not pursued:** the DP's lanes are 53% busy (a 30x
+   lane on the L40S), but the kernel's time follows its working lanes, not its warp steps: one batch's jobs with
+   only k lanes of each warp given work take x1.03 / x1.10 / x1.31 of the full-warp time at k = 24 / 16 / 8 (x1.33
+   / x2 / x4 the warp steps). Packing every lane would save ~9% of the kernel at best, ~2 s a lane on a GPU the
+   server does not wait for (`docs/notes/align-rs.md` section 16).
 5. Seeding k-mer interval table and read reordering (Pham et al.): a few % of seeding at best. Not planned.
 
 ## Several GPUs (an option, after stage 1)
@@ -237,7 +241,7 @@ ideas, in order:
   rule (a call with `<NON_REF>` written 0/0, PLs 0) seen once in the three genomes. Larger cohorts not measured.
 
 Order: stages 1, 3, 5 and 6, M1, M3 and M4 done; stages 2 and 4 tried and not pursued; stage 7 items 1-3 done, item 4
-(idle extension lanes) next, after a warp-efficiency profile.
+measured and not pursued, item 5 not planned.
 
 ## Coverage: GATK tools to add next
 
