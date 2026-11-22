@@ -1,7 +1,7 @@
 # Full regression harness
 
 `tests/selftest.sh` runs anywhere in a minute on synthetic data. This harness is the heavier half: align-rs vs
-bwa-mem2 and variant-rs vs GATK 4.7 / Picard on public sequencing data, ~44 checks in ~75 minutes on a 16-core
+bwa-mem2 and variant-rs vs GATK 4.7 / Picard on public sequencing data, 49 checks in ~75 minutes on a 16-core
 machine with a GPU, ~300 GB of data. Every check compares outputs byte for byte (VCF data lines, BAM records,
 metrics, tables), so a change that alters any result shows up here.
 
