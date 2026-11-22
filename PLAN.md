@@ -232,7 +232,7 @@ ideas, in order:
    server does not wait for (`docs/notes/align-rs.md` section 16).
 5. Seeding k-mer interval table and read reordering (Pham et al.): a few % of seeding at best. Not planned.
 
-### Stage 8: candidates measured 2026-11-22 — item 3 done
+### Stage 8: candidates measured 2026-11-22 — item 3 done (the workstation's CPU)
 
 Measured on the workstation, outputs unchanged in every case; details in `docs/notes/align-rs.md` section 17 and
 `runs/stage7`:
@@ -258,7 +258,11 @@ Measured on the workstation, outputs unchanged in every case; details in `docs/n
    `mid` set, 98% of them in 8% of the reads), the B-tree's node search without branches: `mid` set seeding and
    chaining 168-185 -> 136 thread-s, a lane's user CPU -5%, its wall unchanged (127.6 -> 124.3 s on average).
    Measured and dropped: LZ4 for the BAM spill (~1.2%), an early exit in mate rescue's `skip_dirs` (no change).
-   Left: SIMD for the CIGAR DP (CIGAR 11% and XA 8% of the CPU, the DP ~6-7%).
+   Then the CIGAR DP in AVX2 (notes section 21): F's recurrence along a row is a max-plus prefix scan, exact in
+   integers, so 8 cells at a time with the same direction bytes; the CIGAR/NM/MD step -28%, a lane's user CPU -3%.
+   Stopped here (2026-11-22): what is left is spread thin (extension setup 7.8%, replay 6.5%, mate rescue 6.2%, BAM
+   spill 5.8%) or needs the GPU (item 4). Next, before more CPU work: a per-batch split of extension's and mate
+   rescue's time into GPU work, GPU waits and CPU work, the two stages that pace a lane.
 4. **GPU work the machines do not wait on:** bwa-mem3's mate-rescue pruning (a third of the mate-SW cells on a
    dumped chunk) and a warp-uniform column loop in `k_extend` (its lanes read 3.44 local-memory lines a step).
    Only for a GPU-bound setup. The other way round, for CPU-bound servers: chaining on the GPU (~16% of the CPU,

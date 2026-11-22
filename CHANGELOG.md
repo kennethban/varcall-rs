@@ -82,6 +82,11 @@ named in its entry; a change of reference version is a new minor version at leas
   that overlaps deciding the drop (exact: the kept chains' weights do not increase); bwa's loop below 16 chains and
   under `ALIGN_RS_CHAINFLT_CHECK=1`. The chaining B-tree's node search counts the keys below without branches. Same
   records; a 30x lane's user CPU -5%.
+* align-rs: the CIGAR DP (`ksw_global2`) fills 8 cells at a time with AVX2, the same values and direction bytes as
+  the scalar loop (F along a row as a max-plus prefix scan); the scalar loop without AVX2, under
+  `ALIGN_RS_CIGAR_SIMD=0`, and beside it under `ALIGN_RS_CIGAR_SIMD_CHECK=1`. Same records; CIGAR/NM/MD CPU -28%.
+* docs: `docs/optimizations.md` reorganized (the method, the pipeline and what paces it, GPU kernels, CPU
+  shortcuts, memory, BAM output, measured and dropped, open candidates), with pseudocode and diagrams.
 
 ### Fixed
 

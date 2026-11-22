@@ -357,31 +357,109 @@ fn push_cigar(c: &mut Vec<u32>, op: u32, len: u32) {
 
 /// ksw_global2 with backtrack
 fn ksw_global2(o: &ExtOpt, query: &[u8], target: &[u8], w: i32) -> (i32, Vec<u32>) {
-    // per-thread scratch (the direction matrix, query profile and the H/E row), reused across calls
+    // per-thread scratch (the direction matrix, query profile, the H/E row; the vector fill's H and E), reused
     thread_local! {
-        static SCRATCH: std::cell::RefCell<(Vec<u8>, Vec<i8>, Vec<(i32, i32)>)> = const { std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+        static SCRATCH: std::cell::RefCell<KswgScratch> = const { std::cell::RefCell::new(KswgScratch { z: Vec::new(), qp: Vec::new(), eh: Vec::new(), hb: Vec::new(), eb: Vec::new() }) };
     }
-    SCRATCH.with(|sc| {
-        let mut sc = sc.borrow_mut();
-        let (z, qp, eh) = &mut *sc;
-        ksw_global2_in(o, query, target, w, z, qp, eh)
+    SCRATCH.with(|sc| ksw_global2_in(o, query, target, w, &mut sc.borrow_mut()))
+}
+
+struct KswgScratch {
+    z: Vec<u8>,
+    qp: Vec<i8>,
+    eh: Vec<(i32, i32)>,
+    hb: Vec<i32>,
+    eb: Vec<i32>,
+}
+
+/// ALIGN_RS_CIGAR_SIMD=0: the CIGAR DP's scalar fill only; ALIGN_RS_CIGAR_SIMD_CHECK=1: the vector fill, then the
+/// scalar one, the score and every direction byte compared (a check). 0 scalar, 1 vector, 2 check
+fn kswg_mode() -> u8 {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *M.get_or_init(|| {
+        #[cfg(target_arch = "x86_64")]
+        let avx2 = std::is_x86_feature_detected!("avx2");
+        #[cfg(not(target_arch = "x86_64"))]
+        let avx2 = false;
+        if !avx2 || std::env::var("ALIGN_RS_CIGAR_SIMD").is_ok_and(|v| v == "0") {
+            0
+        } else if std::env::var("ALIGN_RS_CIGAR_SIMD_CHECK").is_ok_and(|v| v == "1") {
+            2
+        } else {
+            1
+        }
     })
 }
 
-fn ksw_global2_in(o: &ExtOpt, query: &[u8], target: &[u8], w: i32, z: &mut Vec<u8>, qp: &mut Vec<i8>, eh: &mut Vec<(i32, i32)>) -> (i32, Vec<u32>) {
+fn ksw_global2_in(o: &ExtOpt, query: &[u8], target: &[u8], w: i32, sc: &mut KswgScratch) -> (i32, Vec<u32>) {
     let qlen = query.len() as i32;
     let tlen = target.len() as i32;
     let m = 5usize;
-    let (oe_del, oe_ins) = (o.o_del + o.e_del, o.o_ins + o.e_ins);
-    let (e_del, e_ins) = (o.e_del, o.e_ins);
     let n_col = qlen.min(2 * w + 1) as usize;
-    z.clear();
-    z.resize(n_col * target.len(), 0);
-    qp.clear();
+    sc.z.clear();
+    sc.z.resize(n_col * target.len(), 0);
+    sc.qp.clear();
     for k in 0..m {
         let p = &o.mat[k * m..k * m + m];
-        qp.extend(query.iter().map(|&qj| p[qj as usize]));
+        sc.qp.extend(query.iter().map(|&qj| p[qj as usize]));
     }
+    // the vector fill reads 8 profile values from any query position
+    sc.qp.extend([0i8; 8]);
+    // the vector fill's arithmetic stays far from i32's range (its shifted-in filler below every real score)
+    let small = [o.o_del, o.e_del, o.o_ins, o.e_ins].iter().all(|&x| (0..1 << 16).contains(&x)) && (n_col as i64 + 8) * (o.e_ins as i64) < 1 << 29;
+    let mode = if small { kswg_mode() } else { 0 };
+    let score = if mode == 0 {
+        kswg_fill(o, query, target, w, n_col, &mut sc.z, &sc.qp, &mut sc.eh)
+    } else {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: AVX2 detected (kswg_mode)
+        let score = unsafe { kswg_fill_avx2(o, query, target, w, n_col, &mut sc.z, &sc.qp, &mut sc.hb, &mut sc.eb) };
+        #[cfg(not(target_arch = "x86_64"))]
+        let score = unreachable!();
+        if mode == 2 {
+            let mut z2 = vec![0u8; sc.z.len()];
+            let s2 = kswg_fill(o, query, target, w, n_col, &mut z2, &sc.qp, &mut sc.eh);
+            assert!(score == s2 && sc.z == z2, "ALIGN_RS_CIGAR_SIMD_CHECK: vector fill differs (qlen {qlen}, tlen {tlen}, w {w}): score {score} vs {s2}");
+        }
+        score
+    };
+    let z = &sc.z;
+    let mut cigar: Vec<u32> = Vec::new();
+    let mut i = tlen - 1;
+    let mut k = (if i + w + 1 < qlen { i + w + 1 } else { qlen }) - 1;
+    let mut which = 0u32;
+    while i >= 0 && k >= 0 {
+        let beg = if i > w { i - w } else { 0 };
+        which = (z[i as usize * n_col + (k - beg) as usize] as u32 >> (which << 1)) & 3;
+        if which == 0 {
+            push_cigar(&mut cigar, 0, 1);
+            i -= 1;
+            k -= 1;
+        } else if which == 1 {
+            push_cigar(&mut cigar, 2, 1);
+            i -= 1;
+        } else {
+            push_cigar(&mut cigar, 1, 1);
+            k -= 1;
+        }
+    }
+    if i >= 0 {
+        push_cigar(&mut cigar, 2, (i + 1) as u32);
+    }
+    if k >= 0 {
+        push_cigar(&mut cigar, 1, (k + 1) as u32);
+    }
+    cigar.reverse();
+    (score, cigar)
+}
+
+/// ksw_global2's fill: the direction matrix `z` (n_col bytes a target row) and the score; `qp` the query profile
+#[allow(clippy::too_many_arguments)]
+fn kswg_fill(o: &ExtOpt, query: &[u8], target: &[u8], w: i32, n_col: usize, z: &mut [u8], qp: &[i8], eh: &mut Vec<(i32, i32)>) -> i32 {
+    let qlen = query.len() as i32;
+    let tlen = target.len() as i32;
+    let (oe_del, oe_ins) = (o.o_del + o.e_del, o.o_ins + o.e_ins);
+    let (e_del, e_ins) = (o.e_del, o.e_ins);
     // (H, E) per query position
     eh.clear();
     eh.resize(query.len() + 1, (MINUS_INF, MINUS_INF));
@@ -422,34 +500,111 @@ fn ksw_global2_in(o: &ExtOpt, query: &[u8], target: &[u8], w: i32, z: &mut Vec<u
         }
         eh[e_] = (h1, MINUS_INF);
     }
-    let score = eh[qlen as usize].0;
-    let mut cigar: Vec<u32> = Vec::new();
-    let mut i = tlen - 1;
-    let mut k = (if i + w + 1 < qlen { i + w + 1 } else { qlen }) - 1;
-    let mut which = 0u32;
-    while i >= 0 && k >= 0 {
+    eh[qlen as usize].0
+}
+
+/// `kswg_fill`, 8 query positions at a time (AVX2), the same values cell by cell. The only dependency along a row
+/// is F, and F's recurrence f' = max(f - e_ins, mv - oe_ins) does not involve H: across 8 cells it is a max-plus
+/// prefix scan (shifts by 1, 2, 4 lanes, then the carry from the previous 8), exact in integers. H is stored one
+/// position on, as bwa's in-place row has it; the band's last cells by masked stores (nothing past the band changes).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn kswg_fill_avx2(o: &ExtOpt, query: &[u8], target: &[u8], w: i32, n_col: usize, z: &mut [u8], qp: &[i8], hb: &mut Vec<i32>, eb: &mut Vec<i32>) -> i32 {
+    use std::arch::x86_64::*;
+    let qlen = query.len() as i32;
+    let tlen = target.len() as i32;
+    let (oe_del, oe_ins) = (o.o_del + o.e_del, o.o_ins + o.e_ins);
+    let (e_del, e_ins) = (o.e_del, o.e_ins);
+    hb.clear();
+    hb.resize(query.len() + 1 + 8, MINUS_INF);
+    eb.clear();
+    eb.resize(query.len() + 1 + 8, MINUS_INF);
+    hb[0] = 0;
+    let mut j = 1;
+    while j <= qlen && j <= w {
+        hb[j as usize] = -(o.o_ins + o.e_ins * j);
+        j += 1;
+    }
+    // shifted into the scan's low lanes: below every real value, which is at least MINUS_INF - (band + 7) * e_ins
+    const FILL: i32 = -0x7000_0000;
+    let vfill = _mm256_set1_epi32(FILL);
+    let lane = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    let one = _mm256_set1_epi32(1);
+    let (v1, v2, v4, v32) = (one, _mm256_set1_epi32(2), _mm256_set1_epi32(4), _mm256_set1_epi32(32));
+    let (vei, vei2, vei4) = (_mm256_set1_epi32(e_ins), _mm256_set1_epi32(2 * e_ins), _mm256_set1_epi32(4 * e_ins));
+    let (ved, voed, voei) = (_mm256_set1_epi32(e_del), _mm256_set1_epi32(oe_del), _mm256_set1_epi32(oe_ins));
+    // the carry's decay into lane l: (l + 1) e_ins
+    let cdec = _mm256_mullo_epi32(_mm256_add_epi32(lane, one), vei);
+    let (p1, p2, p4) = (_mm256_setr_epi32(7, 0, 1, 2, 3, 4, 5, 6), _mm256_setr_epi32(6, 7, 0, 1, 2, 3, 4, 5), _mm256_setr_epi32(4, 5, 6, 7, 0, 1, 2, 3));
+    let hp = hb.as_mut_ptr();
+    let ep = eb.as_mut_ptr();
+    for i in 0..tlen {
+        let q = qp.as_ptr().add(target[i as usize] as usize * query.len());
         let beg = if i > w { i - w } else { 0 };
-        which = (z[i as usize * n_col + (k - beg) as usize] as u32 >> (which << 1)) & 3;
-        if which == 0 {
-            push_cigar(&mut cigar, 0, 1);
-            i -= 1;
-            k -= 1;
-        } else if which == 1 {
-            push_cigar(&mut cigar, 2, 1);
-            i -= 1;
-        } else {
-            push_cigar(&mut cigar, 1, 1);
-            k -= 1;
+        let end = if i + w + 1 < qlen { i + w + 1 } else { qlen };
+        let mut h1 = if beg == 0 { -(o.o_del + o.e_del * (i + 1)) } else { MINUS_INF };
+        let (b, e_) = (beg as usize, end as usize);
+        let zrow = z.as_mut_ptr().add(i as usize * n_col);
+        let mut fc = MINUS_INF;
+        let mut k = b;
+        while k < e_ {
+            let n = (e_ - k).min(8);
+            let hd = _mm256_loadu_si256(hp.add(k) as *const __m256i);
+            let ev = _mm256_loadu_si256(ep.add(k) as *const __m256i);
+            let qs = _mm256_cvtepi8_epi32(_mm_loadl_epi64(q.add(k) as *const __m128i));
+            let mv = _mm256_add_epi32(hd, qs);
+            // F entering each cell: g[l] = F after cell l, then shifted up one with the carry in lane 0
+            let u = _mm256_sub_epi32(mv, voei);
+            let mut g = u;
+            let s = _mm256_blend_epi32::<0b0000_0001>(_mm256_permutevar8x32_epi32(g, p1), vfill);
+            g = _mm256_max_epi32(g, _mm256_sub_epi32(s, vei));
+            let s = _mm256_blend_epi32::<0b0000_0011>(_mm256_permutevar8x32_epi32(g, p2), vfill);
+            g = _mm256_max_epi32(g, _mm256_sub_epi32(s, vei2));
+            let s = _mm256_blend_epi32::<0b0000_1111>(_mm256_permutevar8x32_epi32(g, p4), vfill);
+            g = _mm256_max_epi32(g, _mm256_sub_epi32(s, vei4));
+            g = _mm256_max_epi32(g, _mm256_sub_epi32(_mm256_set1_epi32(fc), cdec));
+            let f = _mm256_blend_epi32::<0b0000_0001>(_mm256_permutevar8x32_epi32(g, p1), _mm256_set1_epi32(fc));
+            // H and the direction bits, as kswg_fill
+            let c1 = _mm256_cmpgt_epi32(ev, mv);
+            let mut h = _mm256_max_epi32(mv, ev);
+            let mut d = _mm256_and_si256(c1, v1);
+            let c2 = _mm256_cmpgt_epi32(f, h);
+            d = _mm256_blendv_epi8(d, v2, c2);
+            h = _mm256_max_epi32(h, f);
+            let t = _mm256_sub_epi32(mv, voed);
+            let e2 = _mm256_sub_epi32(ev, ved);
+            d = _mm256_or_si256(d, _mm256_and_si256(_mm256_cmpgt_epi32(e2, t), v4));
+            let enew = _mm256_max_epi32(e2, t);
+            let f2 = _mm256_sub_epi32(f, vei);
+            d = _mm256_or_si256(d, _mm256_and_si256(_mm256_cmpgt_epi32(f2, u), v32));
+            // H one position on: [h1, h0 .. h6]
+            let hs = _mm256_blend_epi32::<0b0000_0001>(_mm256_permutevar8x32_epi32(h, p1), _mm256_set1_epi32(h1));
+            let d16 = _mm_packs_epi32(_mm256_castsi256_si128(d), _mm256_extracti128_si256::<1>(d));
+            let d8 = _mm_packus_epi16(d16, d16);
+            if n == 8 {
+                _mm256_storeu_si256(hp.add(k) as *mut __m256i, hs);
+                _mm256_storeu_si256(ep.add(k) as *mut __m256i, enew);
+                _mm_storel_epi64(zrow.add(k - b) as *mut __m128i, d8);
+                h1 = _mm256_extract_epi32::<7>(h);
+                fc = _mm256_extract_epi32::<7>(g);
+            } else {
+                let mask = _mm256_cmpgt_epi32(_mm256_set1_epi32(n as i32), lane);
+                _mm256_maskstore_epi32(hp.add(k), mask, hs);
+                _mm256_maskstore_epi32(ep.add(k), mask, enew);
+                let mut db = [0u8; 16];
+                _mm_storeu_si128(db.as_mut_ptr() as *mut __m128i, d8);
+                std::ptr::copy_nonoverlapping(db.as_ptr(), zrow.add(k - b), n);
+                let mut hv = [0i32; 8];
+                _mm256_storeu_si256(hv.as_mut_ptr() as *mut __m256i, h);
+                h1 = hv[n - 1];
+            }
+            k += n;
         }
+        *hp.add(e_) = h1;
+        *ep.add(e_) = MINUS_INF;
     }
-    if i >= 0 {
-        push_cigar(&mut cigar, 2, (i + 1) as u32);
-    }
-    if k >= 0 {
-        push_cigar(&mut cigar, 1, (k + 1) as u32);
-    }
-    cigar.reverse();
-    (score, cigar)
+    hb[qlen as usize]
 }
 
 /// bwa_gen_cigar2 with CIGAR, NM and MD: (score, cigar, NM, MD); None if rejected
@@ -1426,4 +1581,74 @@ pub fn sam_se(o: &SamOpt, bns: &Bns, id: i64, s: &Read, mut a: Vec<Reg>) -> Vec<
     let mut out = Vec::new();
     reg2sam(o, bns, &mut out, s, &a, 0, None);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// the vector fill against the scalar one: score and direction matrix, on random sequences with indels and Ns,
+    /// short and long queries, narrow and wide bands, other gap penalties
+    #[test]
+    fn kswg_avx2_matches_scalar() {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if !std::is_x86_feature_detected!("avx2") {
+                return;
+            }
+            let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+            let mut rnd = |n: u64| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x % n
+            };
+            let mut opts = vec![ExtOpt::bwa_default()];
+            let mut o2 = ExtOpt::bwa_default();
+            (o2.o_del, o2.e_del, o2.o_ins, o2.e_ins) = (5, 3, 7, 2);
+            opts.push(o2);
+            let mut n = 0;
+            for o in &opts {
+                for _ in 0..4000 {
+                    let lim = if rnd(4) == 0 { 12 } else { 260 };
+                    let qlen = 1 + rnd(lim) as usize;
+                    let q: Vec<u8> = (0..qlen).map(|_| if rnd(50) == 0 { 4 } else { rnd(4) as u8 }).collect();
+                    // the target: the query mutated (substitutions, insertions, deletions)
+                    let mut t = Vec::new();
+                    for &c in &q {
+                        match rnd(40) {
+                            0 => {}
+                            1 => {
+                                t.push(c);
+                                t.push(rnd(4) as u8);
+                            }
+                            2 => t.push(rnd(5) as u8),
+                            _ => t.push(c),
+                        }
+                    }
+                    if t.is_empty() {
+                        t.push(0);
+                    }
+                    let lim = if rnd(2) == 0 { 10 } else { 120 };
+                    // gen_cigar2's band: at least the length difference + 3
+                    let w = (1 + rnd(lim) as i32).max((t.len() as i32 - qlen as i32).abs() + 3);
+                    let n_col = (qlen as i32).min(2 * w + 1) as usize;
+                    let mut qp: Vec<i8> = Vec::new();
+                    for k in 0..5 {
+                        qp.extend(q.iter().map(|&qj| o.mat[k * 5 + qj as usize]));
+                    }
+                    qp.extend([0i8; 8]);
+                    let (mut z1, mut z2) = (vec![0u8; n_col * t.len()], vec![0u8; n_col * t.len()]);
+                    let mut eh = Vec::new();
+                    let s1 = kswg_fill(o, &q, &t, w, n_col, &mut z1, &qp, &mut eh);
+                    let (mut hb, mut eb) = (Vec::new(), Vec::new());
+                    let s2 = unsafe { kswg_fill_avx2(o, &q, &t, w, n_col, &mut z2, &qp, &mut hb, &mut eb) };
+                    assert_eq!(s1, s2, "score, qlen {qlen} tlen {} w {w}", t.len());
+                    assert!(z1 == z2, "directions, qlen {qlen} tlen {} w {w}", t.len());
+                    n += 1;
+                }
+            }
+            assert_eq!(n, 8000);
+        }
+    }
 }

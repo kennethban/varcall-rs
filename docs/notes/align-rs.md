@@ -556,3 +556,26 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       ~155 W; kernels (align-rs's counters) extension 27.4 s, seeding 25.4 s, mate SW 26.8 s, SA 3.1 s; extension
       copies 18.9 s in, 7.6 s out; idle during the final pass (9.1 s). Chaining on the GPU would have ~35 s a lane
       for ~500 thread-s of CPU work (PLAN.md stage 8 item 4).
+21. **The CIGAR DP in AVX2 (2026-11-22; PLAN.md stage 8 item 3).**
+    * `ksw_global2` (bwa's banded global DP with a direction byte per cell) was ~7% of the CPU (`samp4`): 3.9 M DP
+      calls and 10.9 G band cells on the `mid` set (of 18.1 M `gen_cigar2` calls; 2.6 M in a certified narrower
+      band, 1.2 M with unequal lengths).
+    * Along a row the only carried value is F: F(k+1) = max(F(k) - e_ins, M(k) - o_ins - e_ins), M(k) = H(i-1,
+      k-1) + score from the row above, so H does not feed it. Across 8 lanes it is an inclusive max-plus scan:
+      g = u; g = max(g, shift1(g) - e_ins); max(g, shift2(g) - 2 e_ins); max(g, shift4(g) - 4 e_ins); then the
+      carry, max(g, c - (l + 1) e_ins); F entering lane l is g[l - 1] (lane 0: c), the next carry g[7]. Integer
+      max and subtraction distribute exactly, so every F equals the scalar loop's; H, E and the direction bits are
+      the same comparisons lane by lane (`kswg_fill_avx2`, sam.rs).
+    * Layout: H and E as two arrays (bwa's (H, E) pairs), H stored one position on as in bwa's in-place row; the
+      band's last block by masked stores, nothing past the band written; the profile padded by 8 bytes. The
+      shifts fill with -0x7000_0000, below any real value (at least MINUS_INF - (band + 7) e_ins), so a filler
+      never wins a max: the vector fill runs when the gap penalties are below 2^16 and (band + 8) e_ins < 2^29,
+      with AVX2; the scalar loop otherwise, under `ALIGN_RS_CIGAR_SIMD=0`, and as the check
+      (`ALIGN_RS_CIGAR_SIMD_CHECK=1`: score and the whole direction matrix compared on every call).
+    * Checks: equal on the `mid` set and a whole lane (check mode), unit test `kswg_avx2_matches_scalar` (8,000
+      random alignments, two penalty sets, queries of 1-260 bases, bands of 1-120 at least the length difference
+      + 3, Ns), selftest identical, records identical (`mid` set 8e37f2bc, lane 9b9c2839aed0).
+    * `mid` set, 3 each alternating: CIGAR/NM/MD 85-90 -> 61.5-63.5 thread-s, the pairing + SAM pool 185-196 ->
+      174-179; total user CPU unchanged (the other pools took the cores). A 30x lane, 2 each alternating:
+      CIGAR/NM/MD 584, 589 -> 439, 405 thread-s; user CPU 3040, 3051 -> 3012, 2904 s; wall 116.9, 134.3 -> 124.9,
+      123.5 s (a lane's wall varies by ~15 s run to run).
