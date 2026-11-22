@@ -70,6 +70,11 @@ named in its entry; a change of reference version is a new minor version at leas
 * align-rs: the CIGAR's global alignment runs equal-length regions in the narrower band the ungapped score certifies
   (from bwa-mem3), identical score, CIGAR, NM and MD: half the band cells, CIGAR CPU -31% on 5 M pairs.
   `ALIGN_RS_CIGAR_BAND=0` turns it off, `=check` compares it with the usual band.
+* align-rs: mate rescue's region dedup (`mem_sort_dedup_patch` after each of the four directions) adds the rescued
+  region to the already deduplicated regions without sorting when they are clean (distinct ends, nothing the overlap
+  loop would drop, distinct keys), and skips the call when nothing was rescued; region sorts use one packed integer
+  key and permute in place. Same records; a 30x lane on the workstation 149.5 -> 138.8 s, its CPU time -21%.
+  `ALIGN_RS_DEDUP_CHECK=1` / `ALIGN_RS_SORT_CHECK=1` compare with the full function / the previous sort.
 
 ### Fixed
 

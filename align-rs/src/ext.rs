@@ -1074,20 +1074,57 @@ fn patch_reg(o: &ExtOpt, bns: &Bns, query: &[u8], a: &Reg, b: &Reg) -> (i32, i32
 
 /// mem_sort_dedup_patch(opt, 0, 0, 0, ...) as mate rescue calls it: no patching (mem_patch_reg returns 0 without bns)
 pub fn sort_dedup_patch_nopatch(o: &ExtOpt, bns: &Bns, a: Vec<Reg>) -> Vec<Reg> {
-    sort_dedup_patch_impl(o, bns, None, a)
+    sort_dedup_patch_impl(o, bns, None, a, None)
+}
+
+/// `sort_dedup_patch_nopatch`, also telling whether the result is clean for `dedup_add`: its end positions all
+/// differ, bwa's overlap loop over it (by end) would drop nothing, and no two of it have the same final key
+pub fn sort_dedup_nopatch_clean(o: &ExtOpt, bns: &Bns, a: Vec<Reg>) -> (Vec<Reg>, bool) {
+    let mut clean = false;
+    let v = sort_dedup_patch_impl(o, bns, None, a, Some(&mut clean));
+    (v, clean)
 }
 
 /// mem_sort_dedup_patch
 pub fn sort_dedup_patch(o: &ExtOpt, bns: &Bns, query: &[u8], a: Vec<Reg>) -> Vec<Reg> {
-    sort_dedup_patch_impl(o, bns, Some(query), a)
+    sort_dedup_patch_impl(o, bns, Some(query), a, None)
 }
 
-fn sort_dedup_patch_impl(o: &ExtOpt, bns: &Bns, query: Option<&[u8]>, mut a: Vec<Reg>) -> Vec<Reg> {
+/// mem_sort_dedup_patch's overlap test: one of p (the later by end) and q is dropped
+#[inline]
+fn redundant(o: &ExtOpt, p: &Reg, q: &Reg) -> bool {
+    let or_ = q.re - p.rb;
+    let oq = if q.qb < p.qb { (q.qe - p.qb) as i64 } else { (p.qe - q.qb) as i64 };
+    let mr = (q.re - q.rb).min(p.re - p.rb);
+    let mq = ((q.qe - q.qb) as i64).min((p.qe - p.qb) as i64);
+    (or_ as f32) > o.mask_level_redun * mr as f32 && (oq as f32) > o.mask_level_redun * mq as f32
+}
+
+/// whether bwa's overlap loop (no patching) would drop a region of `a` (sorted by end, none empty yet): with nothing
+/// dropped before it, the first redundant pair it tests drops one
+fn loop_drops(o: &ExtOpt, a: &[Reg]) -> bool {
+    for i in 1..a.len() {
+        if a[i].rid != a[i - 1].rid || a[i].rb >= a[i - 1].re + o.max_chain_gap {
+            continue;
+        }
+        let mut j = i as isize - 1;
+        while j >= 0 && a[i].rid == a[j as usize].rid && a[i].rb < a[j as usize].re + o.max_chain_gap {
+            if redundant(o, &a[i], &a[j as usize]) {
+                return true;
+            }
+            j -= 1;
+        }
+    }
+    false
+}
+
+fn sort_dedup_patch_impl(o: &ExtOpt, bns: &Bns, query: Option<&[u8]>, mut a: Vec<Reg>, clean: Option<&mut bool>) -> Vec<Reg> {
     let n = a.len();
     if n <= 1 {
         return a;
     }
-    a_idx_sort(&mut a, |r| r.re, |x, y| x < y); // ks_introsort(mem_ars2): by end position
+    // ks_introsort(mem_ars2): by end position
+    a_idx_sort_packed(&mut a, |r| Some(((r.re as u64 ^ (1 << 63)) as u128) << 32), |r| r.re, |x, y| x < y);
     for r in a.iter_mut() {
         r.n_comp = 1;
     }
@@ -1103,11 +1140,7 @@ fn sort_dedup_patch_impl(o: &ExtOpt, bns: &Bns, query: Option<&[u8]>, mut a: Vec
                 continue;
             }
             let (p, q) = (&a[i], &a[ju]);
-            let or_ = q.re - p.rb;
-            let oq = if q.qb < p.qb { (q.qe - p.qb) as i64 } else { (p.qe - q.qb) as i64 };
-            let mr = (q.re - q.rb).min(p.re - p.rb);
-            let mq = ((q.qe - q.qb) as i64).min((p.qe - p.qb) as i64);
-            if (or_ as f32) > o.mask_level_redun * mr as f32 && (oq as f32) > o.mask_level_redun * mq as f32 {
+            if redundant(o, p, q) {
                 if p.score < q.score {
                     a[i].qe = a[i].qb;
                     break;
@@ -1136,8 +1169,18 @@ fn sort_dedup_patch_impl(o: &ExtOpt, bns: &Bns, query: Option<&[u8]>, mut a: Vec
     }
     a.retain(|r| r.qe > r.qb);
     let n = a.len();
+    // clean so far: the survivors' ends differ (in end order here) and the loop would drop none of them
+    let mut clean = clean;
+    if let Some(c) = clean.as_deref_mut() {
+        *c = a.windows(2).all(|w| w[0].re != w[1].re) && !loop_drops(o, &a);
+    }
     // ks_introsort(mem_ars): score descending, then rb, then qb
-    a_idx_sort(&mut a, |r| (r.score, r.rb, r.qb), |x, y| x.0 > y.0 || (x.0 == y.0 && (x.1 < y.1 || (x.1 == y.1 && x.2 < y.2))));
+    // packed: score descending (32 bits), rb (35), qb (29), when they fit
+    let packed = |r: &Reg| {
+        ((0..1i64 << 35).contains(&r.rb) && (0..1i32 << 29).contains(&r.qb))
+            .then_some((((!(r.score as u32 ^ 0x8000_0000)) as u128) << 96) | ((r.rb as u128) << 61) | ((r.qb as u128) << 32))
+    };
+    a_idx_sort_packed(&mut a, packed, |r| (r.score, r.rb, r.qb), |x, y| x.0 > y.0 || (x.0 == y.0 && (x.1 < y.1 || (x.1 == y.1 && x.2 < y.2))));
     for i in 1..n {
         if a[i].score == a[i - 1].score && a[i].rb == a[i - 1].rb && a[i].qb == a[i - 1].qb {
             a[i].qe = a[i].qb;
@@ -1153,7 +1196,99 @@ fn sort_dedup_patch_impl(o: &ExtOpt, bns: &Bns, query: Option<&[u8]>, mut a: Vec
         }
     }
     a.truncate(m.min(n));
+    if let Some(c) = clean {
+        // and no two had the same final key
+        *c = *c && a.len() == n;
+    }
     a
+}
+
+/// `sort_dedup_patch_nopatch(y with b inserted)` for a clean y (`sort_dedup_nopatch_clean`), without sorting: y as
+/// it stands goes through the overlap loop dropping nothing, and a region added to it only ends windows earlier, so
+/// only the tests with b can drop anything. Those are b's own turn (the regions ending before it, back to the first
+/// that ends its window: another contig, or too far) and the turns of the regions ending after it whose windows
+/// reach it (the same contig with nothing of another between, rb < b.re + max_chain_gap), in end order. Returns
+/// whether the result is clean (nothing of y dropped), or None, y untouched, when b is not covered (y empty, b
+/// empty, an end or a final key equal to one of y's): then the caller runs the full function.
+pub fn dedup_add(o: &ExtOpt, y: &mut Vec<Reg>, mut b: Reg) -> Option<bool> {
+    let gap = o.max_chain_gap;
+    if y.is_empty() || b.qe <= b.qb || y.iter().any(|r| r.re == b.re) {
+        return None;
+    }
+    // b's turn: back from the region ending just before it
+    let stop = y.iter().filter(|r| r.re < b.re && (r.rid != b.rid || b.rb >= r.re + gap)).map(|r| r.re).max().unwrap_or(i64::MIN);
+    let mut win: Vec<u32> = (0..y.len() as u32).filter(|&j| y[j as usize].re > stop && y[j as usize].re < b.re).collect();
+    win.sort_unstable_by_key(|&j| std::cmp::Reverse(y[j as usize].re));
+    let mut drop: Vec<u32> = Vec::new();
+    let mut alive = true;
+    for &j in &win {
+        let q = &y[j as usize];
+        if redundant(o, &b, q) {
+            if b.score < q.score {
+                alive = false;
+                break;
+            }
+            drop.push(j);
+        }
+    }
+    // the turns of the regions after it that reach it, until b is dropped
+    if alive {
+        let stop = y.iter().filter(|r| r.re > b.re && r.rid != b.rid).map(|r| r.re).min().unwrap_or(i64::MAX);
+        let mut after: Vec<u32> = (0..y.len() as u32).filter(|&i| y[i as usize].re > b.re && y[i as usize].re < stop && y[i as usize].rb < b.re + gap).collect();
+        after.sort_unstable_by_key(|&i| y[i as usize].re);
+        for &i in &after {
+            let p = &y[i as usize];
+            if redundant(o, p, &b) {
+                if p.score < b.score {
+                    drop.push(i);
+                } else {
+                    alive = false;
+                    break;
+                }
+            }
+        }
+    }
+    // the final order (score descending, rb, qb): y's, with b in its place; an equal key is left to the full function
+    let key = |r: &Reg| (std::cmp::Reverse(r.score), r.rb, r.qb);
+    let mut at = None;
+    if alive {
+        let kb = key(&b);
+        let mut pos = 0;
+        for (i, r) in y.iter().enumerate() {
+            if drop.contains(&(i as u32)) {
+                continue;
+            }
+            let k = key(r);
+            if k == kb {
+                return None;
+            }
+            if k < kb {
+                pos = i + 1;
+            }
+        }
+        at = Some(pos);
+    }
+    let clean = drop.is_empty();
+    if let Some(pos) = at {
+        b.n_comp = 1;
+        y.insert(pos, b);
+        for d in drop.iter_mut() {
+            if *d as usize >= pos {
+                *d += 1;
+            }
+        }
+    }
+    if !clean {
+        let mut k = 0usize;
+        y.retain(|_| {
+            k += 1;
+            !drop.contains(&(k as u32 - 1))
+        });
+    }
+    for r in y.iter_mut() {
+        r.n_comp = 1;
+    }
+    Some(clean)
 }
 
 /// ks_introsort over regions (moving whole regions as bwa does). Only how it orders equal keys is particular to
@@ -1179,5 +1314,83 @@ pub fn a_idx_sort<K: Copy>(a: &mut [Reg], key: impl Fn(&Reg) -> K, lt: impl Fn(&
     let old = a.to_vec();
     for (d, &(_, i)) in a.iter_mut().zip(&ki) {
         *d = old[i as usize];
+    }
+}
+
+/// ALIGN_RS_SORT_CHECK=1: every packed region sort also runs `a_idx_sort` on a copy and must agree (a check)
+fn sort_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ALIGN_RS_SORT_CHECK").is_ok_and(|v| v == "1"))
+}
+
+thread_local! {
+    static SORT_KEYS: std::cell::RefCell<Vec<u128>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `a_idx_sort` with the key packed into the bits above 32 of a u128 (`packed`: None when a region's key does not
+/// fit, and the plain sort runs). The key order must be `lt`'s, equal packed keys equal keys. The region's index fills
+/// the low 32 bits, so one integer sort of a reused buffer replaces sorting (key, index) pairs through `lt`, and
+/// the regions are permuted in place. When two different regions tie, ks_introsort runs as in `a_idx_sort`.
+pub fn a_idx_sort_packed<K: Copy>(a: &mut [Reg], packed: impl Fn(&Reg) -> Option<u128>, key: impl Fn(&Reg) -> K + Copy, lt: impl Fn(&K, &K) -> bool + Copy) {
+    let n = a.len();
+    if n < 2 {
+        return;
+    }
+    let want = sort_check().then(|| {
+        let mut c = a.to_vec();
+        a_idx_sort(&mut c, key, lt);
+        c
+    });
+    let done = SORT_KEYS.with(|b| {
+        let mut ks = b.borrow_mut();
+        ks.clear();
+        for (i, r) in a.iter().enumerate() {
+            match packed(r) {
+                Some(k) => ks.push(k | i as u128),
+                None => return None,
+            }
+        }
+        ks.sort_unstable();
+        // regions of equal keys must all be the same region
+        if !ks.windows(2).all(|w| w[0] >> 32 != w[1] >> 32 || a[w[0] as u32 as usize] == a[w[1] as u32 as usize]) {
+            return Some(false);
+        }
+        // permute in place: position d takes the region in ks[d]'s low 32 bits; each cycle is walked once, marking
+        // its positions done (ks[d] = d) as it goes
+        for s in 0..n {
+            if ks[s] as u32 as usize == s {
+                continue;
+            }
+            let tmp = a[s];
+            let mut d = s;
+            loop {
+                let from = ks[d] as u32 as usize;
+                ks[d] = d as u128;
+                if from == s {
+                    a[d] = tmp;
+                    break;
+                }
+                a[d] = a[from];
+                d = from;
+            }
+        }
+        Some(true)
+    });
+    match done {
+        Some(true) => crate::prof::count(crate::prof::N_SORTS, 1),
+        Some(false) => {
+            crate::prof::count(crate::prof::N_SORTSLOW, 1);
+            crate::prof::count(crate::prof::N_SORTS, 1);
+            let mut ki: Vec<(K, u32)> = a.iter().enumerate().map(|(i, r)| (key(r), i as u32)).collect();
+            crate::ksort::introsort(&mut ki, |x, y| lt(&x.0, &y.0));
+            let old = a.to_vec();
+            for (d, &(_, i)) in a.iter_mut().zip(&ki) {
+                *d = old[i as usize];
+            }
+        }
+        None => a_idx_sort(a, key, lt),
+    }
+    if let Some(w) = want {
+        assert!(w.as_slice() == &*a, "packed region sort differs from a_idx_sort");
     }
 }

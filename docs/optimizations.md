@@ -33,6 +33,21 @@ pub fn a_idx_sort<K: Copy>(a: &mut [Reg], key: impl Fn(&Reg) -> K, lt: impl Fn(&
 }
 ```
 
+### An incremental dedup, exact by an invariant
+
+bwa-mem2's mate rescue runs `mem_sort_dedup_patch` on the mate's regions after each of its four directions: two
+sorts and an overlap loop over every region, for at most one region added. Reads with hundreds of regions made it
+18% of the workstation's CPU. align-rs keeps a flag per mate: its regions are *clean* when their ends differ, the
+overlap loop (by end) would drop none of them, and their final keys differ. A region added to a clean set can only
+end the loop's windows earlier, so only the tests with the new region can drop anything: its own turn (the regions
+ending before it, back to the first that ends its window) and the turns of the later regions whose windows reach
+it, in end order. `dedup_add` runs just those and puts the region in its place in the score order; nothing of the
+old set dropped, the result is clean again. A direction that rescued nothing leaves a clean set unchanged. Ties,
+equal ends or keys, and the first call per mate run the full function, which reports whether its result is clean
+(the loop rerun as a check). `ALIGN_RS_DEDUP_CHECK=1` runs the full function on a copy every time: equal in 84 M
+calls on a 30x lane, of which 74% were incremental and 17% skipped. With the region sorts on one packed integer
+key, permuted in place: the lane 149.5 -> 138.8 s, its CPU time -21%.
+
 ### Replacing a linear scan, with a check mode
 
 After extension, bwa-mem2 replays bwa's skip test: for every seed, it scans the kept regions in order and stops at

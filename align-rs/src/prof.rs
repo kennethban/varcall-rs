@@ -95,7 +95,7 @@ pub const C_RDEDUP: usize = 24;
 pub const C_FETCHW: usize = 25;
 
 /// counters
-pub const N_NAMES: [&str; 34] = [
+pub const N_NAMES: [&str; 37] = [
     "ext: regions (seeds) extended",
     "ext: regions kept by the replay",
     "ext: jobs run",
@@ -130,6 +130,9 @@ pub const N_NAMES: [&str; 34] = [
     "CIGAR: equal-length DP calls left ungapped by the certificate",
     "CIGAR: DP calls in a narrower certified band",
     "CIGAR: DP calls with unequal lengths (no certificate)",
+    "mate rescue dedup: full (sort_dedup_patch)",
+    "mate rescue dedup: region added without sorting",
+    "mate rescue dedup: skipped (nothing rescued, clean)",
 ];
 pub const N_REG: usize = 0;
 pub const N_KEPT: usize = 1;
@@ -158,6 +161,9 @@ pub const N_GRESIZE: usize = 30;
 pub const N_CERT0: usize = 31;
 pub const N_CERTW: usize = 32;
 pub const N_CIGUNEQ: usize = 33;
+pub const N_DDFULL: usize = 34;
+pub const N_DDADD: usize = 35;
+pub const N_DDSKIP: usize = 36;
 
 const NS: usize = CPU_NAMES.len() + N_NAMES.len();
 type Slots = [AtomicU64; NS];

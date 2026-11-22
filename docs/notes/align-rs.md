@@ -463,3 +463,37 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       to fail (none of them passed; no score above its bound); the rows kept for the rest leave 67.5% of the
       chunk's cells, every alignment and second-best row inside them. About a third of the mate-SW kernel, which
       the GPU does not wait on either.
+18. **The workstation's CPU, profiled; mate rescue's dedup made incremental (2026-11-22; PLAN.md stage 8 item 3).**
+    * **Not paced by extension.** The extension pool runs nothing else, so its threads' CPU clocks, summed before
+      and after each piece, give the piece's CPU time: setup ~50 thread-s, job build ~10, apply ~24, replay + dedup
+      ~50 on the `mid` set (ALIGN_RS_PROFILE=2's per-item timers add a system call each under WSL and roughly double
+      these). Apply ran on ~3 threads: `start_side`, a serial pass over the half's regions, was 4.0 of its 7.0 s. In
+      parallel the stage went 1.45 -> 1.22 s a batch, the run's first-to-last batch span stayed 19.2-20.2 s: seeding
+      and chaining took the cores. All 32 threads are busy, so only less CPU work moves the workstation. Not kept
+      (more CPU, same wall; `runs/stage8/prof/extprof_and_parallel_start_side.patch`).
+    * **samply** (`perf_event_paranoid` 1, a line-table + frame-pointer build, 499 Hz, samples weighted by CPU time,
+      inline frames by `addr2line -i`; `runs/stage8/prof/samply/agg.py`). Of 762 thread-s: mate rescue's CPU side
+      19.7%, of it `sort_dedup_patch` 17.6% (its two sorts ~8%, the overlap loop ~3.5%, copies); chaining 19.2%
+      (`chain_seeds` 9.9%, `chain_flt` 9.3%, `pos2rid` / `intv2rid` ~2.5%); extension's CPU side ~14% (setup 7.3%,
+      replay 6.6%); `gen_cigar2` 8.4% (`ksw_global2` 5.3%); XA 6.1%; BAM deflate ~4.5%; mimalloc 13.1% self over
+      all of these (22% of the extension pool).
+    * **Region sorts on a packed key** (`a_idx_sort_packed`): the key in the bits above 32 of a u128 (end position;
+      or score descending 32 bits, rb 35, qb 29 when they fit), the index below, one integer sort of a per-thread
+      buffer, the regions permuted in place by cycles; two different regions on equal keys still go to
+      ks_introsort. `ALIGN_RS_SORT_CHECK=1`: equal to `a_idx_sort` in ~300 M sorts of a lane. `mid` set user CPU -7%.
+    * **The dedup made incremental** (`ext::dedup_add`, `sam::rescue_dedup`). bwa-mem2 calls
+      `mem_sort_dedup_patch(opt, 0, 0, 0, ...)` after each direction that had a window (bwamem_pair.cpp:275), with
+      at most one region added. Clean regions y: distinct ends; the overlap loop over y by end drops nothing; distinct
+      (score, rb, qb). Why b's tests are the only ones that can drop: the loop's window for a region is the run of
+      regions before it (by end) on its contig within max_chain_gap of its rb, and the skip test is that run being
+      empty. Adding b to the order only ends runs earlier (a run passes b or stops at it), so the pairs of y the loop
+      tests on y + b are among those it tests on y, which drop nothing; regions b drops are only skipped later. So
+      the loop on y + b is: b's turn over the regions ending before it back to the first with another contig or
+      b.rb >= re + gap, nearest first (b dropped: stop), then, while b stands, the turns of regions after it with
+      nothing of another contig between, rb < b.re + gap, in end order (each drops itself or b). The final sort
+      needs no sort: y is in key order, b goes in its place. Clean again when nothing of y was dropped; else the
+      next call is full. The full function reports clean after rerunning the loop over its survivors (and no equal
+      keys removed). Not covered, so full: y empty, b's end or key equal to one of y's. Lane counts: 62.4 M added,
+      14.6 M skipped, 7.4 M full; `ALIGN_RS_DEDUP_CHECK=1` equal in all. `mid` set (alternating, 3 each against
+      HEAD): wall 27.9-32.4 -> 24.5-25.5 s, user CPU 627-652 -> 524-528 s, the pairing + SAM pool 280-297 -> 182-184
+      thread-s; a 30x lane 149.5 -> 138.8 s, user CPU 4163 -> 3298 s, records identical (md5 9b9c2839aed0).

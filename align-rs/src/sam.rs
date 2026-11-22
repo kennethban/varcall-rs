@@ -1068,7 +1068,70 @@ pub fn matesw_jobs(o: &SamOpt, bns: &Bns, pes: &[Pestat; 4], a: &[Vec<Reg>], l_s
 
 /// mem_matesw: rescue the mate (`ms`, 0..4) near `a`; adds hits to `ma`; returns the number of SW runs.
 /// `pre`: precomputed alignments of this pair (looked up by side i, hit index j, orientation r).
-fn matesw(o: &SamOpt, bns: &Bns, pes: &[Pestat; 4], a: &Reg, ms: &[u8], ma: &mut Vec<Reg>, pre: Option<&[PreSw]>, i_side: usize, j_hit: usize) -> i32 {
+/// ALIGN_RS_DEDUP_CHECK=1: each of mate rescue's region dedups also runs the full `sort_dedup_patch_nopatch` on a
+/// copy and must agree (a check of `ext::dedup_add` and of skipping a dedup that changes nothing)
+fn dedup_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ALIGN_RS_DEDUP_CHECK").is_ok_and(|v| v == "1"))
+}
+
+/// bwa's insertion of a rescued region into ma: before the first region of a lower score
+fn insert_by_score(ma: &mut Vec<Reg>, b: Reg) {
+    let mut i = 0;
+    while i < ma.len() {
+        if ma[i].score < b.score {
+            break;
+        }
+        i += 1;
+    }
+    ma.insert(i, b);
+}
+
+/// mem_matesw's mem_sort_dedup_patch(opt, 0, 0, 0, ...) after a direction, with `added` the region it rescued (if
+/// any). `clean`: ma is clean for `ext::dedup_add` (as the last full dedup or dedup_add left it): then a direction
+/// that rescued nothing leaves ma as it is (sorting and deduplicating it again changes nothing), and a rescued
+/// region is added without sorting; otherwise the full function runs.
+fn rescue_dedup(o: &SamOpt, bns: &Bns, ma: &mut Vec<Reg>, added: Option<Reg>, clean: &mut bool) {
+    let want = dedup_check().then(|| {
+        let mut v = ma.clone();
+        if let Some(b) = added {
+            insert_by_score(&mut v, b);
+        }
+        ext::sort_dedup_patch_nopatch(&o.e, bns, v)
+    });
+    let fast = if !*clean {
+        None
+    } else {
+        match added {
+            None => Some(true),
+            Some(b) => ext::dedup_add(&o.e, ma, b),
+        }
+    };
+    crate::prof::count(
+        match (&fast, added) {
+            (Some(_), Some(_)) => crate::prof::N_DDADD,
+            (Some(_), None) => crate::prof::N_DDSKIP,
+            _ => crate::prof::N_DDFULL,
+        },
+        1,
+    );
+    match fast {
+        Some(c) => *clean = c,
+        None => {
+            if let Some(b) = added {
+                insert_by_score(ma, b);
+            }
+            let v = std::mem::take(ma);
+            (*ma, *clean) = ext::sort_dedup_nopatch_clean(&o.e, bns, v);
+        }
+    }
+    if let Some(w) = want {
+        assert!(w == *ma, "mate rescue: incremental region dedup differs from mem_sort_dedup_patch");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn matesw(o: &SamOpt, bns: &Bns, pes: &[Pestat; 4], a: &Reg, ms: &[u8], ma: &mut Vec<Reg>, clean: &mut bool, pre: Option<&[PreSw]>, i_side: usize, j_hit: usize) -> i32 {
     let l_pac = bns.l_pac;
     let l_ms = ms.len() as i64;
     let skip = skip_dirs(bns, pes, a, ma);
@@ -1081,6 +1144,7 @@ fn matesw(o: &SamOpt, bns: &Bns, pes: &[Pestat; 4], a: &Reg, ms: &[u8], ma: &mut
             continue;
         }
         let is_rev = (r >> 1) != (r & 1);
+        let mut added = None;
         if let Some((rb, re)) = mate_window(o, bns, pes, a, l_ms, r) {
             let xtra = sw_xtra(o, l_ms);
             let found = pre.and_then(|p| p.iter().find(|x| x.0 as usize == i_side && x.1 as usize == j_hit && x.2 as usize == r).map(|x| x.3));
@@ -1109,21 +1173,12 @@ fn matesw(o: &SamOpt, bns: &Bns, pes: &[Pestat; 4], a: &Reg, ms: &[u8], ma: &mut
                 b.rb = if is_rev { (l_pac << 1) - (rb + aln.te as i64 + 1) } else { rb + aln.tb as i64 };
                 b.re = if is_rev { (l_pac << 1) - (rb + aln.tb as i64) } else { rb + aln.te as i64 + 1 };
                 b.seedcov = (((b.re - b.rb) as i32).min(b.qe - b.qb)) >> 1;
-                // insert keeping ma sorted by score
-                let mut i = 0;
-                while i < ma.len() {
-                    if ma[i].score < b.score {
-                        break;
-                    }
-                    i += 1;
-                }
-                ma.insert(i, b);
+                added = Some(b);
             }
             n += 1;
         }
         if n > 0 {
-            let v = std::mem::take(ma);
-            *ma = ext::sort_dedup_patch_nopatch(&o.e, bns, v);
+            rescue_dedup(o, bns, ma, added, clean);
         }
     }
     n
@@ -1222,11 +1277,13 @@ pub fn sam_pe(o: &SamOpt, bns: &Bns, pes: &[Pestat; 4], id: i64, s: [&Read; 2], 
         a[1].iter().filter(|r| r.score >= a[1][0].score - o.pen_unpaired).cloned().collect(),
     ];
     crate::prof::cpu(crate::prof::C_PRESCUE, || {
+        // per mate: its regions are clean for ext::dedup_add (none are before the first full dedup)
+        let mut clean = [false; 2];
         for i in 0..2 {
             for j in 0..b[i].len().min(o.max_matesw as usize) {
                 let (left, right) = a.split_at_mut(1);
                 let ma = if i == 0 { &mut right[0] } else { &mut left[0] };
-                matesw(o, bns, pes, &b[i][j], s[1 - i].seq, ma, pre, i, j);
+                matesw(o, bns, pes, &b[i][j], s[1 - i].seq, ma, &mut clean[1 - i], pre, i, j);
             }
         }
     });

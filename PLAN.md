@@ -16,12 +16,12 @@ kernel (stage 4). Each machine is now held by something no small change moves:
 
 * one alignment on one L40S: the GPU (its kernels alone ~720 of ~850 ms a batch);
 * several alignments on one server: the CPU (6 x 64 threads fill the 384);
-* the workstation: extension's CPU work (setup, applying each round's results, replay), on which its GPU rounds
-  already overlap. Pinned buffers filled in place made extension's copies 3-4x faster and left the wall clock as
-  it was (stage 8).
+* the workstation: the CPU as a whole (all 32 threads busy; samply, stage 8): a stage made faster by more threads
+  only lends its time to the others, so only less CPU work moves it. Mate rescue's region dedup was the largest
+  piece (18% of the CPU) and is now mostly incremental (stage 8 item 3): a 30x lane 149.5 -> 138.8 s.
 
-Going further: the candidates measured on 2026-11-22 are in [stage 8](#stage-8-candidates-measured-2026-11-22--not-started);
-none moves a machine's pace on its own.
+Going further: the candidates measured on 2026-11-22 are in [stage 8](#stage-8-candidates-measured-2026-11-22--item-3-done);
+on the workstation, CPU work saved anywhere counts.
 
 **Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1), several GPUs (M1) and a cohort (M3: a 30x
 trio, FASTQ -> joint VCF in ~34 min on the server) are in; MarkDuplicates on the workstation (stage 5) 281 -> 246 s;
@@ -229,7 +229,7 @@ ideas, in order:
    server does not wait for (`docs/notes/align-rs.md` section 16).
 5. Seeding k-mer interval table and read reordering (Pham et al.): a few % of seeding at best. Not planned.
 
-### Stage 8: candidates measured 2026-11-22 — not started
+### Stage 8: candidates measured 2026-11-22 — item 3 done
 
 Measured on the workstation, outputs unchanged in every case; details in `docs/notes/align-rs.md` section 17 and
 `runs/stage7`:
@@ -241,8 +241,15 @@ Measured on the workstation, outputs unchanged in every case; details in `docs/n
    13.6% of the raw records). Perhaps 20-30 s of the workstation's 3.3 min, for a C dependency. libdeflate stays
    faster at inflating (2,410 against 1,946 MB/s); igzip inflates FASTQ.gz 1.8x faster than zlib-rs (1,491 against
    841 MB/s), but that runs on its own thread per file, off the critical path.
-3. **Extension's CPU side** (setup, apply, replay + dedup: ~16 s of the stage's ~20 s on the `mid` set), which paces
-   the workstation's lanes: not yet profiled.
+3. **The workstation's CPU — profiled, the largest piece done (2026-11-22).** Extension's CPU side does not pace
+   the workstation: run with its serial `start_side` in parallel, the stage took 1.45 -> 1.22 s a batch and the run
+   the same time (seeding and chaining took the cores it freed). All 32 threads are busy, so only CPU work saved
+   moves it. samply over the `mid` set (762 thread-s): mate rescue's CPU side 19.7%, of it the region dedup 17.6%;
+   chaining 19.2%; extension's CPU side ~14% (allocation and freeing about a third of it); CIGAR 8.4%; XA 6.1%; BAM
+   deflate ~4.5%; mimalloc 13% over all of them. Done: the dedup (`docs/notes/align-rs.md` section 18), same
+   records, `mid` set 27.9-32.4 -> 24.5-25.5 s, a 30x lane 149.5 -> 138.8 s (CPU -21%). Left, by size: fewer
+   allocations in extension's setup and replay and in chaining; `pos2rid` by table (~2%); SIMD for the CIGAR DP
+   (5.3%, at most ~3%).
 4. **GPU work the machines do not wait on:** bwa-mem3's mate-rescue pruning (a third of the mate-SW cells on a
    dumped chunk) and a warp-uniform column loop in `k_extend` (its lanes read 3.44 local-memory lines a step).
    Only for a GPU-bound setup.
@@ -268,7 +275,7 @@ Measured on the workstation, outputs unchanged in every case; details in `docs/n
   rule (a call with `<NON_REF>` written 0/0, PLs 0) seen once in the three genomes. Larger cohorts not measured.
 
 Order: stages 1, 3, 5 and 6, M1, M3 and M4 done; stages 2 and 4 tried and not pursued; stage 7 items 1-3 done, item 4
-measured and not pursued, item 5 not planned; stage 8 measured, not started.
+measured and not pursued, item 5 not planned; stage 8 item 3 done (the mate-rescue dedup), the rest measured.
 
 ## Coverage: GATK tools to add next
 
