@@ -20,7 +20,7 @@ imp ws_wg "-L chr20 -L chr21 -L chr22" &
 imp ws_mid "-L chr21:20000000-30000000" &
 wait
 W="-D $DBSNP -G StandardAnnotation -G AS_StandardAnnotation --only-output-calls-starting-in-intervals --merge-input-intervals"
-gg() { echo "$2" > truth/$1.cmd; [ -f truth/$1.vcf.gz.tbi ] || java -Xmx8g -jar $J GenotypeGVCFs -R $REF $2 -O truth/$1.vcf.gz > truth/$1.log 2>&1 || echo "$1 FAILED"; }
+gg() { echo "$2" | $HARNESS/cmdargs.sh -w > truth/$1.cmd; [ -f truth/$1.vcf.gz.tbi ] || java -Xmx8g -jar $J GenotypeGVCFs -R $REF $2 -O truth/$1.vcf.gz > truth/$1.log 2>&1 || echo "$1 FAILED"; }
 gg ws_wg "$W -V gendb://ws_wg -L chr20 -L chr21 -L chr22" &
 gg ws_mid "$W -V gendb://ws_mid -L chr21:22500000-27000000" &
 gg ws_mid.whole "-V gendb://ws_mid -L chr21:20000000-30000000" &

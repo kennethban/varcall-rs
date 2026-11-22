@@ -7,7 +7,7 @@ cd "$VARCALL_DATA/bqsr/gather" || exit 1; D=$PWD
 G=${VARIANT_RS:-$REPO/target/release/variant-rs}
 O=${1:-$D/rust}; shift; mkdir -p $O
 for c in ${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}; do
-  $G GatherBQSRReports $(cat truth/$c.cmd) -O $O/$c.table > $O/$c.log 2>&1; rc=$?
+  $G GatherBQSRReports $($HARNESS/cmdargs.sh truth/$c.cmd) -O $O/$c.table > $O/$c.log 2>&1; rc=$?
   echo "  $c: rc=$rc $(cmp -s truth/$c.table $O/$c.table && echo identical || echo "DIFFERENT ($(diff truth/$c.table $O/$c.table | grep -c '^[<>]') lines)") ($(grep -c . truth/$c.table) lines)"
 done
 # WARP's next step: ApplyBQSR with the gathered table

@@ -11,7 +11,7 @@ O=${1:-$D/rust}; shift; mkdir -p $O; O=$(realpath $O)
 same() { [ -s $1 ] && [ -s $2 ] && cmp -s <(zcat $1 | grep -v CommandLine) <(zcat $2 | grep -v CommandLine); }
 n() { [ -s $1 ] && zcat $1 | grep -vc '^#' || echo 0; }
 for c in ${@:-$(cat truth/cases.txt)}; do
-  args=$(cat truth/$c.cmd)
+  args=$($HARNESS/cmdargs.sh truth/$c.cmd)
   t=$(date +%s); $G ${args//@O@/$O} > $O/$c.log 2>&1; rc=$?; s=$(( $(date +%s) - t ))
   tg=$(grep -o 'rc=[0-9]* [0-9]*s' truth/$c.log | sed 's/.* //')
   grep -q 'rc=0 ' truth/$c.log || { echo "  $c: GATK FAILED (truth/$c.log)"; continue; }

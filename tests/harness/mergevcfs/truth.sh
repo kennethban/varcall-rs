@@ -37,7 +37,7 @@ C[sarek_vcf]="--INPUT in/v1.vcf.gz --INPUT in/v2.vcf.gz --INPUT in/v3.vcf.gz --O
 C[sarek_gvcf]="--INPUT in/g1.g.vcf.gz --INPUT in/g2.g.vcf.gz --INPUT in/g3.g.vcf.gz --OUTPUT sarek.g.vcf.gz --SEQUENCE_DICTIONARY $H/ref/GRCh38_no_alt_analysis_set.dict --TMP_DIR ."
 C[dict_other]="INPUT=in/v3.vcf.gz INPUT=in/v1.vcf.gz OUTPUT=dict_other.vcf.gz SEQUENCE_DICTIONARY=$VARCALL_DATA/bqsr/ref/GRCh38_full_analysis_set_plus_decoy_hla.dict"
 for c in "${!C[@]}"; do
-  echo "${C[$c]}" > truth/$c.cmd
+  echo "${C[$c]}" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   o=$(echo "${C[$c]}" | grep -oE '(OUTPUT=|--OUTPUT )[^ ]*' | sed 's/.*[= ]//')
   [ -f truth/$o ] && continue
   java -Xmx2g -jar $J MergeVcfs $(echo "${C[$c]}" | sed "s|OUTPUT=|OUTPUT=truth/|; s|--OUTPUT |--OUTPUT truth/|") > truth/$c.log 2>&1; echo "$c rc=$?"

@@ -26,6 +26,6 @@ for c in "ws_pon:20" "ws_pon3:in/three.intervals"; do
   echo "  received records $w: $(cmp -s <(ad < truth/$w.received.vcf) <($X gdbreceive $w $REF | ad) && echo identical || echo DIFFERENT) ($(grep -vc '^#' truth/$w.received.vcf) records, alleles and AD)"
 done
 for c in $(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | grep -v received); do
-  $X CreateSomaticPanelOfNormals -R $REF $(cat truth/$c.cmd) -O $O/$c.vcf > $O/$c.log 2>&1; rc=$?
+  $X CreateSomaticPanelOfNormals -R $REF $($HARNESS/cmdargs.sh truth/$c.cmd) -O $O/$c.vcf > $O/$c.log 2>&1; rc=$?
   echo "  CreateSomaticPanelOfNormals $c: rc=$rc $(cmp -s <(grep -v CommandLine truth/$c.vcf) <(grep -v CommandLine $O/$c.vcf) && echo identical || echo DIFFERENT) ($(grep -vc '^#' truth/$c.vcf) records)"
 done

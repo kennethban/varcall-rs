@@ -19,7 +19,7 @@ C[unplaced]="INPUT=$M/edge/in/unmapped.bam SORT_ORDER=coordinate"
 run() {
   local c=$1 args=$2
   [ -f truth/$c.bam ] && return 0
-  echo "$args" > truth/$c.cmd
+  echo "$args" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   local t0=$(date +%s)
   java -Dsamjdk.compression_level=2 -Xmx4g -jar $J SortSam $args OUTPUT=truth/$c.bam TMP_DIR=truth/tmp > truth/$c.log 2>&1
   echo "$c rc=$? $(( $(date +%s) - t0 ))s" >> truth/times.txt

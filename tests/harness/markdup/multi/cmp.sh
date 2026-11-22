@@ -9,7 +9,7 @@ O=${1:-rust}; shift; mkdir -p $O
 cases=${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}
 for c in $cases; do
   t0=$(date +%s.%N)
-  $G --java-options "-Xmx4g -XX:-UsePerfData" MarkDuplicates $(cat truth/$c.cmd) --OUTPUT $O/$c.bam --METRICS_FILE $O/$c.metrics > $O/$c.log 2>&1
+  $G --java-options "-Xmx4g -XX:-UsePerfData" MarkDuplicates $($HARNESS/cmdargs.sh truth/$c.cmd) --OUTPUT $O/$c.bam --METRICS_FILE $O/$c.metrics > $O/$c.log 2>&1
   rc=$?
   t=$(echo "$(date +%s.%N) - $t0" | bc | xargs printf '%.1f')
   rec=$(python3 $HARNESS/bqsr/cmpbam.py truth/$c.bam $O/$c.bam 2>&1 | tail -1)

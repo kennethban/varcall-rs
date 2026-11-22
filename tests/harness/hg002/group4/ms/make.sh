@@ -51,7 +51,7 @@ C[ms11]="$I11 -L chr8:1-5000000"
 C[onebam]="-I in/two.bam -L chr8:5000000-10000000"
 C[ms3_opts]="$I3 -L chr8:1-5000000 --dbsnp $DBSNP -contamination 0.05"
 run() {
-  echo "${C[$1]}" > truth/$1.cmd
+  echo "${C[$1]}" | $HARNESS/cmdargs.sh -w > truth/$1.cmd
   [ -f truth/$1.vcf.gz.tbi ] || java -Xmx5g -XX:ParallelGCThreads=2 -jar $J HaplotypeCaller -R $REF ${C[$1]} -O truth/$1.vcf.gz --native-pair-hmm-threads 2 > truth/$1.log 2>&1
 }
 run ms2 & run ms3 & run ms11 & wait

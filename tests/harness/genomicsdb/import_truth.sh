@@ -19,5 +19,5 @@ imp ws_sarek "$V $SAREK" &
 imp ws_sarek_wes "$V --merge-input-intervals $SAREK" &
 wait
 mkdir -p truth
-echo "-V gendb://ws_sarek -L sarek.bed" > truth/ws_sarek.cmd
+echo "-V gendb://ws_sarek -L sarek.bed" | $HARNESS/cmdargs.sh -w > truth/ws_sarek.cmd
 [ -f truth/ws_sarek.vcf.gz.tbi ] || java -Xmx6g -jar $J GenotypeGVCFs -R $REF -V gendb://ws_sarek -L sarek.bed -O truth/ws_sarek.vcf.gz > truth/ws_sarek.log 2>&1 || echo "ws_sarek FAILED"

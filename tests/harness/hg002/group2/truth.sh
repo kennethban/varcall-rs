@@ -30,7 +30,7 @@ run() {
   local c=$1 args=$2 ext=vcf.gz
   [[ $args == *"-ERC GVCF"* ]] && ext=g.vcf.gz
   [ -f truth/$c.$ext.tbi ] && return 0
-  echo "$args" > truth/$c.cmd
+  echo "$args" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   local t0=$(date +%s)
   java -Xmx3g -XX:ParallelGCThreads=2 -jar $J HaplotypeCaller -R $REF -I $BAM -O truth/$c.$ext $args \
        --native-pair-hmm-threads 2 > truth/$c.log 2>&1

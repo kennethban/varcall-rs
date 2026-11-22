@@ -11,7 +11,7 @@ cases=${@:-$(ls truth/*.cmd multi/truth/*.cmd 2>/dev/null | xargs -n1 basename |
 for c in $cases; do
   if [ -f truth/$c.cmd ]; then T=truth; W=$D; REF=$VARCALL_DATA/hg002/ref/GRCh38_no_alt_analysis_set.fa
   else T=multi/truth; W=$D/multi; REF=$VARCALL_DATA/bqsr/ref/GRCh38_full_analysis_set_plus_decoy_hla.fa; fi
-  (cd $W && $G GenotypeGVCFs -R $REF $(cat $D/$T/$c.cmd) -O $O/$c.vcf.gz > $O/$c.log 2>&1); rc=$?
+  (cd $W && $G GenotypeGVCFs -R $REF $($HARNESS/cmdargs.sh $D/$T/$c.cmd) -O $O/$c.vcf.gz > $O/$c.log 2>&1); rc=$?
   t=$T/$c.vcf.gz; o=$O/$c.vcf.gz
   n=$(zcat $t | grep -vc '^#')
   d=$(cmp -s <(zcat $t | grep -v '^#') <(zcat $o 2>/dev/null | grep -v '^#') && echo IDENTICAL || echo "DIFFERENT($(diff <(zcat $t | grep -v '^#') <(zcat $o 2>/dev/null | grep -v '^#') | grep -c '^[<>]'))")

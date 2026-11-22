@@ -30,6 +30,6 @@ C[empty]="INPUT=in/a.bam INPUT=in/e.bam INPUT=in/b.bam"
 C[list]="INPUT=in/ab.list"
 for c in "${!C[@]}"; do
   [ -f truth/$c.bam ] && continue
-  echo "${C[$c]}" > truth/$c.cmd
+  echo "${C[$c]}" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   java -Dsamjdk.compression_level=2 -Xmx2g -jar $J GatherBamFiles ${C[$c]} OUTPUT=truth/$c.bam > truth/$c.log 2>&1; echo "$c rc=$?"
 done

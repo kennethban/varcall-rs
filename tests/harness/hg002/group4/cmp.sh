@@ -9,7 +9,7 @@ G=${VARIANT_RS:-$REPO/target/release/variant-rs}
 O=${1:-$D/rust}; shift; mkdir -p $O; O=$(realpath $O)
 cases=${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}
 for c in $cases; do
-  args=$(cat truth/$c.cmd); ext=vcf.gz; [[ $args == *"-ERC GVCF"* ]] && ext=g.vcf.gz
+  args=$($HARNESS/cmdargs.sh truth/$c.cmd); ext=vcf.gz; [[ $args == *"-ERC GVCF"* ]] && ext=g.vcf.gz
   /usr/bin/time -f "%e s" $G HaplotypeCaller -R ../ref/GRCh38_no_alt_analysis_set.fa -O $O/$c.$ext $args \
       --native-pair-hmm-threads 2 > $O/$c.log 2>&1
   echo "  $c: $(cd .. && $HARNESS/hg002/cmp1.sh $O/$c.$ext group4/truth $ext) ($(tail -1 $O/$c.log))"

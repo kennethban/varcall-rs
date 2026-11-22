@@ -21,7 +21,7 @@ C[noas]="-V $T/contam_gvcf.g.vcf.gz"
 run() {
   local c=$1
   [ -f truth/$c.vcf.gz.tbi ] && return 0
-  echo "${C[$c]}" > truth/$c.cmd
+  echo "${C[$c]}" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   local t0=$(date +%s)
   java -Xmx4g -XX:ParallelGCThreads=2 -jar $J GenotypeGVCFs -R $REF ${C[$c]} -O truth/$c.vcf.gz > truth/$c.log 2>&1
   echo "$c rc=$? $(( $(date +%s) - t0 ))s" >> truth/times.txt

@@ -40,7 +40,7 @@ C[chr1_lanes]=$(for f in in/chr1/lane_*.bam; do echo -n "--INPUT $f "; done)
 C[mixed]="${C[chunks]} $(for f in $(echo "$lanes" | tail -n +2); do echo -n "--INPUT $f "; done)"
 S="--TMP_DIR . --REFERENCE_SEQUENCE $REF --REMOVE_DUPLICATES false --VALIDATION_STRINGENCY LENIENT"
 for c in "${!C[@]}"; do
-  echo "${C[$c]} $S" > truth/$c.cmd
+  echo "${C[$c]} $S" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   [ -f truth/$c.metrics ] || java -Xmx8g -jar $J MarkDuplicates ${C[$c]} $S --OUTPUT truth/$c.bam --METRICS_FILE truth/$c.metrics > truth/$c.log 2>&1 &
 done
 wait

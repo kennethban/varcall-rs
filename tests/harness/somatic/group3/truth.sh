@@ -25,7 +25,7 @@ C[mito_warp]="-R $WR -I $W -L chrM --read-filter MateOnSameContigOrNoMappedMateR
 run() {
   local c=$1 args=$2
   [ -f truth/$c.vcf.stats ] && return 0
-  echo "$args" > truth/$c.cmd
+  echo "$args" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   local t0=$(date +%s)
   java -Xmx4g -XX:ParallelGCThreads=2 -jar $J Mutect2 $args -O truth/$c.vcf --native-pair-hmm-threads 2 > truth/$c.log 2>&1
   echo "$c rc=$? $(( $(date +%s) - t0 ))s" >> truth/times.txt

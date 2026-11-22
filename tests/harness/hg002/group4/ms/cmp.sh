@@ -11,7 +11,7 @@ O=${1:-$D/rust}; shift; mkdir -p $O; O=$(realpath $O)
 cases=${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}
 for c in $cases; do
   t0=$(date +%s.%N)
-  $G HaplotypeCaller -R $REF -O $O/$c.vcf.gz $(cat truth/$c.cmd) > $O/$c.log 2>&1
+  $G HaplotypeCaller -R $REF -O $O/$c.vcf.gz $($HARNESS/cmdargs.sh truth/$c.cmd) > $O/$c.log 2>&1
   echo "  $c: $($HARNESS/hg002/cmp1.sh $O/$c.vcf.gz truth vcf.gz) ($(echo "$(date +%s.%N) - $t0" | bc | xargs printf '%.1f') s)"
 done
 $G HaplotypeCaller -R $REF -I in/HG002.bam -I in/NA12878.bam -L chr8:1-1000000 -ERC GVCF -O $O/gvcf.g.vcf.gz > $O/gvcf.log 2>&1

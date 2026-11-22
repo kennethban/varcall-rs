@@ -8,7 +8,7 @@ cd "$VARCALL_DATA/gatherbam" || exit 1; D=$PWD
 G=${VARIANT_RS:-$REPO/target/release/variant-rs}
 O=${1:-$D/rust}; shift; mkdir -p $O; O=$(realpath $O)
 for c in ${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}; do
-  $G GatherBamFiles $(cat truth/$c.cmd) OUTPUT=$O/$c.bam > $O/$c.log 2>&1; rc=$?
+  $G GatherBamFiles $($HARNESS/cmdargs.sh truth/$c.cmd) OUTPUT=$O/$c.bam > $O/$c.log 2>&1; rc=$?
   r=$(python3 $HARNESS/bqsr/cmpbam.py truth/$c.bam $O/$c.bam | tail -1)
   h=$(diff <(samtools view -H --no-PG truth/$c.bam) <(samtools view -H --no-PG $O/$c.bam) > /dev/null && echo identical || echo DIFFERENT)
   bytes=$(cmp -s truth/$c.bam $O/$c.bam && echo "file identical" || echo "file differs: $(python3 $HARNESS/gatherbam/blocks.py truth/$c.bam $O/$c.bam), $(( $(grep -o 'INPUT=' truth/$c.cmd | wc -l) - 1 )) re-deflated")

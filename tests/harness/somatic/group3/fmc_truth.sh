@@ -21,7 +21,7 @@ C[tn_opts]="-V truth/gg.vcf -R $HR --max-alt-allele-count 2 --min-allele-fractio
 run() {
   local c=$1 args=$2
   [ -f fmc/$c.vcf.filteringStats.tsv ] && return 0
-  echo "$args" > fmc/$c.cmd
+  echo "$args" | $HARNESS/cmdargs.sh -w > fmc/$c.cmd
   java -Xmx4g -XX:ParallelGCThreads=2 -jar $J FilterMutectCalls $args -O fmc/$c.vcf > fmc/$c.log 2>&1
   echo "$c rc=$?"
 }

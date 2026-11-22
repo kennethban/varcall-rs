@@ -33,7 +33,7 @@ G2[all_empty]="--I in/empty.pileups.table --I in/empty.pileups.table"
 G2[tie]="--I $T/bam_multi_il.pileups.table --I $T/bam_string.pileups.table --I $T/bam_multi.pileups.table"
 mode=${1:-cmp}; O=${2:-rust}; [ $mode = truth ] && O=truth; mkdir -p $O
 for c in "${!M[@]}"; do
-  [ $mode = truth ] && echo "${M[$c]}" > truth/mms_$c.cmd
+  [ $mode = truth ] && echo "${M[$c]}" | $HARNESS/cmdargs.sh -w > truth/mms_$c.cmd
   if [ $mode = truth ]; then java -jar $J MergeMutectStats ${M[$c]} -O $O/mms_$c.stats > $O/mms_$c.log 2>&1
   else $G --java-options "-Xmx2g" MergeMutectStats ${M[$c]} --output $O/mms_$c.stats --tmp-dir . > $O/mms_$c.log 2>&1; fi
   rc=$?; [ $mode = cmp ] && echo "  MergeMutectStats $c: rc=$rc $(cmp -s truth/mms_$c.stats $O/mms_$c.stats && echo identical || echo DIFFERENT) ($(tail -1 truth/mms_$c.stats | tr '\t' ' '))"

@@ -21,7 +21,7 @@ mkdir -p truth_nol
 case ${1:-cmp} in
 truth)
   for c in "${!C[@]}"; do
-    echo "${C[$c]}" > truth_nol/$c.cmd
+    echo "${C[$c]}" | $HARNESS/cmdargs.sh -w > truth_nol/$c.cmd
     [ -f truth_nol/$c.vcf.gz.tbi ] || java -Xmx6g -jar $J GenotypeGVCFs ${C[$c]} -O truth_nol/$c.vcf.gz > truth_nol/$c.log 2>&1 &
   done; wait
   for c in "${!C[@]}"; do echo "$c $(zcat truth_nol/$c.vcf.gz | grep -vc '^#') records $(grep -o 'Elapsed time: .*' truth_nol/$c.log)"; done ;;

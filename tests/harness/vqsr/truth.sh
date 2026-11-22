@@ -48,7 +48,7 @@ add c_both_apply "$(apply "-V $C" c_both 99.0 BOTH c_both_apply)"
 
 mkdir -p truth; printf '%s\n' "${CASES[@]}" > truth/cases.txt
 for c in "${CASES[@]}"; do
-  echo "${CMD[$c]}" > truth/$c.cmd
+  echo "${CMD[$c]}" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   [ -f truth/$c.log ] && grep -q 'rc=0' truth/$c.log && continue
   t=$(date +%s)
   java -Xmx16g -jar $J ${CMD[$c]//@O@/truth} > truth/$c.log 2>&1; rc=$?

@@ -10,7 +10,7 @@ G=${VARIANT_RS:-$REPO/target/release/variant-rs}
 O=${1:-$D/rust}; shift; mkdir -p $O; O=$(realpath $O)
 txt() { case $1 in *.gz) zcat $1;; *) cat $1;; esac; }
 for c in ${@:-$(cat truth/cases.txt)}; do
-  args=$(cat truth/$c.cmd)
+  args=$($HARNESS/cmdargs.sh truth/$c.cmd)
   t=$(date +%s); eval "$G ${args//@O@/$O}" > $O/$c.log 2>&1; rc=$?; s=$(( $(date +%s) - t ))
   trc=$(grep -o '^rc=[0-9]*' truth/$c.log | cut -d= -f2); tg=$(grep -o '^rc=[0-9]* [0-9]*s' truth/$c.log | sed 's/.* //')
   out=$(echo "$args" | grep -oE '(-O|--OUTPUT) @O@/[^ ]*' | sed 's|.*@O@/||')

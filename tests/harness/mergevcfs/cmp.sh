@@ -9,7 +9,7 @@ G=${VARIANT_RS:-$REPO/target/release/variant-rs}
 O=${1:-$D/rust}; shift; mkdir -p $O; O=$(realpath $O)
 txt() { case $1 in *.gz) zcat $1;; *) cat $1;; esac; }
 for c in ${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}; do
-  args=$(cat truth/$c.cmd); o=$(echo "$args" | grep -oE '(OUTPUT=|--OUTPUT )[^ ]*' | sed 's/.*[= ]//')
+  args=$($HARNESS/cmdargs.sh truth/$c.cmd); o=$(echo "$args" | grep -oE '(OUTPUT=|--OUTPUT )[^ ]*' | sed 's/.*[= ]//')
   $G MergeVcfs $(echo "$args" | sed "s|OUTPUT=|OUTPUT=$O/|; s|--OUTPUT |--OUTPUT $O/|") > $O/$c.log 2>&1; rc=$?
   n=$(txt truth/$o | grep -vc '^#')
   t=$(cmp -s <(txt truth/$o) <(txt $O/$o) && echo identical || echo "DIFFERENT ($(diff <(txt truth/$o) <(txt $O/$o) | grep -c '^[<>]') lines)")

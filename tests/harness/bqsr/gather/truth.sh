@@ -32,7 +32,7 @@ C[mixed]="-I in/l1.table -I in/na_b.table -I in/t0.table -I in/na_c.table"
 C[twice]="-I in/l1.table -I in/l1.table"
 for c in "${!C[@]}"; do
   [ -f truth/$c.table ] && continue
-  echo "${C[$c]}" > truth/$c.cmd
+  echo "${C[$c]}" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   java -Xmx2g -jar $J GatherBQSRReports ${C[$c]} -O truth/$c.table > truth/$c.log 2>&1; echo "$c rc=$?"
 done
 # WARP's next step, ApplyBQSR with a gathered table (cmp.sh runs variant-rs with truth/apply.applycmd)

@@ -72,7 +72,7 @@ add fail_mask_noindex "$(vf $S fail_mask_noindex.vcf.gz) --mask in/noidx.bed"
 
 printf '%s\n' "${CASES[@]}" > truth/cases.txt
 for c in "${CASES[@]}"; do
-  echo "${CMD[$c]}" > truth/$c.cmd
+  echo "${CMD[$c]}" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   [ -f truth/$c.log ] && grep -q '^rc=' truth/$c.log && continue
   t=$(date +%s)
   eval "java -Xmx8g -jar $J ${CMD[$c]//@O@/truth}" > truth/$c.log 2>&1; rc=$?

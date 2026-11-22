@@ -8,7 +8,7 @@ G=${VARIANT_RS:-$REPO/target/release/variant-rs}
 O=${1:-$D/rust_fmc}; shift; mkdir -p $O
 cases=${@:-mito to_mito to_opts tn_opts warp1 warp2}
 for c in $cases; do
-  args=$(sed "s|fmc/warp1.vcf|$O/warp1.vcf|" fmc/$c.cmd)
+  args=$($HARNESS/cmdargs.sh fmc/$c.cmd | sed "s|fmc/warp1.vcf|$O/warp1.vcf|")
   /usr/bin/time -f "%e s" $G FilterMutectCalls $args -O $O/$c.vcf > $O/$c.log 2>&1
   rc=$?
   n=$(grep -vc '^#' fmc/$c.vcf); p=$(grep -v '^#' fmc/$c.vcf | awk '$7=="PASS"' | wc -l)

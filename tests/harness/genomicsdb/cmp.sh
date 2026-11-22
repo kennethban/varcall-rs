@@ -12,7 +12,7 @@ O=${1:-$D/rust}; shift; mkdir -p $O; O=$(realpath $O)
 for c in ${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}; do
   w=${c%.default}
   case $c in ws_wg*|ws_mid*) REF=$VARCALL_DATA/hg002/ref/GRCh38_no_alt_analysis_set.fa;; *) REF=$VARCALL_DATA/bqsr/ref/GRCh38_full_analysis_set_plus_decoy_hla.fa;; esac
-  VARIANT_RS_GDB_DUMP=$( [ -n "$RECEIVED" ] && echo $O/$c.received ) $G GenotypeGVCFs -R $REF $(cat truth/$c.cmd) -O $O/$c.vcf.gz > $O/$c.log 2>&1; rc=$?
+  VARIANT_RS_GDB_DUMP=$( [ -n "$RECEIVED" ] && echo $O/$c.received ) $G GenotypeGVCFs -R $REF $($HARNESS/cmdargs.sh truth/$c.cmd) -O $O/$c.vcf.gz > $O/$c.log 2>&1; rc=$?
   t=truth/$c.vcf.gz; o=$O/$c.vcf.gz
   n=$(zcat $t | grep -vc '^#')
   d=$(cmp -s <(zcat $t | grep -v '^#') <(zcat $o 2>/dev/null | grep -v '^#') && echo IDENTICAL || echo "DIFFERENT($(diff <(zcat $t | grep -v '^#') <(zcat $o 2>/dev/null | grep -v '^#') | grep -c '^[<>]'))")

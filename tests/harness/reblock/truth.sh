@@ -21,7 +21,7 @@ C[default]="-V $T/warp_gvcf.g.vcf.gz"
 run() {
   local c=$1
   [ -f truth/$c.rb.g.vcf.gz.tbi ] && return 0
-  echo "${C[$c]}" > truth/$c.cmd
+  echo "${C[$c]}" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   local t0=$(date +%s)
   java -Xmx3g -XX:ParallelGCThreads=2 -jar $J ReblockGVCF -R $REF ${C[$c]} -O truth/$c.rb.g.vcf.gz > truth/$c.log 2>&1
   echo "$c rc=$? $(( $(date +%s) - t0 ))s" >> truth/times.txt

@@ -10,7 +10,7 @@ G=${VARIANT_RS:-$REPO/target/release/variant-rs}
 O=${1:-$D/rust}; shift; mkdir -p $O
 cases=${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}
 for c in $cases; do
-  args=$(sed "s|truth/bamout.bam|$O/bamout.bam|" truth/$c.cmd)
+  args=$($HARNESS/cmdargs.sh truth/$c.cmd | sed "s|truth/bamout.bam|$O/bamout.bam|")
   /usr/bin/time -f "%e s" $G Mutect2 $args -O $O/$c.vcf > $O/$c.log 2>&1
   rc=$?
   n=$(grep -vc '^#' truth/$c.vcf)

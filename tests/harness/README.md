@@ -29,6 +29,11 @@ calls come from this folder (`$HARNESS/...`).
 | `*/truth*.sh` | runs GATK / Picard with the command lines the check uses; writes `truth/` in the data folder |
 | `*/cmp*.sh`, `*/run.sh` | runs variant-rs the same way and compares with `truth/` |
 | `regress.sh` | runs every check (plus the crates' own data tests in `align-rs/tests`, `variant-rs/tests` and the pipeline tests) |
+| `cmdargs.sh` | reads / writes a truth case's arguments (`truth/<case>.cmd`) |
+
+A truth case's arguments are kept in `truth/<case>.cmd`, the same for GATK and variant-rs. Paths into the data
+directory are written there as `$VARCALL_DATA/...` (`cmdargs.sh -w` when writing, `cmdargs.sh FILE` expands them
+when reading), so the truth folders work wherever the data directory is.
 
 To rebuild a truth folder: run the area's `truth*.sh` (needs `GATK_JAR`). Truth is GATK 4.7.0.0 output, so it only
 changes when the GATK version does.

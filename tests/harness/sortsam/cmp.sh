@@ -10,7 +10,7 @@ G=${VARIANT_RS:-$REPO/target/release/variant-rs}
 O=${1:-$D/rust}; shift; mkdir -p $O/tmp; O=$(realpath $O)
 cases=${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}
 for c in $cases; do
-  /usr/bin/time -f "%e s" $G SortSam $(cat truth/$c.cmd) OUTPUT=$O/$c.bam TMP_DIR=$O/tmp > $O/$c.log 2>&1
+  /usr/bin/time -f "%e s" $G SortSam $($HARNESS/cmdargs.sh truth/$c.cmd) OUTPUT=$O/$c.bam TMP_DIR=$O/tmp > $O/$c.log 2>&1
   rc=$?
   r=$(python3 $HARNESS/bqsr/cmpbam.py truth/$c.bam $O/$c.bam | tail -1)
   h=$(diff <(samtools view -H --no-PG truth/$c.bam) <(samtools view -H --no-PG $O/$c.bam) > /dev/null && echo identical || echo DIFFERENT)

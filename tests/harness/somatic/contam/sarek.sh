@@ -31,7 +31,7 @@ C[bam_string]="-I $P/wgs/bam/NA12878.bam --intervals chr20:1000000-1500000"
 case ${1:-cmp} in
 truth)
   for c in "${!C[@]}"; do
-    echo "${C[$c]}" > sarek/truth/$c.cmd
+    echo "${C[$c]}" | $HARNESS/cmdargs.sh -w > sarek/truth/$c.cmd
     [ -f sarek/truth/$c.pileups.table ] || java -Xmx4g -jar $J GetPileupSummaries ${C[$c]} --variant $V --reference $REF \
       --output sarek/truth/$c.pileups.table --tmp-dir . > sarek/truth/$c.log 2>&1 &
   done
@@ -40,7 +40,7 @@ truth)
 cmp)
   O=${2:-sarek/rust}; mkdir -p $O
   for c in $(ls sarek/truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort); do
-    $G --java-options "-Xmx4g -XX:-UsePerfData" GetPileupSummaries $(cat sarek/truth/$c.cmd) --variant $V --reference $REF \
+    $G --java-options "-Xmx4g -XX:-UsePerfData" GetPileupSummaries $($HARNESS/cmdargs.sh sarek/truth/$c.cmd) --variant $V --reference $REF \
       --output $O/$c.pileups.table --tmp-dir . > $O/$c.log 2>&1; rc=$?
     echo "  $c: rc=$rc $(cmp -s sarek/truth/$c.pileups.table $O/$c.pileups.table && echo identical || echo DIFFERENT) ($(grep -vc '^#\|^contig' sarek/truth/$c.pileups.table) sites)"
   done ;;

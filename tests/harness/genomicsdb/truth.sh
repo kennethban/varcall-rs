@@ -28,9 +28,9 @@ imp ws11 rb11.map chr8:1-5000000 "--batch-size 50 --consolidate" &
 wait
 gg() { # ws interval
   local w="-D $DBSNP -G StandardAnnotation -G AS_StandardAnnotation --only-output-calls-starting-in-intervals -V gendb://$1 -L $2 --merge-input-intervals"
-  echo "$w" > truth/$1.cmd
+  echo "$w" | $HARNESS/cmdargs.sh -w > truth/$1.cmd
   [ -f truth/$1.vcf.gz.tbi ] || java -Xmx6g -jar $J GenotypeGVCFs -R $REF $w -O truth/$1.vcf.gz > truth/$1.log 2>&1 || echo "$1 FAILED"
-  echo "-V gendb://$1 -L $2" > truth/$1.default.cmd
+  echo "-V gendb://$1 -L $2" | $HARNESS/cmdargs.sh -w > truth/$1.default.cmd
   [ -f truth/$1.default.vcf.gz.tbi ] || java -Xmx6g -jar $J GenotypeGVCFs -R $REF -V gendb://$1 -L $2 -O truth/$1.default.vcf.gz > truth/$1.default.log 2>&1 || echo "$1 default FAILED"
 }
 gg ws_rb chr8:1-15000000 & gg ws_raw chr8:1-15000000 & gg ws_rb_b1 chr8:1-15000000 & gg ws11 chr8:1-5000000 &

@@ -28,7 +28,7 @@ C[m11_warp]="-V in11/combined11.g.vcf.gz $W"
 C[m11_warp_rb]="-V in11/combined11_rb.g.vcf.gz $W"
 C[m11_default]="-V in11/combined11.g.vcf.gz"
 for c in "${!C[@]}"; do
-  echo "${C[$c]}" > truth/$c.cmd
+  echo "${C[$c]}" | $HARNESS/cmdargs.sh -w > truth/$c.cmd
   [ -f truth/$c.vcf.gz.tbi ] || java -Xmx6g -jar $J GenotypeGVCFs -R $REF ${C[$c]} -O truth/$c.vcf.gz > truth/$c.log 2>&1 &
 done
 wait

@@ -31,7 +31,7 @@ done
 J=${GATK_JAR:-}
 gg() { # workspace reference truth
   [ -d $O/$1 ] || return
-  local a=$(sed "s#gendb://$1#gendb://$O/$1#" truth/$1.cmd)
+  local a=$($HARNESS/cmdargs.sh truth/$1.cmd | sed "s#gendb://$1#gendb://$O/$1#")
   local n=$(zcat truth/$1.vcf.gz | grep -vc '^#')
   $X GenotypeGVCFs -R $2 $a -O $O/$1.rs.vcf.gz > $O/$1.rs.log 2>&1
   echo "  GenotypeGVCFs variant-rs on $1: $(cmp -s <(zcat truth/$1.vcf.gz | grep -v CommandLine) <(zcat $O/$1.rs.vcf.gz | grep -v CommandLine) && echo identical || echo DIFFERENT) ($n records)"

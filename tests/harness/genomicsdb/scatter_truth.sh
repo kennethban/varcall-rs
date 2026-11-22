@@ -26,8 +26,8 @@ one() {
 B=$VARCALL_DATA/bqsr/ref/GRCh38_full_analysis_set_plus_decoy_hla.fa
 H=$VARCALL_DATA/hg002/ref/GRCh38_no_alt_analysis_set.fa
 WARP="-D $VARCALL_DATA/bqsr/resources/Homo_sapiens_assembly38.dbsnp138.vcf.gz -G StandardAnnotation -G AS_StandardAnnotation --only-output-calls-starting-in-intervals --merge-input-intervals"
-echo "-V gendb://ws_sarek -L sarek.bed --scatter-intervals" > truth/ws_sarek.scatter.cmd
-echo "$WARP -V gendb://ws_wg -L chr20 -L chr21 -L chr22 --scatter-intervals" > truth/ws_wg.scatter.cmd
+echo "-V gendb://ws_sarek -L sarek.bed --scatter-intervals" | $HARNESS/cmdargs.sh -w > truth/ws_sarek.scatter.cmd
+echo "$WARP -V gendb://ws_wg -L chr20 -L chr21 -L chr22 --scatter-intervals" | $HARNESS/cmdargs.sh -w > truth/ws_wg.scatter.cmd
 # sarek.bed (0-based) merged: chr8:100001-2500000 (two overlapping lines), chr8:5000001-5600000, chr8:9000001-9100000
 one ws_sarek.scatter ws_sarek $B "" chr8:100001-2500000 chr8:5000001-5600000 chr8:9000001-9100000 &
 one ws_wg.scatter ws_wg $H "$WARP" chr20 chr21 chr22 &

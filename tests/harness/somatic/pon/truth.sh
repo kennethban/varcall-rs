@@ -24,7 +24,7 @@ for w in ws_pon ws_pon3; do
   [ -f truth/$w.received.vcf ] || java -Xmx8g -jar $J SelectVariants -R $REF -V gendb://$w -O truth/$w.received.vcf > truth/$w.received.log 2>&1 || echo "$w SelectVariants FAILED"
 done
 pon() { # name args
-  echo "$2" > truth/$1.cmd
+  echo "$2" | $HARNESS/cmdargs.sh -w > truth/$1.cmd
   [ -f truth/$1.vcf ] || java -Xmx8g -jar $J CreateSomaticPanelOfNormals -R $REF $2 -O truth/$1.vcf > truth/$1.log 2>&1 || echo "$1 FAILED"
   echo "$1 $(grep -vc '^#' truth/$1.vcf) records"
 }

@@ -9,7 +9,7 @@ G=${VARIANT_RS:-$REPO/target/release/variant-rs}
 O=${1:-$D/rust}; shift; mkdir -p $O
 cases=${@:-$(ls truth/*.cmd | xargs -n1 basename | sed 's/\.cmd$//' | sort)}
 for c in $cases; do
-  args=$(cat truth/$c.cmd); ext=vcf.gz; [[ $args == *"-ERC GVCF"* ]] && ext=g.vcf.gz
+  args=$($HARNESS/cmdargs.sh truth/$c.cmd); ext=vcf.gz; [[ $args == *"-ERC GVCF"* ]] && ext=g.vcf.gz
   [ -f truth/$c.$ext.tbi ] || { echo "  $c: no GATK output (GATK refused it: $(grep -m1 'USER ERROR' truth/$c.log))"; continue; }
   (cd .. && /usr/bin/time -f "%e s" $G HaplotypeCaller -R ref/GRCh38_no_alt_analysis_set.fa -I bam/HG002.bam -O $O/$c.$ext $args \
       --native-pair-hmm-threads 2 > $O/$c.log 2>&1)
