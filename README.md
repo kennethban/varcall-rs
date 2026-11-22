@@ -26,8 +26,8 @@ filtered VCF in 34 minutes on one workstation, instead of about 5 hours.
 
 ## Speed
 
-One workstation: 16-core Ryzen 9 9950X3D, RTX 5070 Ti, Linux (WSL2 with 48 GB; held to 30 GB the germline run takes
-41.6 min). The output is identical in every row.
+One workstation: 16-core Ryzen 9 9950X3D (32 threads), RTX 5070 Ti (16 GB), Linux (WSL2 with 48 GB; held to 30 GB the
+germline run takes 41.6 min). The output is identical in every row.
 
 | Whole pipeline | Data | Reference tools | varcall-rs | |
 |---|---|---|---:|---:|
@@ -36,18 +36,18 @@ One workstation: 16-core Ryzen 9 9950X3D, RTX 5070 Ti, Linux (WSL2 with 48 GB; h
 
 | Single step | Data | Reference tool | varcall-rs | |
 |---|---|---|---:|---:|
-| align, sort, index | NA12878 30x, one lane (31.5 M pairs) | bwa-mem2 + samtools: 566 s | **211 s** | **2.7×** |
+| align, sort, index | NA12878 30x, one lane (31.5 M pairs) | bwa-mem2 + samtools: 587 s | **124 s** | **4.7×** |
 | HaplotypeCaller, VCF | NA12878 30x whole genome, 23 shards | GATK, 5 JVMs × 2 threads: 2 h 11 min | **12.9 min** | **10×** |
 | HaplotypeCaller, GVCF | same | GATK: 2 h 23 min | **17.1 min** | **8.4×** |
 | MarkDuplicates | HG002 30x whole genome | Picard: 42 min | **6 min** | **7×** |
 | BaseRecalibrator | same | GATK: 99 min | **95 s** | **63×** |
 | ApplyBQSR | same | GATK: 1 h 47 min | **6 min** | **18×** |
 
-The germline baseline adds up measured steps: bwa-mem2 + samtools on one lane times 12, and sarek's GATK steps on
-the same genome. On a server with 6 L40S GPUs and 384 threads, the germline pipeline takes **6.8 min**; with 4 L40S
-and 128 threads, **9.3 min** (NVIDIA Parabricks `germline`: 16.3 min on 4 of these GPUs with 64 threads, and its own
-outputs, not GATK's). How each
-pipeline number was measured: [pipeline/README.md](pipeline/README.md#benchmarks).
+The germline baseline adds up measured steps: bwa-mem2 + samtools on one lane times 12, and sarek's GATK steps on the
+same genome. On a server (2 × EPYC 9654, 384 threads, 2.2 TiB of RAM, NVMe; L40S GPUs with 48 GB) with 6 L40S and 384
+threads, the germline pipeline takes **6.8 min**; with 4 L40S and 128 threads, **9.3 min** (NVIDIA Parabricks
+`germline`: 16.3 min on 4 of these GPUs with 64 threads, and its own outputs, not GATK's). How each pipeline number
+was measured: [pipeline/README.md](pipeline/README.md#benchmarks).
 
 ## Getting started
 
@@ -72,6 +72,8 @@ the results with bwa-mem2 and GATK.
 
 * **From source:** Linux x86-64, Rust 1.99, htslib, and the CUDA toolkit for the GPU code
   ([building.md](docs/building.md)). `environment.yml` installs all of them.
+* **Hardware:** for a 30x genome, 32 threads, 48 GB of RAM and an NVIDIA GPU with 16 GB give the times above; a GPU
+  is optional, and 30 GB of RAM works, more slowly ([memory and GPU per step](docs/building.md#hardware)).
 * **Docker:** two images built from this repository: `align-rs`, and `variant-rs`, a drop-in `gatk` for sarek
   ([containers/](containers/README.md)).
 
@@ -99,7 +101,8 @@ varcall-rs is the wrong tool if:
   visible GPU).
 
 It has been tested on two GPU models: RTX 5070 Ti (sm_120) and L40S (sm_89). The GPU code is built for sm_70 (sm_75
-for align-rs) through sm_120, but has not run on other GPUs yet; reports are welcome.
+for align-rs) through sm_120, but has not run on other GPUs yet; reports are welcome. It is CUDA only; what a port to
+AMD, Intel or Apple GPUs would need is in [architecture.md](docs/architecture.md#other-gpu-vendors).
 
 ## Contributing
 

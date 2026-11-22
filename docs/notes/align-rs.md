@@ -585,3 +585,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       filtered 17d3db3ded77, 4,951,704 records), recalibration table identical, duplicate metrics identical but for
       Picard's start time. The lanes' CPU savings, which hardly moved one lane's wall clock, show here: 12 lanes in
       one process keep every thread busy.
+    * One lane re-measured at 93a3331 (`runs/lane_bench`, BAM level 1 as the pipeline, `-t 32 --gpu`): align-rs
+      128.7, 123.7, 121.1 s (median 124 s; sort and index included; peak RSS 30.5 GB) vs bwa-mem2 | samtools sort
+      571.6 s (peak 20.9 GB) + samtools index 15.6 s = 587 s: 4.7x (was 211 vs 566 s). Records identical in all four
+      (9b9c2839aed0).

@@ -2,7 +2,7 @@
 
 `bwa-mem2 mem` 2.2.1 in Rust and CUDA: the same records as bwa-mem2, with seeding, SA lookups, seed extension and
 mate rescue on the GPU, and the coordinate-sorted BAM + `.bai` written directly (records as `samtools sort`,
-index bytes as `samtools index`). One NA12878 30x lane: 211 s vs 566 s for bwa-mem2 + samtools sort + index.
+index bytes as `samtools index`). One NA12878 30x lane: 124 s vs 587 s for bwa-mem2 + samtools sort + index.
 
 ```bash
 make -C cuda                      # GPU kernels (optional; without them align-rs runs on the CPU, same output)

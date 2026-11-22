@@ -116,3 +116,31 @@ in one place each and are shared:
   trip.
 * `tables/`: tables that GATK computes at start-up (Phred caches, the Jacobian log-sum table, Gaussian kernels),
   dumped from GATK itself and embedded.
+
+## Other GPU vendors
+
+The GPU code is CUDA only, but that is not because it depends on anything NVIDIA-specific. It has no inline PTX, no
+cooperative groups and no textures. Without a GPU, every kernel falls back to a CPU path that gives the same output.
+Any port would be checked the same way as the CUDA code, by the selftest and the [harness](validation.md).
+
+| | align-rs `cuda/aln_ext.cu` | variant-rs `cuda-pairhmm/native/cuda_pairhmm.cu` |
+|---|---|---|
+| Arithmetic | integers only | float, then double for underflows; must match GKL bit for bit |
+| Warp operations | shuffles within groups of 16 and G lanes, `__ballot_sync`, `__syncwarp`, `__popc` / `__ffs` | `__shfl_up_sync` along the anti-diagonal, 32 lanes |
+| Libraries | CUB (radix sort, scan) | none |
+| Numerics | none to control | `__fmaf_rn`, `__fadd_rn`, `__dmul_rn`, `__dadd_rn`; `-ftz=true -fmad=false`; doubles flushed to zero by hand; `log10` taken on the host |
+| Host side | streams, pinned memory, async copies, atomics | streams, events, async copies |
+
+The align-rs kernels are integer DP, so a port that keeps the logic is exact by construction. The PairHMM uses
+only add, multiply and FMA on the device, which are correctly rounded on every vendor. A port stays bit-exact if
+the compiler does not fuse or reorder operations, denormals are flushed the same way, and double precision is
+available.
+
+| Target | Fit | What a port needs |
+|---|---|---|
+| AMD, ROCm / HIP (MI200, MI300) | **best** | HIP mirrors CUDA, so `hipify` converts most of the code and hipCUB replaces CUB. The main work is wavefront width: CDNA wavefronts are 64 lanes, so the 32-bit lane masks (`0xffffffff`), `__popc` of a ballot (64-bit there) and the packing of G-lane groups into a warp need an audit. RDNA can run 32 lanes. For the PairHMM, HIP has the same `_rn` intrinsics, `-ffp-contract=off` and denormal-flush flags, and the MI cards have full double precision. |
+| Intel, SYCL (Data Center Max) | possible | SYCLomatic migrates CUDA to SYCL; sub-groups are 16 or 32 lanes. Only the Data Center Max cards have native double precision. |
+| Apple, Metal | align-rs only | SIMD groups are 32 lanes (`simd_shuffle`, `simd_ballot`) and unified memory removes the copies, but the sort and scan would have to be written by hand. Metal has no double precision, so the PairHMM's double pass would run on the CPU, and its denormal handling would need checking. MLX is an array framework on Metal; its custom kernels (`mx.fast.metal_kernel`) suit elementwise code, not these DP kernels. On Apple, the CPU code would also need ARM NEON paths; its SIMD is x86 only (AVX2, GKL's AVX-512). |
+| Vulkan / WebGPU | poor | WGSL has no double precision, and subgroup operations are optional. |
+
+None of these has been tried. HIP for AMD datacenter GPUs is the natural first port.

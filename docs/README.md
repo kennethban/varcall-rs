@@ -26,7 +26,8 @@ The pages are sorted by what you want to do: learn, get a task done, look someth
 
 ## Explanation
 
-* [Architecture](architecture.md): how each tool is put together, and where things are in the code.
+* [Architecture](architecture.md): how each tool is put together, where things are in the code, and
+  [other GPU vendors](architecture.md#other-gpu-vendors).
 * [Optimizations](optimizations.md): what makes it fast without changing an output bit, with code.
 * [Validation](validation.md): what "identical" means, the test tiers, the adversarial review, known differences.
 

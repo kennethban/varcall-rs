@@ -73,7 +73,7 @@ process ALIGN {
     // there is none), written as the coordinate-sorted BAM and .bai that samtools sort / index would give (records,
     // index bytes). One process per sample (--lanes: out.bam, @RG, FASTQs per line): the index loads once, and each
     // lane's final BAM pass (sort, write, index) overlaps the next lane's alignment; every lane's BAM is the one
-    // aligning it alone gives. A 30x lane: 357 s vs 549 + 17 s. Level 1: the lane BAM is read once, by MarkDuplicates.
+    // aligning it alone gives. A 30x lane: 124 s vs 572 + 16 s. Level 1: the lane BAM is read once, by MarkDuplicates.
     def tsv = rows.collect { r -> "printf '${(['%s'] * (2 + r.reads.size())).join(TAB)}${NL}' ${r.bam} '${r.rg}' ${r.reads.join(' ')} >> lanes.tsv" }
     // samtools sort: 4 GB in all (16 x 256M). bwa-mem2 holds ~21 GB (the 17 GB index): with sort's former 8 GB the
     // two filled this 30 GB machine and each sort spill swapped the index out (a 30x lane 801 s -> 549 s with 4 GB,

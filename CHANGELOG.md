@@ -87,6 +87,10 @@ named in its entry; a change of reference version is a new minor version at leas
   `ALIGN_RS_CIGAR_SIMD=0`, and beside it under `ALIGN_RS_CIGAR_SIMD_CHECK=1`. Same records; CIGAR/NM/MD CPU -28%.
 * docs: `docs/optimizations.md` reorganized (the method, the pipeline and what paces it, GPU kernels, CPU
   shortcuts, memory, BAM output, measured and dropped, open candidates), with pseudocode and diagrams.
+* docs: `docs/architecture.md#other-gpu-vendors`: what the CUDA code depends on, and what a port to AMD (HIP),
+  Intel (SYCL), Apple (Metal) or Vulkan would need.
+* docs: hardware needs (`docs/building.md#hardware`: memory per step, GPU memory, disk); the machines' specs; one
+  30x lane re-measured: 124 s vs 587 s for bwa-mem2 + samtools (4.7x; was 211 s).
 
 ### Fixed
 

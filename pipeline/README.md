@@ -30,8 +30,8 @@ in this repository):
   records are bwa-mem2's (checked record for record on a 30x lane), with seeding, extension and mate rescue on the
   GPU, writing the coordinate-sorted BAM and `.bai` itself (records as `samtools sort` gives them, index bytes as
   `samtools index`). One task per sample (`--lanes`): the index loads once and each lane's final BAM pass overlaps
-  the next lane's alignment; each lane's BAM is the one aligning it alone gives. A 30x lane: 236 s + 28 s final
-  pass vs 549 s for bwa-mem2 | samtools sort, + 17 s samtools index. Without a GPU it runs on the CPU;
+  the next lane's alignment; each lane's BAM is the one aligning it alone gives. A 30x lane: 124 s, sorting and
+  indexing included, vs 572 s for bwa-mem2 | samtools sort, + 16 s samtools index. Without a GPU it runs on the CPU;
   `aligner = 'bwa-mem2'` runs bwa-mem2 | samtools sort | samtools index per lane instead.
 
 ## Run
@@ -124,15 +124,17 @@ contamination, segments, filtered VCF), `somatic/pileups/`.
 Nothing cached; outputs identical to the earlier runs' in the measurement log below (germline: VCF 4,951,704 records,
 4,944,053 after filtering; somatic exome: all 17 outputs, Mutect2 5,485 records, 1,321 PASS).
 
-**Workstation**: 16-core Ryzen 9 9950X3D (32 threads), one RTX 5070 Ti (WSL2 with 48 GB):
+**Workstation**: 16-core Ryzen 9 9950X3D (32 threads), one RTX 5070 Ti (16 GB), Windows 11 with WSL2 (48 GB of RAM
+given to Linux; ext4 on WSL2's virtual disk):
 
 | Run | Input | Wall | Steps | Reference |
 |---|---|---:|---|---|
-| germline whole genome (2026-11-22, at 7d6ffa6) | NA12878 30x, 12 FASTQ lanes, Broad hg38 | **34.3 min** | ALIGN 23.6 min (peak 32.5 GB), MarkDuplicates 3.5, BaseRecalibrator 1.3, HaplotypeCaller 5.7, hard filters 0.1 (earlier on 2026-11-22: 36.9 and 40.1 min; 2026-11-19: 44.6 min) | stock tools on the same machine: ~5.2 h (bwa-mem2 + samtools ~113 min, sarek's stock GATK steps ~196 min) |
+| germline whole genome (2026-11-22, at 7d6ffa6) | NA12878 30x, 12 FASTQ lanes, Broad hg38 | **34.3 min** | ALIGN 23.6 min (peak 32.5 GB), MarkDuplicates 3.5, BaseRecalibrator 1.3, HaplotypeCaller 5.7, hard filters 0.1 (earlier on 2026-11-22: 36.9 and 40.1 min; 2026-11-19: 44.6 min) | stock tools on the same machine: ~5.2 h (bwa-mem2 + samtools ~117 min, sarek's stock GATK steps ~196 min) |
 | same, memory held to 30 GB (a cgroup, 16 GB of swap; Nextflow told 30 GB) | same | **41.6 min** | ALIGN 31.0 min (peak 26.9 GB, swap at most 0.9 GB: the hg38 index's pages are dropped and re-read), BaseRecalibrator 1.4, the rest as above; VCF identical | |
 | somatic exome (2026-11-19) | SEQC2 HCC1395 tumor / normal BAMs | **2.8 min** | MarkDuplicates 0.2-0.3 min, BaseRecalibrator 0.1, ApplyBQSR 0.3, HaplotypeCaller 0.5, Mutect2 0.4, the rest seconds | nf-core/sarek: 46.5 min with stock GATK, 15.3 min with variant-rs |
 
-**Server**: 2 x AMD EPYC 9654 (192 cores, 384 threads), 8 x NVIDIA L40S (two of them in use by another job), Ubuntu;
+**Server**: 2 x AMD EPYC 9654 (192 cores, 384 threads, 2 NUMA nodes), 2.2 TiB of RAM, 8 x NVIDIA L40S (48 GB; two of
+them in use by another job), NVMe SSD, Ubuntu 24.04;
 germline whole genome as above, `pipeline/run.sh` with its defaults unless noted:
 
 | Run (2026-11-19 unless noted) | Wall | Steps |
@@ -276,7 +278,7 @@ hg38 (`ref_hg38`, which has the bwa-mem2 index), same known sites and intervals.
 69.3 min (5.6-6.0 min each, one at a time: GPU and memory), then (`wgs/na12878_fastq_md.*`, run from the lane BAMs
 after a full disk stopped the first run at MarkDuplicates) MarkDuplicates over the 12 lane BAMs 3.5 min,
 BaseRecalibrator 1.2, HaplotypeCaller 6.7, hard filters 0.1. VCF 4,951,704 records (4,944,053 after filtering).
-Stock tools on this machine, same steps: ~5.2 h (bwa-mem2 + samtools ~113 min, sarek's stock GATK spans ~196 min).
+Stock tools on this machine, same steps: ~5.2 h (bwa-mem2 + samtools ~117 min, sarek's stock GATK spans ~196 min).
 
 ### From FASTQ again, after the aligner speed work (2026-11-17)
 
