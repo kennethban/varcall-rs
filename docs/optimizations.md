@@ -110,6 +110,43 @@ resident warps decide its speed. These changes took it from 164 to 306 GCUPS, wi
 * no u8 saturation where H provably cannot reach 255;
 * registers capped at 56 for 64-thread blocks.
 
+### Mate rescue as a wavefront
+
+The striped kernel still waited on its lazy-F loop and on a vote and reduction per target row. `k_matesw_wave`
+keeps 16 threads per job but gives thread t the query segment t (the columns SSE lane t holds) in registers, one
+target row behind thread t-1 (the register-tiled wavefront of CUDASW++4.0). Thread t-1 hands over, by shuffle, the
+row's boundary H, the F leaving its segment and the running row maximum, so no row needs a vote or a second pass.
+bwa's striped semantics are kept exactly: the row maximum and E use the values before the lazy-F pass (F within
+the segment), H the full F, so the kernel carries two F chains. The argmax over a row is computed only when the
+row could beat the maximum seen a few rows back (a bound the shuffles carry for free).
+
+Every result field identical to the striped kernel (a lane's chunk, 600,000 synthetic jobs); 21 -> 12 ms per
+65,536 jobs on an L40S, 31 -> 18 on the RTX 5070 Ti. `ALIGN_RS_MSW=striped` runs the old kernel.
+
+### Exact shortcuts from bwa-mem3
+
+bwa-mem3 found two places where bwa's DP provably gives what a cheaper computation gives:
+
+* **Ungapped extension.** When the seed diagonal's total loss (a - score per cell) stays below the cheaper gap
+  open + extend, every gapped path scores at least 2 below the diagonal in its row and column, so ksw_extend2's
+  row maxima, new maxima and gscore are the diagonal's. Conditions as derived for this code: tlen >= qlen, every
+  diagonal value > 0, no z-drop on the diagonal. The walk runs on the GPU in the key kernel before the size sort;
+  a quarter of the jobs take it and skip the DP (extension kernel -12% on the L40S). `ALIGN_RS_UNGAPPED=check`
+  runs the DP as well and aborts on a difference: none in 229.8 M shortcut jobs of a 30x lane.
+* **Certified CIGAR band.** For equal-length regions, any path more than kc cells off the diagonal scores below the
+  ungapped score, kc = (amax·len − o_ins − o_del − su) / (amax + e_ins + e_del); band min(w, kc) gives ksw_global2
+  the same score and the same direction bits along the backtrack. Half the CIGAR stage's band cells (22.4 G ->
+  10.9 G on 5 M pairs), its CPU 140 -> 96 thread-s; kc = 0 skips the DP. `ALIGN_RS_CIGAR_BAND=check` compares.
+
+```rust
+pub fn cert_band(o: &ExtOpt, q: &[u8], r: &[u8]) -> i64 {
+    // ... equal lengths, non-negative gap opens, a positive slope
+    let su: i64 = q.iter().zip(r).map(|(&a, &b)| o.mat[b as usize * 5 + a as usize] as i64).sum();
+    let num = amax * q.len() as i64 - o.o_ins as i64 - o.o_del as i64 - su;
+    if num < 0 { 0 } else { num / slope }
+}
+```
+
 ### Pipeline and memory
 
 * **Stages:** five stages connected by unbuffered channels; pairing / SAM and rescue in separate rayon pools.
@@ -129,6 +166,11 @@ resident warps decide its speed. These changes took it from 164 to 306 GCUPS, wi
   longer queue behind the other stages' loops in the global pool (`ALIGN_RS_EXT_POOL=0` to compare); the kernel
   counts the jobs it leaves to the CPU, so the scan for them runs only when there are some. L40S, 64 threads:
   lane 113.6 → 108.5 s.
+* **Freeing off the stage threads, bounded:** each batch's large structures are freed by dropper threads, so a
+  stage does not pay for it. One dropper thread fell behind once batches got faster: its queue held ~1 GB a
+  batch, a workstation's 12 lanes filled 48 GB in ~6 minutes, and the server's alignment tasks grew to 54-169 GB.
+  Four threads now share a queue of at most 16 structures (~4 batches), so a stage waits instead: 37 GB a task,
+  the six tasks of the server's germline run finish together, 460 → 409 s for the whole pipeline.
 
 **Measured and dropped:**
 
@@ -138,7 +180,15 @@ resident warps decide its speed. These changes took it from 164 to 306 GCUPS, wi
 * stage slack (more memory, no gain);
 * less CPU work per lane (`pos2rid` by block, incremental rescue dedup): CPU down, wall clock unchanged, since the
   lane is paced by its GPU stages;
-* mate SW as one thread per alignment: 1.25-1.3× on that kernel, ~5% of a lane, for a second kernel.
+* mate SW as one thread per alignment: 1.25-1.3× on that kernel, ~5% of a lane, for a second kernel;
+* idle lanes in the extension kernel taking the next job (AGAThA): its lanes are 53% busy, but with only k of 32
+  lanes given work the kernel takes ×1.03 / ×1.10 / ×1.31 the time at k = 24 / 16 / 8. It is paced by its
+  working lanes' local-memory traffic, so filling the idle ones would save ~9% of it at best;
+* bwa-mem3's certified adaptive extension band (probe at band 20, keep the results a score bound proves final,
+  rerun the rest): a quarter of the DP jobs certify, since the ungapped shortcut has taken the easy ones, and probe
+  plus rerun take ×1.08 the kernel time;
+* pinned extension buffers filled and read in place: the copies 3-4× faster, the wall clock unchanged, since
+  extension's GPU rounds already overlap its CPU work, which is the longer.
 
 Details of each: [notes/align-rs.md](notes/align-rs.md).
 

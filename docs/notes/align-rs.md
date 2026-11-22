@@ -413,6 +413,9 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     waits rather than memory growing. The 4 lanes then ran at drops pending <= 2, anon ~24 GB (about half of it
     lazily freed); the 12-lane pipeline run peaked at 34.6 GB RSS. Records identical (`tests/cmp.sh`, the pipeline
     VCF md5).
+    * The server had it too, without running out: its 6 alignment tasks of 2 lanes peaked at 54-169 GB each
+      (`runs/wgs5`), the largest the slowest (4m43). With the fix 37 GB each, all six 3m43-3m47, the germline
+      pipeline 460 -> 409 s (`runs/wgs6`).
 
 16. **Idle lanes in the extension kernel: measured, not pursued (2026-11-22; PLAN.md stage 7 item 4).** `k_extend`
     runs one job per thread, size-sorted and grid-strided; a lane whose job ends early (m == 0, z-drop, a narrower
@@ -428,3 +431,35 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     row is in local memory: its loads and stores, not issue slots), so idle lanes are nearly free: packing every
     lane (53% -> 100%, as k 17 -> 32) would save ~9% of the kernel before the refill's own cost, ~2 s of a lane on
     a GPU the 6-alignment server does not wait for. Not done.
+17. **Measured on the workstation, not taken (2026-11-22; PLAN.md stage 8).** RTX 5070 Ti, the `mid` set or its
+    dumped extension call (`runs/stage7`); every result identical where a kernel ran.
+    * **bwa-mem3's certified adaptive extension band** (bwamem.cpp `band_cert_ok`, its default): probe every
+      extension at band w0 = 20 and keep the result when no alignment straying past w0 can reach S - pen_clip
+      (h0 + min_len a - o_min - (S - pen_clip) <= w0 e_min, and gscore > S - pen_clip); the rest rerun at w. Inside
+      its parameter envelope (z-drop > o_min + (2 w0 + 1) e_max + w0 a, pen_clip < o_min + e_min, 3w/4 > w0 + 1
+      + (a - 1) / e_min; the defaults pass) the full ladder also stops at its first rung, so the record is the same.
+      `runs/stage7/bench_cert.cu` on the dump (2.81 M jobs, 2.00 M for the DP): 25.0% certify at w0 20 (30.9% at
+      30), their outputs equal the full band's; probe 21.4 ms + the rest 52.4 ms against 68.5 ms, x1.08 (x1.14 at
+      30). The ungapped shortcut (section 13) has already taken the jobs that certify cheaply. Not done.
+    * **Pinned extension buffers, filled and read in place** (`ALIGN_RS_PINNED=1`, a test; the patch is
+      `runs/stage7/pin/pinned_and_counter.patch`): each round's jobs written straight into a page-locked buffer
+      from a pool, results copied by DMA into another. 2 runs each, alternating: extension copies 3.7-4.2 ->
+      0.7-1.3 s a run, its device calls 8.1-8.6 -> 4.8-5.4 s, wall 30.3 vs 30.5 s (a first pinned run took
+      43 s). The device calls were already hidden: extension runs one half's round on the device while the CPU
+      applies the other half's results, and that CPU side (setup ~5 s, job build ~1.5, apply ~6, replay + dedup
+      ~3.7) is the longer. Extension is the slowest stage here (~1.35 s a batch, batches ~1.4 s apart), paced by
+      that CPU work, not by copies: for this stage, section 10's "paced by copies" does not hold. Dropped.
+    * **How the DP row is read:** local memory puts a warp's 32 copies of a word side by side, so lanes reading the
+      same column share a 128-byte line. `-DEXT_WARPSTAT` now also counts, at each cell step, the distinct columns
+      and rows of the active lanes (`runs/stage7/bench_lines.cu`): 3.44 distinct lines a step for 18.3 active lanes,
+      all on one row (389 M warp steps). The lanes' band starts move apart as each job's band shrinks past its
+      zero cells. A column loop over the warp's union of bands (each lane working only inside its own, so the same
+      cells in the same order) would read one line a step, for more steps with idle lanes (nearly free: section
+      16). Not done: the GPU sets the pace on neither machine.
+    * **bwa-mem3's mate-rescue pruning** (rescue_prune.h; estimated, not implemented): exact 5-mer hits bound a
+      local alignment over diagonals d1..d2 by 5 + sum (hits(d) - 1); below the rescue threshold (19) the job's
+      result is never used, else only the rows that can reach 19 need the DP. On the dumped mate-SW chunk (65,536
+      jobs, `runs/stage7/msw.bin`, `runs/stage7/prune_est.cpp`): 77.4% of jobs pass 19; 18.4% are proven
+      to fail (none of them passed; no score above its bound); the rows kept for the rest leave 67.5% of the
+      chunk's cells, every alignment and second-best row inside them. About a third of the mate-SW kernel, which
+      the GPU does not wait on either.

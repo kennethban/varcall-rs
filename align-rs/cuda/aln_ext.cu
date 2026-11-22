@@ -57,7 +57,10 @@ __device__ __forceinline__ int ref_base(const uint8_t *pac, int64_t l_pac, int64
 #ifdef EXT_WARPSTAT
 // build with -DEXT_WARPSTAT: lane use in k_extend. At each DP cell step, row step and job start, the warp's first
 // active lane counts one warp step and the lanes active with it: lanes / (32 x steps) is the warp efficiency.
-__device__ unsigned long long g_ws[6];
+// At each DP cell step also the distinct columns the active lanes touch (ws[6]): local memory puts the warp's 32
+// copies of a word side by side, so each distinct column is its own 128-byte line (1 a step: fully coalesced), and
+// the distinct rows they are on (ws[7]).
+__device__ unsigned long long g_ws[8];
 #define WS_STEP(a, b) do { const unsigned am_ = __activemask(); if ((int)(threadIdx.x & 31) == __ffs(am_) - 1) { a += 1; b += __popc(am_); } } while (0)
 #else
 #define WS_STEP(a, b) do {} while (0)
@@ -125,6 +128,14 @@ __device__ __forceinline__ void k_extend_body(const Job *jobs, const uint32_t *o
         int j;
         for (j = beg; j < end; ++j) {
             WS_STEP(ws[0], ws[1]);
+#ifdef EXT_WARPSTAT
+            {
+                const unsigned am_ = __activemask(), me_ = threadIdx.x & 31;
+                const unsigned gj_ = __match_any_sync(am_, j), gi_ = __match_any_sync(am_, i);
+                const unsigned lj_ = __ballot_sync(am_, (int)me_ == __ffs(gj_) - 1), li_ = __ballot_sync(am_, (int)me_ == __ffs(gi_) - 1);
+                if ((int)me_ == __ffs(am_) - 1) { ws[6] += __popc(lj_); ws[7] += __popc(li_); }
+            }
+#endif
             uint32_t x = eh[j];
             int M = EH_H(x), e = EH_E(x), h, tt;
             M = M ? M + mrow[EH_Q(x)] : 0;
@@ -162,7 +173,7 @@ __device__ __forceinline__ void k_extend_body(const Job *jobs, const uint32_t *o
 __global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const int *nug, const uint8_t *reads, const int64_t *off, const uint8_t *pac, int64_t l_pac, JobOut *out, int *nleft, int jw, int jend_bonus, int jdir) {
   n -= *nug;
 #ifdef EXT_WARPSTAT
-  unsigned long long ws[6] = {0, 0, 0, 0, 0, 0};
+  unsigned long long ws[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 #endif
   k_extend_body(jobs, order, n, reads, off, pac, l_pac, out, nleft, jw, jend_bonus, jdir
 #ifdef EXT_WARPSTAT
@@ -170,7 +181,7 @@ __global__ void k_extend(const Job *jobs, const uint32_t *order, int n, const in
 #endif
   );
 #ifdef EXT_WARPSTAT
-  for (int k = 0; k < 6; ++k) if (ws[k]) atomicAdd(&g_ws[k], ws[k]);
+  for (int k = 0; k < 8; ++k) if (ws[k]) atomicAdd(&g_ws[k], ws[k]);
 #endif
 }
 
@@ -425,10 +436,12 @@ extern "C" void aln_gpu_ext_take(double *out) {
 extern "C" void aln_gpu_report() {
 #ifdef EXT_WARPSTAT
     {
-        unsigned long long w[6]; cudaMemcpyFromSymbol(w, g_ws, sizeof w);
+        unsigned long long w[8]; cudaMemcpyFromSymbol(w, g_ws, sizeof w);
         auto ef = [](unsigned long long st, unsigned long long ln) { return st ? 100.0 * ln / (32.0 * st) : 0.0; };
         fprintf(stderr, "[align-rs-gpu] k_extend warp efficiency: DP cells %.1f%% (%llu warp steps), rows %.1f%% (%llu), jobs %.1f%% (%llu)\n",
                 ef(w[0], w[1]), w[0], ef(w[2], w[3]), w[2], ef(w[4], w[5]), w[4]);
+        fprintf(stderr, "[align-rs-gpu] k_extend DP row accesses: %.2f distinct 128-byte lines a warp step for %.1f active lanes (1: coalesced), lanes on %.2f distinct rows\n",
+                w[0] ? (double)w[6] / w[0] : 0.0, w[0] ? (double)w[1] / w[0] : 0.0, w[0] ? (double)w[7] / w[0] : 0.0);
     }
 #endif
     fprintf(stderr, "[align-rs-gpu] extension: H2D %.2f s, kernel %.2f s, D2H %.2f s; ungapped shortcut: %lld jobs%s\n", t_h2d, t_kernel, t_d2h,

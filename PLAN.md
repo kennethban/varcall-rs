@@ -4,9 +4,11 @@ Most users have one GPU (a workstation, or one cloud GPU), so the stages below s
 GPUs (large servers, consortium runs) come after, built on the same pieces. Every stage keeps the outputs identical
 (the rule in [CONTRIBUTING.md](CONTRIBUTING.md)) and reports its timing and that check before the next one starts.
 
-## Status (2026-11-21)
+## Status (2026-11-22)
 
-**Alignment (align-rs): done for now.** What is in: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s),
+**Alignment (align-rs): done for now.** Stage 7 (2026-11-22): the mate-SW wavefront, the ungapped extension
+shortcut and the certified CIGAR band are in (same records), idle-lane refill measured and dropped; the bounded
+dropper queue took the server's germline run 460 -> 409 s. Earlier work in: the sorted BAM's final pass in parallel (a 30x lane 25 -> 5 s),
 extension's empty redo scan skipped and its own thread pool, and the pipeline's thread split per GPU. What was tried
 and not pursued, with the measurements in `docs/notes/align-rs.md` sections 8-11: other extension schedules, GPU
 stream priorities, pinned copies, chaining and mate-rescue CPU cuts (stage 2), a one-thread-per-alignment mate-SW
@@ -14,10 +16,12 @@ kernel (stage 4). Each machine is now held by something no small change moves:
 
 * one alignment on one L40S: the GPU (its kernels alone ~720 of ~850 ms a batch);
 * several alignments on one server: the CPU (6 x 64 threads fill the 384);
-* the workstation: the copies between host and GPU through pageable memory, slow while the CPU is busy.
+* the workstation: extension's CPU work (setup, applying each round's results, replay), on which its GPU rounds
+  already overlap. Pinned buffers filled in place made extension's copies 3-4x faster and left the wall clock as
+  it was (stage 8).
 
-Going further means a larger project: pinned buffers filled and read in place by every GPU stage (the workstation),
-or new alignment kernels (one GPU with CPU to spare), each for an uncertain 5-25%.
+Going further: the candidates measured on 2026-11-22 are in [stage 8](#stage-8-candidates-measured-2026-11-22--not-started);
+none moves a machine's pace on its own.
 
 **Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1), several GPUs (M1) and a cohort (M3: a 30x
 trio, FASTQ -> joint VCF in ~34 min on the server) are in; MarkDuplicates on the workstation (stage 5) 281 -> 246 s;
@@ -30,20 +34,23 @@ joint germline calling with them (2026-11-21). No further tool is planned.
 
 ## Where the time goes (2026-11-22)
 
-NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` at 98e7200 plus the dropper fix (after stages 3, 5, 6 and
-7 items 1-3); VCF data lines identical in every run (md5 741f6ebc50be, filtered 17d3db3ded77):
+NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` after stages 3, 5, 6 and 7 (workstation: 98e7200 plus the
+dropper fix; server: 401e274); VCF data lines identical in every run (md5 741f6ebc50be, filtered 17d3db3ded77):
 
 | Step | Workstation, 1 RTX 5070 Ti, 32 threads (2026-11-19 stage 0 -> now) | Server, 6 L40S, `run.sh` defaults (2026-11-19 -> now) |
 |---|---:|---:|
-| Alignment | 32.1 -> 29.7 min (12 lanes in one task; peak RSS 34.6 GB) | 4.0-4.6 -> 3.9-4.7 min (6 tasks of 2 lanes, side by side) |
+| Alignment | 32.1 -> 29.7 min (12 lanes in one task; peak RSS 34.6 GB) | 4.0-4.6 -> 3.7-3.8 min (6 tasks of 2 lanes, side by side; 37 GB each) |
 | MarkDuplicates | 3.9 -> 3.3 min | 0.9 -> 0.8 min |
 | BaseRecalibrator | 1.4 -> 1.25 min | 0.3 -> 0.3 min |
-| HaplotypeCaller | 6.9 -> 5.5 min | 1.7 -> 1.6 min |
-| Total | 44.6 -> **40.1 min** | 465 -> **460 s** |
+| HaplotypeCaller | 6.9 -> 5.5 min | 1.7 -> 1.7 min |
+| Total | 44.6 -> **40.1 min** | 465 -> **409 s** |
 
-The server's run is paced by the CPU (6 alignments on 384 threads; GPUs 19-32% busy on average), so the kernel
-work of stages 3 and 7 does not show there; the workstation gains 10%. Server folder `runs/wgs5`, workstation
-`wgs/stage7`.
+The server's run is paced by the CPU (6 alignments on 384 threads; GPUs 23-32% busy on average), so the kernel work
+of stages 3 and 7 hardly shows there (465 -> 460 s, `runs/wgs5`); the dropper fix took it to 409 s (`runs/wgs6`:
+the alignment tasks no longer grow to 54-169 GB, and all six finish at ~3m45). The workstation gains 10%
+(`wgs/stage7`). With its memory held to 30 GB (a cgroup, `MemoryMax=30G`, 16 GB of swap; Nextflow told 30 GB)
+the same run took 41.6 min, VCF identical (`wgs/mem30`): alignment 31.0 min (peak 26.9 GB; the hg38 index's pages
+are dropped and re-read rather than swapped, swap at most 0.9 GB), BaseRecalibrator 1.4, the rest as before.
 
 What limits each step, measured on the server (2026-11-19; HaplotypeCaller has had its engine pool since):
 
@@ -222,6 +229,26 @@ ideas, in order:
    server does not wait for (`docs/notes/align-rs.md` section 16).
 5. Seeding k-mer interval table and read reordering (Pham et al.): a few % of seeding at best. Not planned.
 
+### Stage 8: candidates measured 2026-11-22 — not started
+
+Measured on the workstation, outputs unchanged in every case; details in `docs/notes/align-rs.md` section 17 and
+`runs/stage7`:
+
+1. **MarkDuplicates' mate map with foldhash** (or rapidhash) instead of its FNV-1a: 65 -> 35 ns a record on 1.45 M
+   chr2 records, one thread (std's SipHash 42 ns: FNV's bits spread badly for the table). ~1% of pass 1; three lines.
+2. **ISA-L igzip for BGZF compression** in MarkDuplicates' output (deflate is a third of its CPU): level 1-2
+   ~1,200 MB/s against libdeflate level 2's 472 MB/s on BAM records, one thread; the BAM ~11% larger (15.1 against
+   13.6% of the raw records). Perhaps 20-30 s of the workstation's 3.3 min, for a C dependency. libdeflate stays
+   faster at inflating (2,410 against 1,946 MB/s); igzip inflates FASTQ.gz 1.8x faster than zlib-rs (1,491 against
+   841 MB/s), but that runs on its own thread per file, off the critical path.
+3. **Extension's CPU side** (setup, apply, replay + dedup: ~16 s of the stage's ~20 s on the `mid` set), which paces
+   the workstation's lanes: not yet profiled.
+4. **GPU work the machines do not wait on:** bwa-mem3's mate-rescue pruning (a third of the mate-SW cells on a
+   dumped chunk) and a warp-uniform column loop in `k_extend` (its lanes read 3.44 local-memory lines a step).
+   Only for a GPU-bound setup.
+5. **Dropped:** bwa-mem3's certified extension band (x1.08 the kernel time here: the ungapped shortcut has taken
+   the jobs it certifies cheaply) and pinned extension buffers (wall clock unchanged).
+
 ## Several GPUs (an option, after stage 1)
 
 * **M1, HaplotypeCaller on several GPUs — done 2026-11-19:** the engine pool spread over every visible GPU, in one
@@ -241,7 +268,7 @@ ideas, in order:
   rule (a call with `<NON_REF>` written 0/0, PLs 0) seen once in the three genomes. Larger cohorts not measured.
 
 Order: stages 1, 3, 5 and 6, M1, M3 and M4 done; stages 2 and 4 tried and not pursued; stage 7 items 1-3 done, item 4
-measured and not pursued, item 5 not planned.
+measured and not pursued, item 5 not planned; stage 8 measured, not started.
 
 ## Coverage: GATK tools to add next
 

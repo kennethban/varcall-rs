@@ -124,11 +124,12 @@ contamination, segments, filtered VCF), `somatic/pileups/`.
 Nothing cached; outputs identical to the earlier runs' in the measurement log below (germline: VCF 4,951,704 records,
 4,944,053 after filtering; somatic exome: all 17 outputs, Mutect2 5,485 records, 1,321 PASS).
 
-**Workstation**: 16-core Ryzen 9 9950X3D (32 threads), 30 GB RAM, one RTX 5070 Ti (WSL2):
+**Workstation**: 16-core Ryzen 9 9950X3D (32 threads), one RTX 5070 Ti (WSL2 with 48 GB):
 
 | Run | Input | Wall | Steps | Reference |
 |---|---|---:|---|---|
-| germline whole genome (2026-11-19) | NA12878 30x, 12 FASTQ lanes, Broad hg38 | **44.6 min** | ALIGN 32.1 min, MarkDuplicates 3.9, BaseRecalibrator 1.4, HaplotypeCaller 6.9, hard filters 0.1 | stock tools on the same machine: ~5.2 h (bwa-mem2 + samtools ~113 min, sarek's stock GATK steps ~196 min) |
+| germline whole genome (2026-11-22) | NA12878 30x, 12 FASTQ lanes, Broad hg38 | **40.1 min** | ALIGN 29.7 min (peak 34.6 GB), MarkDuplicates 3.3, BaseRecalibrator 1.25, HaplotypeCaller 5.5, hard filters 0.1 (2026-11-19: 44.6 min) | stock tools on the same machine: ~5.2 h (bwa-mem2 + samtools ~113 min, sarek's stock GATK steps ~196 min) |
+| same, memory held to 30 GB (a cgroup, 16 GB of swap; Nextflow told 30 GB) | same | **41.6 min** | ALIGN 31.0 min (peak 26.9 GB, swap at most 0.9 GB: the hg38 index's pages are dropped and re-read), BaseRecalibrator 1.4, the rest as above; VCF identical | |
 | somatic exome (2026-11-19) | SEQC2 HCC1395 tumor / normal BAMs | **2.8 min** | MarkDuplicates 0.2-0.3 min, BaseRecalibrator 0.1, ApplyBQSR 0.3, HaplotypeCaller 0.5, Mutect2 0.4, the rest seconds | nf-core/sarek: 46.5 min with stock GATK, 15.3 min with variant-rs |
 
 **Server**: 2 x AMD EPYC 9654 (192 cores, 384 threads), 8 x NVIDIA L40S (two of them in use by another job), Ubuntu;
@@ -136,7 +137,8 @@ germline whole genome as above, `pipeline/run.sh` with its defaults unless noted
 
 | Run (2026-11-19 unless noted) | Wall | Steps |
 |---|---:|---|
-| 6 GPUs, 64 threads per alignment task, 128 per other step, HaplotypeCaller on 2 GPUs (the defaults) | **7.8 min** (465 s) | ALIGN 4.0-4.6 min (6 tasks of 2 lanes, side by side), MarkDuplicates 0.9, BaseRecalibrator 0.3, HaplotypeCaller 1.7, hard filters 0.1 |
+| 6 GPUs, 64 threads per alignment task, 128 per other step, HaplotypeCaller on 2 GPUs (the defaults; 2026-11-22) | **6.8 min** (409 s) | ALIGN 3.7-3.8 min (6 tasks of 2 lanes, side by side; peak 37 GB each), MarkDuplicates 0.8, BaseRecalibrator 0.3, HaplotypeCaller 1.7, hard filters 0.1 |
+| the same on 2026-11-19 | 7.8 min (465 s) | ALIGN 4.0-4.6 min, MarkDuplicates 0.9, BaseRecalibrator 0.3, HaplotypeCaller 1.7 |
 | same, HaplotypeCaller on 1 GPU | 8.1 min (484 s) | HaplotypeCaller 1.9 |
 | 6 GPUs, 64 threads every step | 8.4 min (505 s) | MarkDuplicates 1.2, BaseRecalibrator 0.5, HaplotypeCaller 2.0 |
 | 6 GPUs, 64 threads every step, before the HaplotypeCaller GPU engine pool | 9.9 min (593 s) | HaplotypeCaller 3.5 |
@@ -160,6 +162,13 @@ calling intervals), GPUs 2-7. Each change was measured on the whole run, VCF dat
 * 484 s: `run.sh`'s defaults, 128 threads for the steps after alignment: MarkDuplicates 74 -> 57 s, BaseRecalibrator
   30 -> 19 s, HaplotypeCaller 120 -> 111 s. The alignment tasks' times vary by ~±10 s between runs (4m06-4m43 here).
 * 465 s: HaplotypeCaller's PairHMM on 2 GPUs (`hc_gpus`): 111 -> 103 s.
+* 460 s (2026-11-22, `runs/wgs5`, at 98e7200): the PairHMM tile kernel (PLAN.md stage 3) and the align-rs kernels
+  of stage 7 (mate SW wavefront, ungapped extension, certified CIGAR band). Alignment 3m51-4m43, HaplotypeCaller
+  98 s: the run is CPU-bound (GPUs 19-32% busy), so the faster kernels hardly show.
+* 409 s (2026-11-22, `runs/wgs6`, at 401e274): align-rs's bounded dropper queue (`docs/notes/align-rs.md` section
+  15). Each alignment task's memory had grown with the batches its one freeing thread was behind on (peak 54-169
+  GB a task, the largest the slowest); now 37 GB each, and the six tasks finish together at 3m43-3m47 (before
+  3m51-4m43).
 
 One GPU, 64 threads (`~/projects/wgs1`, before the engine pool): 20.9 min, alignment 73% of it (GPU ~75% busy), peak
 151 GB for the 12-lane align-rs task.

@@ -5,7 +5,7 @@
 
 Short-read alignment and germline / somatic variant calling in Rust and CUDA, with **outputs byte-identical to
 bwa-mem2 and GATK 4.7**: the same BAM records, VCF lines, metrics and tables. A 30x whole genome goes from FASTQ to a
-filtered VCF in 45 minutes on one workstation, instead of about 5 hours.
+filtered VCF in 40 minutes on one workstation, instead of about 5 hours.
 
 * **align-rs** reimplements `bwa-mem2 mem` 2.2.1, plus `samtools sort` and `samtools index`. It runs seeding, SA
   lookups, seed extension and mate rescue on the GPU.
@@ -26,11 +26,12 @@ filtered VCF in 45 minutes on one workstation, instead of about 5 hours.
 
 ## Speed
 
-One workstation: 16-core Ryzen 9 9950X3D, 30 GB RAM, RTX 5070 Ti, Linux (WSL2). The output is identical in every row.
+One workstation: 16-core Ryzen 9 9950X3D, RTX 5070 Ti, Linux (WSL2 with 48 GB; held to 30 GB the germline run takes
+41.6 min). The output is identical in every row.
 
 | Whole pipeline | Data | Reference tools | varcall-rs | |
 |---|---|---|---:|---:|
-| germline: FASTQ → filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **44.6 min** | **7.0×** |
+| germline: FASTQ → filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **40.1 min** | **7.8×** |
 | somatic: BAMs → filtered Mutect2 calls (+ HaplotypeCaller on the normal) | SEQC2 exome tumor / normal | nf-core/sarek with GATK: 46.5 min | **2.8 min** | **17×** |
 
 | Single step | Data | Reference tool | varcall-rs | |
@@ -43,7 +44,7 @@ One workstation: 16-core Ryzen 9 9950X3D, 30 GB RAM, RTX 5070 Ti, Linux (WSL2). 
 | ApplyBQSR | same | GATK: 1 h 47 min | **6 min** | **18×** |
 
 The germline baseline adds up measured steps: bwa-mem2 + samtools on one lane times 12, and sarek's GATK steps on
-the same genome. On a server with 6 L40S GPUs and 384 threads, the germline pipeline takes **7.8 min**. How each
+the same genome. On a server with 6 L40S GPUs and 384 threads, the germline pipeline takes **6.8 min**. How each
 pipeline number was measured: [pipeline/README.md](pipeline/README.md#benchmarks).
 
 ## Getting started

@@ -74,7 +74,8 @@ named in its entry; a change of reference version is a new minor version at leas
 ### Fixed
 
 * align-rs: memory grew without bound on long runs (a workstation's 12 lanes filled 48 GB in ~6 minutes and took
-  WSL down): the thread freeing each batch's structures fell behind. Four threads now share a bounded queue.
+  WSL down): the thread freeing each batch's structures fell behind. Four threads now share a bounded queue. On
+  the 6-GPU server the alignment tasks drop from 54-169 GB to 37 GB each and the germline pipeline from 460 to 409 s.
 * variant-rs HaplotypeCaller `-ERC GVCF`: a site whose most likely genotype includes `<NON_REF>` is written `0/0` with
   all PLs 0, as GATK's `makeGenotypeCall` does (its GQ stays). Once in three 30x genomes (M3: NA12892,
   chr10:128583486, a tandem repeat with no informative reads).
