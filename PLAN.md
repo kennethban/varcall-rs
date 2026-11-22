@@ -47,12 +47,13 @@ server: 401e274, before stage 8); VCF data lines identical in every run (md5 741
 
 The server's run is paced by the CPU (6 alignments on 384 threads; GPUs 23-32% busy on average), so the kernel work
 of stages 3 and 7 hardly shows there (465 -> 460 s, `runs/wgs5`); the dropper fix took it to 409 s (`runs/wgs6`: the
-alignment tasks no longer grow to 54-169 GB, and all six finish at ~3m45). The workstation gained 10% from stages 3
-and 7 (44.6 -> 40.1 min, `wgs/stage7`), 8% from stage 8's incremental dedup (-> 36.9 min, alignment 29.7 -> 26.4,
-`wgs/stage8`) and 7% from the rest of stage 8 (-> 34.3 min, alignment -> 23.6, `wgs/stage9`). With its memory held to
-30 GB (a cgroup, `MemoryMax=30G`, 16 GB of swap; Nextflow told 30 GB) the run before stage 8 took 41.6 min, VCF
-identical (`wgs/mem30`): alignment 31.0 min (peak 26.9 GB; the hg38 index's pages are dropped and re-read rather than
-swapped, swap at most 0.9 GB), BaseRecalibrator 1.4, the rest as before.
+alignment tasks no longer grow to 54-169 GB, and all six finish at ~3m45). With stage 8, 4 GPUs and the 128 threads
+of their socket take 555 s (`runs/wgs7`: alignment 5.2 min in 4 tasks of 3 lanes, HaplotypeCaller 2.3 min). The
+workstation gained 10% from stages 3 and 7 (44.6 -> 40.1 min, `wgs/stage7`), 8% from stage 8's incremental dedup (->
+36.9 min, alignment 29.7 -> 26.4, `wgs/stage8`) and 7% from the rest of stage 8 (-> 34.3 min, alignment -> 23.6,
+`wgs/stage9`). With its memory held to 30 GB (a cgroup, `MemoryMax=30G`, 16 GB of swap; Nextflow told 30 GB) the run
+before stage 8 took 41.6 min, VCF identical (`wgs/mem30`): alignment 31.0 min (peak 26.9 GB; the hg38 index's pages
+are dropped and re-read rather than swapped, swap at most 0.9 GB), BaseRecalibrator 1.4, the rest as before.
 
 What limits each step, measured on the server (2026-11-19; HaplotypeCaller has had its engine pool since):
 

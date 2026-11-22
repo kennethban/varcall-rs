@@ -44,7 +44,9 @@ One workstation: 16-core Ryzen 9 9950X3D, RTX 5070 Ti, Linux (WSL2 with 48 GB; h
 | ApplyBQSR | same | GATK: 1 h 47 min | **6 min** | **18×** |
 
 The germline baseline adds up measured steps: bwa-mem2 + samtools on one lane times 12, and sarek's GATK steps on
-the same genome. On a server with 6 L40S GPUs and 384 threads, the germline pipeline takes **6.8 min**. How each
+the same genome. On a server with 6 L40S GPUs and 384 threads, the germline pipeline takes **6.8 min**; with 4 L40S
+and 128 threads, **9.3 min** (NVIDIA Parabricks `germline`: 16.3 min on 4 of these GPUs with 64 threads, and its own
+outputs, not GATK's). How each
 pipeline number was measured: [pipeline/README.md](pipeline/README.md#benchmarks).
 
 ## Getting started

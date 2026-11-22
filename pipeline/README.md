@@ -137,6 +137,7 @@ germline whole genome as above, `pipeline/run.sh` with its defaults unless noted
 
 | Run (2026-11-19 unless noted) | Wall | Steps |
 |---|---:|---|
+| 4 GPUs (4-7) and 128 threads of their socket (`taskset`: 64 cores + SMT), 32 threads per alignment task, 128 per other step, HaplotypeCaller on 2 GPUs (2026-11-22, at 7b3df92) | **9.3 min** (555 s) | ALIGN 5.2 min (4 tasks of 3 lanes, side by side; peak ~36 GB each, GPUs 46% busy), MarkDuplicates 1.0, BaseRecalibrator 0.5, HaplotypeCaller 2.3, hard filters 0.1 |
 | 6 GPUs, 64 threads per alignment task, 128 per other step, HaplotypeCaller on 2 GPUs (the defaults; 2026-11-22) | **6.8 min** (409 s) | ALIGN 3.7-3.8 min (6 tasks of 2 lanes, side by side; peak 37 GB each), MarkDuplicates 0.8, BaseRecalibrator 0.3, HaplotypeCaller 1.7, hard filters 0.1 |
 | the same on 2026-11-19 | 7.8 min (465 s) | ALIGN 4.0-4.6 min, MarkDuplicates 0.9, BaseRecalibrator 0.3, HaplotypeCaller 1.7 |
 | same, HaplotypeCaller on 1 GPU | 8.1 min (484 s) | HaplotypeCaller 1.9 |
@@ -169,6 +170,12 @@ calling intervals), GPUs 2-7. Each change was measured on the whole run, VCF dat
   15). Each alignment task's memory had grown with the batches its one freeing thread was behind on (peak 54-169
   GB a task, the largest the slowest); now 37 GB each, and the six tasks finish together at 3m43-3m47 (before
   3m51-4m43).
+* 555 s with 4 GPUs and 128 threads (2026-11-22, `runs/wgs7`, at 7b3df92, stage 8 done): GPUs 4-7 and the 128
+  threads of their socket (NUMA node 1, CPUs 96-159 and 288-351 by `taskset`; GPUs 0-1 were another user's), 32
+  per alignment task (the workstation's threads per GPU), 128 per other step. 4 alignment tasks of 3 lanes,
+  5m13-5m15, ~36 GB each, the GPUs 46% busy; MarkDuplicates 59 s, BaseRecalibrator 29 s, HaplotypeCaller 138 s,
+  hard filters 8 s. VCF data lines, recalibration table and duplicate metrics identical to the workstation's
+  (`wgs/stage9`). Parabricks `germline` took 16.3 min on 4 of these GPUs with 64 threads, its own outputs.
 
 One GPU, 64 threads (`~/projects/wgs1`, before the engine pool): 20.9 min, alignment 73% of it (GPU ~75% busy), peak
 151 GB for the 12-lane align-rs task.
