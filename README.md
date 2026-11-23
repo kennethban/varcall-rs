@@ -31,21 +31,22 @@ germline run takes 41.6 min). The output is identical in every row.
 
 | Whole pipeline | Data | Reference tools | varcall-rs | |
 |---|---|---|---:|---:|
-| germline: FASTQ → filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **34.3 min** | **9.1×** |
+| germline: FASTQ → filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **34.0 min** | **9.2×** |
 | somatic: BAMs → filtered Mutect2 calls (+ HaplotypeCaller on the normal) | SEQC2 exome tumor / normal | nf-core/sarek with GATK: 46.5 min | **2.8 min** | **17×** |
 
 | Single step | Data | Reference tool | varcall-rs | |
 |---|---|---|---:|---:|
 | align, sort, index | NA12878 30x, one lane (31.5 M pairs) | bwa-mem2 + samtools: 587 s | **124 s** | **4.7×** |
-| HaplotypeCaller, VCF | NA12878 30x whole genome, 23 shards | GATK, 5 JVMs × 2 threads: 2 h 11 min | **12.9 min** | **10×** |
-| HaplotypeCaller, GVCF | same | GATK: 2 h 23 min | **17.1 min** | **8.4×** |
-| MarkDuplicates | HG002 30x whole genome | Picard: 42 min | **6 min** | **7×** |
-| BaseRecalibrator | same | GATK: 99 min | **95 s** | **63×** |
-| ApplyBQSR | same | GATK: 1 h 47 min | **6 min** | **18×** |
+| HaplotypeCaller, VCF | NA12878 30x whole genome, 23 shards | GATK, 5 JVMs × 2 threads: 2 h 11 min | **6.2 min** | **21×** |
+| HaplotypeCaller, GVCF | same | GATK: 2 h 23 min | **9.3 min** | **15×** |
+| MarkDuplicates | HG002 30x whole genome | Picard: 42 min | **3.1 min** | **13×** |
+| BaseRecalibrator | same | GATK: 99 min | **65 s** | **91×** |
+| ApplyBQSR | same | GATK: 1 h 47 min | **4.4 min** | **24×** |
 
-The germline baseline adds up measured steps: bwa-mem2 + samtools on one lane times 12, and sarek's GATK steps on the
-same genome. On a server (2 × EPYC 9654, 384 threads, 2.2 TiB of RAM, NVMe; L40S GPUs with 48 GB) with 6 L40S and 384
-threads, the germline pipeline takes **6.8 min**; with 4 L40S and 128 threads, **9.3 min** (NVIDIA Parabricks
+The germline time is the mean of three runs (34.0 ± 0.2 min). The baseline adds up measured steps: bwa-mem2 + samtools
+on one lane times 12, and sarek's GATK steps on the same genome. On a server (2 × EPYC 9654, 384 threads, 2.2 TiB of
+RAM, NVMe; L40S GPUs with 48 GB) with 6 L40S and 384 threads, the germline pipeline takes **6.8 min**; with 4 L40S and
+128 threads, **9.3 min** (three runs; 11.1 min on 2 GPUs and 17.6 on 1 with the same threads; NVIDIA Parabricks
 `germline`: 16.8 min on the same 4 GPUs and 128 threads, and its own outputs, not GATK's). How each pipeline number
 was measured: [pipeline/README.md](pipeline/README.md#benchmarks).
 

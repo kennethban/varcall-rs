@@ -31,7 +31,7 @@ What a 30x human genome (NA12878, 12 lanes, hg38) needed, measured by Nextflow (
 | BaseRecalibrator | 14.5 GB | 45 GB |
 | HaplotypeCaller | 7.3 GB | 20.6 GB |
 | hard filters | 0.1 GB | 0.2 GB |
-| wall clock | 34.3 min | 9.3 min |
+| wall clock | 34.0 min | 9.3 min |
 
 The somatic exome pair (SEQC2, from BAMs) needs much less: at most 5.1 GB (Mutect2) on the workstation, 13.5 GB with
 128 threads.
@@ -39,7 +39,7 @@ The somatic exome pair (SEQC2, from BAMs) needs much less: at most 5.1 GB (Mutec
 * **Memory:** align-rs needs the most: the hg38 index is 17 GB and is memory-mapped, plus ~15 GB of batches in
   flight at 32 threads. Each alignment task needs its own, so with one task per GPU, plan ~36 GB per GPU. The other
   steps run one at a time and use more memory with more threads. 48 GB is enough for 32 threads. With 30 GB (and
-  16 GB of swap) the genome still ran, in 41.6 min instead of 34.3, with the same output: the index's pages were
+  16 GB of swap) the genome still ran, in 41.6 min instead of 34, with the same output: the index's pages were
   dropped and re-read. For comparison, bwa-mem2 + samtools sort on one lane peaked at 21 GB.
 * **GPU:** an NVIDIA GPU of compute capability 7.5 or newer (7.0 for variant-rs). align-rs loads as much of the
   index as fits, checked at start, and keeps 2 GB for batches: the 2-bit reference (0.8 GB) for extension and

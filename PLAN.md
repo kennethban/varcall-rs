@@ -4,7 +4,7 @@ Most users have one GPU (a workstation, or one cloud GPU), so the stages below s
 GPUs (large servers, consortium runs) come after, built on the same pieces. Every stage keeps the outputs identical
 (the rule in [CONTRIBUTING.md](CONTRIBUTING.md)) and reports its timing and that check before the next one starts.
 
-## Status (2026-11-22)
+## Status (2026-11-23)
 
 **Alignment (align-rs): done for now.** Stage 7 (2026-11-22): the mate-SW wavefront, the ungapped extension
 shortcut and the certified CIGAR band are in (same records), idle-lane refill measured and dropped; the bounded
@@ -26,13 +26,18 @@ on the workstation, CPU work saved anywhere counts.
 **Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1), several GPUs (M1) and a cohort (M3: a 30x
 trio, FASTQ -> joint VCF in ~34 min on the server) are in; MarkDuplicates on the workstation (stage 5) 281 -> 246 s;
 HaplotypeCaller on the workstation (stage 6) 456 -> 400 s; the PairHMM kernel (stage 3) 2.4-2.8x faster, HaplotypeCaller
-on 1 L40S 106 -> 94 s (as fast as 2 GPUs) and on the workstation 400 -> 355 s.
+on 1 L40S 106 -> 94 s (as fast as 2 GPUs) and on the workstation 400 -> 355 s. HaplotypeCaller as one GATK run over
+the whole genome (one generator, no scatter; 2026-11-23): contigs were a chain, each waiting for the previous one's
+generator. Now contigs are cut into segments where a cut provably changes nothing, so only short segments around
+drawing groups wait (VCF), and in GVCF mode each contig's starting state is replayed from a pre-scan of the
+drawing groups' sizes: HG002 30x on 4 L40S, VCF 1064 -> 396 s, GVCF 1043 -> 235 s (48 shard files: 182 s); outputs
+identical, harness check `hc_segments`.
 
 **Coverage:** the GATK tools to add, researched 2026-11-20: [Coverage](#coverage-gatk-tools-to-add-next). C1
 VQSR, C2 VariantFiltration, C3 GenomicsDBImport and C4 CreateSomaticPanelOfNormals are done, and the pipeline runs
 joint germline calling with them (2026-11-21). No further tool is planned.
 
-## Where the time goes (2026-11-22)
+## Where the time goes (2026-11-22; repeated 2026-11-23)
 
 NA12878 30x, 12 lanes, FASTQ -> VCF (`pipeline/`), `main` after stages 3, 5, 6, 7 and 8 (workstation: 7d6ffa6;
 server: 401e274, before stage 8); VCF data lines identical in every run (md5 741f6ebc50be, filtered 17d3db3ded77):
@@ -54,6 +59,14 @@ workstation gained 10% from stages 3 and 7 (44.6 -> 40.1 min, `wgs/stage7`), 8% 
 `wgs/stage9`). With its memory held to 30 GB (a cgroup, `MemoryMax=30G`, 16 GB of swap; Nextflow told 30 GB) the run
 before stage 8 took 41.6 min, VCF identical (`wgs/mem30`): alignment 31.0 min (peak 26.9 GB; the hg38 index's pages
 are dropped and re-read rather than swapped, swap at most 0.9 GB), BaseRecalibrator 1.4, the rest as before.
+
+Repeated at 736009f (2026-11-23), three runs each, every output identical to the runs above: the workstation 2030,
+2055, 2036 s = 34.0 ± 0.2 min (`wgs/stage10_r1-3`); the server on 4 GPUs and 128 threads 567, 552, 558 s = 9.3 ± 0.1
+min (`runs/wgs8_r1-3`), and with the same threads on 2 GPUs 667 s and on 1 GPU 1053 s (alignment 6.8 and 12.7 min;
+`runs/wgs8_g2`, `g1`). Single steps on the workstation at 32 threads (`runs/steps_736009f`, each identical to GATK /
+Picard): MarkDuplicates 187 s (HG002 30x), BaseRecalibrator 65 s, ApplyBQSR 265 s, HaplotypeCaller over NA12878's 23
+shards 372 s (VCF) and 557 s (GVCF). Runs that share the machine with other work are not comparable: a repeat on
+2026-11-23 with a build running beside it took 47 min.
 
 What limits each step, measured on the server (2026-11-19; HaplotypeCaller has had its engine pool since):
 
