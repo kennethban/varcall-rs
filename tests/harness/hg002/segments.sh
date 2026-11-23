@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Segments of contigs inside one RNG stream (variant-rs/src/segment.rs): whole contigs in VCF mode are cut into
-# pieces that run in parallel. Each run must stay byte-identical to one GATK process over the same contigs, the
-# truth of the whole-contig shards (run_gatk.sh): shard043 = chr21 + chr22, shard046 = 139 small contigs (deep
-# unplaced contigs, drawing groups close to the cuts). Small pieces (VARIANT_RS_SEGMENT_MB) put many more cuts
-# near drawing groups, so segments take over their neighbours (absorbed>0 below). A run that cuts nothing fails.
+# Contigs inside one RNG stream, run in parallel. Each run must stay byte-identical to one GATK process over the same
+# contigs, the truth of the whole-contig shards (run_gatk.sh): shard043 = chr21 + chr22, shard046 = 139 small contigs
+# (deep unplaced contigs, drawing groups close to the cuts).
+# VCF (variant-rs/src/segment.rs): whole contigs are cut into pieces. Small pieces (VARIANT_RS_SEGMENT_MB) put many
+# more cuts near drawing groups, so segments take over their neighbours (absorbed>0 below). A run that cuts nothing
+# fails.
+# GVCF (rng::Replay): each contig starts from the generator state a replay of the earlier contigs' drawing groups
+# gives, and checks it at its end. A run without the replay fails.
 #   segments.sh [OUTDIR]
 HARNESS=$(cd "$(dirname "$0")/.." && pwd); REPO=$(cd "$HARNESS/../.." && pwd)
 : "${VARCALL_DATA:?set VARCALL_DATA to the data directory (tests/harness/README.md)}"
@@ -30,4 +33,18 @@ one() { # name shard piece_mb (empty: the default size)
 one chr21_22         shard043 ""
 one chr21_22_small   shard043 0.3
 one small_contigs    shard046 0.02
+gvcf() { # name shard
+  local name=$1 s=$2 t=gatk/gvcf/$2.g.vcf.gz out=$O/$1.g.vcf.gz t0=$(date +%s)
+  $X HaplotypeCaller -R $REF -I $BAM -L plan/$s.intervals -ERC GVCF -O $out > $O/$name.log 2>&1; local rc=$?
+  local rp=$(grep -o '^replay: [0-9]* contig(s), [0-9]* drawing groups' $O/$name.log)
+  local n=$(zcat $t | grep -vc '^#') r
+  if [ $rc != 0 ]; then r="FAILED (rc=$rc)"
+  elif [ -z "$rp" ]; then r="DIFFERENT: no replay"
+  elif cmp -s <(zcat $t | grep -v '^#') <(zcat $out | grep -v '^#'); then r="identical ($n)"
+  else r="DIFFERENT ($(diff <(zcat $t | grep -v '^#') <(zcat $out | grep -v '^#') | grep -c '^[<>]') lines of $n)"; fi
+  [[ $r == identical* ]] || fail=$((fail + 1))
+  echo "  $name: $s ${rp#replay: } $(( $(date +%s) - t0 ))s records $r"
+}
+gvcf chr21_22_gvcf      shard043
+gvcf small_contigs_gvcf shard046
 exit $fail

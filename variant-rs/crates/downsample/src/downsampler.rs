@@ -45,6 +45,17 @@ pub fn reservoir_downsample<T>(reads: impl IntoIterator<Item = T>, target: usize
     reservoir
 }
 
+/// The draws `reservoir_downsample` makes over `n` reads, without the reads: `nextInt(i)` for i = target+1 ..= n.
+/// (How many reads a group has does not depend on the generator, so a replay of the group sizes gives the
+/// generator's state after them.)
+pub fn reservoir_draws(n: usize, target: usize, rng: &mut JavaRandom) {
+    assert!(target > 0, "targetCoverage must be > 0");
+    for seen in target + 1..=n {
+        assert!(seen <= i32::MAX as usize);
+        rng.next_int(seen as i32);
+    }
+}
+
 struct Group<T> {
     start: i64,
     reads: Vec<T>,
@@ -277,6 +288,16 @@ impl<T> PositionalDownsampler<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draws_without_reads_match_the_reservoir() {
+        let (mut a, mut b) = (JavaRandom::gatk(), JavaRandom::gatk());
+        for n in [0usize, 1, 50, 51, 77, 1000, 64, 65, 129] {
+            reservoir_downsample(0..n, 50, &mut a);
+            reservoir_draws(n, 50, &mut b);
+            assert_eq!(a.state(), b.state());
+        }
+    }
 
     #[test]
     fn no_draw_when_under_target() {

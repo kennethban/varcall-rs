@@ -1425,6 +1425,70 @@ fn decode_stream(
     fc
 }
 
+/// The downsampler's drawing groups among the reads a contig job over `padded` (its padded, merged intervals) pushes
+/// to it, for the reads starting in [lo, hi]: (start, number of reads) of every start with more than `target` reads,
+/// in order. The same records as `decode_stream` (htsjdk's interval filter, then the HC read filters, summed over
+/// the inputs), without BQSR (the filters do not read base qualities) and without decoding the reads further.
+/// Chunks [lo, hi] that partition the starts give the job's groups (a record's fate under the interval filter only
+/// depends on the record and `padded`).
+pub fn count_drawing_groups(inputs: &[crate::input::Input], tid: usize, padded: &[(i64, i64)], ref_lens: &[i64], lo: i64, hi: i64, target: usize, io_ns: Arc<AtomicU64>) -> Vec<(i64, u32)> {
+    let (Some(p0), Some(p1)) = (padded.first().map(|p| p.0), padded.last().map(|p| p.1)) else { return Vec::new() };
+    if hi < p0 || lo > p1 {
+        return Vec::new();
+    }
+    // the stream: every padded interval from the chunk's start on (a read starting in the chunk may reach a later
+    // interval only); the loop stops past `hi`
+    let from = lo.max(p0);
+    let query: Vec<(i64, i64)> = padded.iter().filter(|p| p.1 >= from).map(|&(a, b)| (a.max(from), b)).collect();
+    let mut fc = FilterCounts::default();
+    let mut rec = Rec::default();
+    let mut per_input: Vec<Vec<(i64, u32)>> = Vec::with_capacity(inputs.len());
+    for inp in inputs {
+        let cs = inp.stream(tid, &query, false, io_ns.clone());
+        let mut reader = IntervalReader { cs, tid, padded, q_idx: 0, body: Vec::new(), spare: Vec::new(), end: false };
+        let mut counts: Vec<(i64, u32)> = Vec::new();
+        'stream: loop {
+            let batch = reader.batch();
+            if batch.is_empty() {
+                break;
+            }
+            for body in &batch {
+                let (_, start, _) = bam::peek_core(body);
+                if start > hi {
+                    break 'stream;
+                }
+                if start >= lo {
+                    bam::parse_record(body, &mut rec);
+                    if passes_filters(&rec, ref_lens, &mut fc) {
+                        match counts.last_mut() {
+                            Some(c) if c.0 == rec.start => c.1 += 1,
+                            _ => counts.push((rec.start, 1)),
+                        }
+                    }
+                }
+            }
+            reader.spare.extend(batch);
+        }
+        per_input.push(counts);
+    }
+    let mut all = if per_input.len() == 1 {
+        per_input.pop().unwrap()
+    } else {
+        let mut v: Vec<(i64, u32)> = per_input.into_iter().flatten().collect();
+        v.sort_unstable_by_key(|c| c.0);
+        let mut m: Vec<(i64, u32)> = Vec::with_capacity(v.len());
+        for (s, n) in v {
+            match m.last_mut() {
+                Some(c) if c.0 == s => c.1 += n,
+                _ => m.push((s, n)),
+            }
+        }
+        m
+    };
+    all.retain(|c| c.1 as usize > target);
+    all
+}
+
 /// Runs the front end of one contig (`tid` in the BAM, unpadded merged `intervals`). `max_reads_per_start`
 /// is `--max-reads-per-alignment-start` (0 = no downsampling). `two_stage`: read stage (downsampling, scatter) on
 /// its own thread.

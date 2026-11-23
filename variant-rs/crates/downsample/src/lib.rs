@@ -20,6 +20,6 @@ pub mod downsampler;
 pub mod javarandom;
 pub mod schedule;
 
-pub use downsampler::{reservoir_downsample, DownsampleStats, Horizon, PositionalDownsampler};
+pub use downsampler::{reservoir_downsample, reservoir_draws, DownsampleStats, Horizon, PositionalDownsampler};
 pub use javarandom::{JavaRandom, JavaRandomState, GATK_RANDOM_SEED};
 pub use schedule::{lookahead_locus, pileup_span, LibsCoverage, ReadyAt, ReadyTracker};

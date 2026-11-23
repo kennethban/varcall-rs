@@ -241,6 +241,8 @@ struct Domain {
     last: usize, // inclusive job range; first > last for an empty domain
     rng: Arc<rng::DomainRng>,
     contam: Arc<rng::DomainRng<hc_genotype::well::Well19937c>>,
+    /// GVCF: the contigs' starting generator states from a replay of the drawing groups (rng::Replay)
+    replay: Option<Arc<rng::Replay>>,
 }
 
 struct ContigResult {
@@ -699,7 +701,41 @@ fn main() {
             );
         }
         let n = jobs.len() - first;
-        domains.push(Domain { name: name.clone(), first, last: jobs.len().wrapping_sub(1), rng: Arc::new(rng::DomainRng::new(n)), contam: Arc::new(rng::DomainRng::with(n, hc_genotype::well::Well19937c::gatk())) });
+        domains.push(Domain { name: name.clone(), first, last: jobs.len().wrapping_sub(1), rng: Arc::new(rng::DomainRng::new(n)), contam: Arc::new(rng::DomainRng::with(n, hc_genotype::well::Well19937c::gatk())), replay: None });
+    }
+    // GVCF: the generator state each contig starts with, from a replay of the drawing groups of the contigs before it
+    // (rng::Replay), so that contigs do not wait for each other. VARIANT_RS_REPLAY=0 turns it off.
+    let replay_on = args.erc && args.contamination == 0.0 && args.max_reads_per_start > 0 && std::env::var("VARIANT_RS_REPLAY").ok().as_deref() != Some("0");
+    // scan chunks (domain, contig index in the domain, chunk, first start, last start), and each job's padded intervals
+    let mut replay_scan: Vec<(usize, usize, usize, i64, i64)> = Vec::new();
+    let mut replay_padded: Vec<Vec<(i64, i64)>> = vec![Vec::new(); jobs.len()];
+    if replay_on {
+        const CHUNK: i64 = 20_000_000;
+        for (d, dom) in domains.iter_mut().enumerate() {
+            if dom.first > dom.last || dom.last == usize::MAX || dom.last == dom.first {
+                continue;
+            }
+            let mut n_chunks = Vec::new();
+            for k in dom.first..dom.last {
+                let j = &jobs[k];
+                let padded = intervals::pad_merge(&j.intervals, frontend::REGION_PADDING, j.len);
+                let (p0, p1) = (padded[0].0, padded.last().unwrap().1);
+                let n = ((p1 - p0 + 1 + CHUNK - 1) / CHUNK).max(1);
+                for c in 0..n {
+                    let lo = if c == 0 { i64::MIN } else { p0 + (p1 - p0 + 1) * c / n };
+                    let hi = if c == n - 1 { i64::MAX } else { p0 + (p1 - p0 + 1) * (c + 1) / n - 1 };
+                    replay_scan.push((d, k - dom.first, c as usize, lo, hi));
+                }
+                n_chunks.push(n as usize);
+                replay_padded[k] = padded;
+            }
+            dom.replay = Some(Arc::new(rng::Replay::new(&n_chunks, args.max_reads_per_start, t_all)));
+        }
+        // earlier contigs first: the replay goes in order
+        replay_scan.sort_by_key(|&(d, k, c, ..)| (k, d, c));
+        if !replay_scan.is_empty() {
+            eprintln!("replay: {} scan chunk(s) in {} domain(s)", replay_scan.len(), domains.iter().filter(|d| d.replay.is_some()).count());
+        }
     }
     if args.out.is_some() {
         // the merged output is the jobs' outputs in job order: they must be sorted and disjoint
@@ -916,8 +952,33 @@ fn main() {
     let _ = AtomicUsize::new(0);
     let contig_times = std::env::var_os("VARIANT_RS_CONTIG_TIMES").is_some();
     let ref_cache: Mutex<std::collections::HashMap<usize, std::sync::Weak<RefSeq>>> = Mutex::new(std::collections::HashMap::new());
+    let scan_next = AtomicUsize::new(0);
 
     std::thread::scope(|scope| {
+        // the replay's pre-scan, beside the contig workers (a contig waits for it only at its first drawing group)
+        let n_scan = if replay_scan.is_empty() { 0 } else { (args.threads / 4).clamp(1, 16).min(replay_scan.len()) };
+        for _ in 0..n_scan {
+            let (replay_scan, replay_padded, scan_next, domains, jobs, inputs, header, failed) = (&replay_scan, &replay_padded, &scan_next, &domains, &jobs, &inputs, header, &failed);
+            let cap = args.max_reads_per_start;
+            std::thread::Builder::new()
+                .name("replay-scan".into())
+                .spawn_scoped(scope, move || loop {
+                    let i = scan_next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(d, k, c, lo, hi)) = replay_scan.get(i) else { return };
+                    let j = domains[d].first + k;
+                    let io = Arc::new(AtomicU64::new(0));
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| frontend::count_drawing_groups(inputs, jobs[j].tid, &replay_padded[j], &header.ref_lens, lo, hi, cap, io)));
+                    match r {
+                        Ok(g) => domains[d].replay.as_ref().unwrap().add(k, c, g),
+                        Err(_) => {
+                            failed.store(true, Ordering::Relaxed);
+                            domains.iter().filter_map(|d| d.replay.as_ref()).for_each(|r| r.fail());
+                            return;
+                        }
+                    }
+                })
+                .unwrap();
+        }
         for _ in 0..n_workers {
             let res_tx = res_tx.clone();
             let (jobs, domains, inputs, fasta, tables, header, claim) = (&jobs, &domains, &inputs, &fasta, &tables, header, &claim);
@@ -993,10 +1054,16 @@ fn main() {
                     let mut dump_guard = if dump_on { Some(dump_file.lock().unwrap()) } else { None };
                     let dump = dump_guard.as_mut().and_then(|g| g.as_mut());
                     let tf = Instant::now();
-                    let sink = Sink { erc, tx: btx, batch: Vec::new(), n_active: 0, rng: None, resolved: 0, domain: domain.clone(), didx: job.didx, n_absorbed: 0, void: false, t_all, first_req: f64::NAN, first_got: f64::NAN, rng_wait: 0.0 };
+                    let replay = domains[job.domain].replay.clone();
+                    let sink = Sink { erc, tx: btx, batch: Vec::new(), n_active: 0, rng: None, resolved: 0, domain: domain.clone(), replay: replay.clone(), didx: job.didx, n_absorbed: 0, void: false, t_all, first_req: f64::NAN, first_got: f64::NAN, rng_wait: 0.0 };
                     let (fr, mut sink) = frontend::run(&ctx, job.tid, &job.name, &job.intervals, &refseq, cap, dump, sink, two_stage, job.seg.clone());
                     sink.send_batch();
-                    if erc {
+                    if let Some(rp) = &replay {
+                        if let Err(e) = rp.check(job.didx, sink.rng.as_ref()) {
+                            failed.store(true, Ordering::Relaxed);
+                            panic!("{} ({})", e, job.name);
+                        }
+                    } else if erc {
                         match sink.rng.take() {
                             Some(r) => domain.finish(job.didx, r),
                             None => domain.pass(job.didx),
@@ -1262,6 +1329,8 @@ struct Sink {
     rng: Option<hc_downsample::JavaRandom>,
     resolved: usize,
     domain: Arc<rng::DomainRng>,
+    /// GVCF: the starting state comes from the replay instead of the previous contig
+    replay: Option<Arc<rng::Replay>>,
     didx: usize,
     /// segments: ranges of the following segments taken over; this segment was absorbed (void)
     n_absorbed: usize,
@@ -1318,7 +1387,10 @@ impl frontend::FrontSink for Sink {
         if self.erc {
             // GVCF mode makes no QD draws: only the order of contigs matters
             if self.rng.is_none() {
-                self.rng = Some(self.domain.take(self.didx).expect("GVCF mode has no segments"));
+                self.rng = Some(match &self.replay {
+                    Some(rp) => rp.start(self.didx),
+                    None => self.domain.take(self.didx).expect("GVCF mode has no segments"),
+                });
             }
         } else if self.rng.is_none() || resolved_before > self.resolved {
             self.send_batch();
