@@ -1,10 +1,13 @@
 # Architecture
 
-Both tools follow the same rule: **port the reference first, line for line, then make it fast without changing a
-bit of output.** The port matches the reference's data structures where order matters: klib's B-tree and
-introsort, Java's `HashMap` iteration, `PriorityQueue` tie-breaking, `java.util.Random`. Each optimization is then
-checked against the plain port: by a check mode run beside it, or by comparing full outputs on real data. See
-[optimizations.md](optimizations.md).
+Both tools were developed by the same method. The reference implementation was first ported line by line, and the
+port was then optimized without changing its output. The port reproduces the data structures of the reference
+wherever the output depends on their order: the B-tree and introsort of klib, the iteration order of the Java
+`HashMap`, the tie-breaking of `PriorityQueue`, and `java.util.Random`. Each optimization was then verified against
+the unoptimized port, either by a check mode that runs both versions or by a comparison of complete outputs on
+real data ([optimizations.md](optimizations.md)).
+
+The repository is organised as follows:
 
 ```
 Cargo.toml                    workspace: align-rs, variant-rs, variant-rs/crates/*
@@ -20,9 +23,10 @@ docs/                         this documentation; notes/ (development notes), sp
 
 ## align-rs
 
-bwa-mem2 `mem` processes the reads in batches of `-K` bases. A batch goes through four steps, and the output
-depends only on the batch, not on threads. align-rs keeps the same batches and runs them as a pipeline of
-stages, so that several batches are in flight and CPU and GPU work overlap.
+`bwa-mem2 mem` processes the reads in batches of `-K` bases. Each batch passes through four steps, and the output
+depends on the composition of the batch and is independent of the number of threads. align-rs forms the same
+batches and processes them in a pipeline of stages, so that several batches are in progress at once and the work
+of the CPU and the GPU overlaps.
 
 ```
 lane FASTQs ──> read + gunzip (one thread per file; kseq_read ported byte for byte)          fastq.rs
@@ -37,35 +41,39 @@ lane FASTQs ──> read + gunzip (one thread per file; kseq_read ported byte fo
                 sort -> cut into BGZF blocks as htslib does, compress in parallel -> write -> index
 ```
 
-* **Stages** (`main.rs`): one thread per stage, batches handed over through `sync_channel`. Extension, pairing /
-  SAM and mate rescue get their own rayon pools, so that they overlap instead of taking turns.
-* **Final pass** (`bam.rs`): the sort, the compression, the write and the `.bai` run on their own threads, window
-  by window. Records are stored as `bam_write1` writes them, blocks are cut by htslib's rule and compressed with
+* **Stages** (`main.rs`). Each stage has one thread, and batches pass between stages through `sync_channel`.
+  Extension, pairing and SAM formatting, and mate rescue each have a separate rayon pool, so that they run
+  concurrently.
+* **Final pass** (`bam.rs`). Sorting, compression, writing and indexing run on separate threads, one window of
+  buckets at a time. Records are stored as `bam_write1` writes them, blocks are cut by htslib's rule and compressed with
   its `bgzf_compress`, and the index comes from `hts_idx_push`. The records are therefore those of `samtools sort`,
   and the `.bai` is the one `samtools index` builds for this BAM. The compressed file itself differs from
   samtools's, because each window ends its last block and the block boundaries fall elsewhere. With `--lanes`, a
   lane's final pass overlaps the next lane's alignment.
-* **GPU** (`gpu.rs`, `cuda/aln_ext.cu`): what the reference index puts on the device depends on free memory. The
-  2-bit `.pac` is needed for extension and mate rescue, the FM-index checkpoints for seeding, and the SA samples
-  for SA lookups. Each batch's reads go to the device once and are shared by the kernels.
-* **Fallback:** a job a kernel cannot take is done on the CPU with the same code bwa-mem2 uses: a read over 256
-  bases, too many seeds, scores that could overflow the packed DP cells. The same happens to a whole GPU call that
-  fails, e.g. out of memory.
-* **Order-sensitive ports** (they decide ties exactly as bwa-mem2 does):
+* **GPU** (`gpu.rs`, `cuda/aln_ext.cu`). The parts of the reference index that are loaded onto the device depend
+  on the free memory. The 2-bit `.pac` is required for extension and mate rescue, the FM-index checkpoints for
+  seeding, and the SA samples for SA lookups. The reads of each batch are transferred to the device once and are
+  shared by the kernels.
+* **Fallback.** A job that a kernel cannot process is computed on the CPU with a port of the corresponding bwa-mem2
+  code. This applies to reads longer than 256 bases, to reads with too many seeds, and to scores that could
+  overflow the packed DP cells. A GPU call that fails as a whole, for example for lack of memory, is handled in
+  the same way.
+* **Order-sensitive ports.** The following modules resolve ties exactly as bwa-mem2 does:
   * `ksort.rs`: `ks_introsort`;
   * `chain.rs`: kbtree with t = 5;
   * `fastq.rs`: kseq, including how malformed records end a batch;
   * `index.rs`: `bns_restore`'s .alt parsing;
   * `sam.rs`: `mem_sam_pe` and the `int` arithmetic of `mapQ_coef_fac` and the pair id.
-* **Panics abort** (a hook in `main`), so a crash never leaves BAMs that look complete.
+* **Panics.** A hook in `main` aborts the process on a panic, so that a crash cannot leave a BAM file that appears
+  complete.
 
 ## variant-rs
 
-One binary with every tool. The first argument selects it:
+variant-rs is a single binary that contains every tool. The first argument selects the tool:
 
-* a GATK tool name goes through `gatk_cli.rs`, which translates or refuses the arguments;
-* a subcommand (`plan`, `bqsr`, `markdup`, ...) runs it directly;
-* plain HaplotypeCaller options run HaplotypeCaller.
+* the name of a GATK tool is handled by `gatk_cli.rs`, which translates or refuses the arguments;
+* a native subcommand (`plan`, `bqsr`, `markdup` and others) is run directly;
+* HaplotypeCaller options without a tool name run HaplotypeCaller.
 
 ### HaplotypeCaller
 
@@ -82,16 +90,19 @@ per contig (one GATK read shard), several contigs at a time:
   -> per-contig parts -> output in dictionary order, bgzip + tabix (output.rs, bgzf.rs, tabix.rs)
 ```
 
-* **What crosses contigs** in GATK is one JVM-wide `java.util.Random`. Downsampling and the QD jitter draw from it
-  in traversal order. variant-rs runs contigs in parallel and hands the generator from contig to contig like a
-  baton, in GATK's order (`rng.rs`). A contig that draws nothing never waits.
-* **Domains:** one GATK JVM equals one generator stream. `--shard` files and `--scatter-intervals` make several
-  domains in one process, so one run reproduces many separate GATK runs (as WARP and sarek scatter).
-* **Scheduling:** longest job first, estimated from the BAM index alone (`plan.rs`, which also writes
-  load-balanced shard files).
-* **GPU PairHMM** (`crates/cudahmm`, `cuda-pairhmm/`): the contig workers share a pool of engines, each a CUDA
-  stream with its own buffers (`VARIANT_RS_GPU_STREAMS` per GPU), spread over every visible GPU (`VARIANT_RS_GPUS`
-  caps them). A call takes a free engine on the least busy GPU; results do not depend on which.
+* **State shared between contigs.** In GATK, the only state that connects contigs is a single `java.util.Random`
+  for the whole JVM, from which downsampling and the QD jitter draw in traversal order. variant-rs processes
+  contigs in parallel and passes the generator from contig to contig in the order of GATK (`rng.rs`). A contig
+  that makes no draws does not wait for the generator.
+* **Domains.** One GATK JVM corresponds to one generator stream. `--shard` files and `--scatter-intervals` create
+  several domains within one process, so that a single run reproduces many separate GATK runs, as scattered by
+  WARP and sarek.
+* **Scheduling.** Jobs are started in decreasing order of their estimated duration, which is derived from the BAM
+  index alone (`plan.rs`, which also writes load-balanced shard files).
+* **GPU PairHMM** (`crates/cudahmm`, `cuda-pairhmm/`). The contig workers share a pool of engines. Each engine is a
+  CUDA stream with its own buffers (`VARIANT_RS_GPU_STREAMS` per GPU), and the engines are distributed over every
+  visible GPU (limited by `VARIANT_RS_GPUS`). A call uses a free engine on the least busy GPU, and the results do
+  not depend on the engine used.
 
 ### Other tools
 
@@ -107,8 +118,8 @@ per contig (one GATK read shard), several contigs at a time:
 
 ### Exactness helpers
 
-Most of the remaining differences from GATK came from Java semantics, not from the algorithms. These pieces live
-in one place each and are shared:
+Most of the differences from GATK that remained after the algorithms had been ported arose from the semantics of
+Java. The corresponding functions are each defined once and shared:
 
 * `crates/assembly/src/jmath.rs`: `Math.log10` / `exp` / `pow` as Java computes them, and `Double.compare`
   (`java_cmp`).
@@ -121,9 +132,10 @@ in one place each and are shared:
 
 ## Other GPU vendors
 
-The GPU code is CUDA only, but that is not because it depends on anything NVIDIA-specific. It has no inline PTX, no
-cooperative groups and no textures. Without a GPU, every kernel falls back to a CPU path that gives the same output.
-Any port would be checked the same way as the CUDA code, by the selftest and the [harness](validation.md).
+The GPU code is written in CUDA but does not depend on features specific to NVIDIA hardware: it uses no inline
+PTX, no cooperative groups and no textures. Without a GPU, every kernel has a CPU path that gives the same output.
+A port would be validated in the same way as the CUDA code, by the self-contained test and the
+[harness](validation.md).
 
 | | align-rs `cuda/aln_ext.cu` | variant-rs `cuda-pairhmm/native/cuda_pairhmm.cu` |
 |---|---|---|
@@ -133,10 +145,10 @@ Any port would be checked the same way as the CUDA code, by the selftest and the
 | Numerics | none to control | `__fmaf_rn`, `__fadd_rn`, `__dmul_rn`, `__dadd_rn`; `-ftz=true -fmad=false`; doubles flushed to zero by hand; `log10` taken on the host |
 | Host side | streams, pinned memory, async copies, atomics | streams, events, async copies |
 
-The align-rs kernels are integer DP, so a port that keeps the logic is exact by construction. The PairHMM uses
-only add, multiply and FMA on the device, which are correctly rounded on every vendor. A port stays bit-exact if
-the compiler does not fuse or reorder operations, denormals are flushed the same way, and double precision is
-available.
+The kernels of align-rs perform integer dynamic programming, so a port that preserves their logic is exact by
+construction. The PairHMM uses only addition, multiplication and FMA on the device, which are correctly rounded on
+the hardware of every vendor. A port remains bit-exact provided that the compiler does not fuse or reorder
+operations, that denormal values are flushed in the same way, and that double precision is available.
 
 | Target | Fit | What a port needs |
 |---|---|---|
@@ -145,4 +157,4 @@ available.
 | Apple, Metal | align-rs only | SIMD groups are 32 lanes (`simd_shuffle`, `simd_ballot`) and unified memory removes the copies, but the sort and scan would have to be written by hand. Metal has no double precision, so the PairHMM's double pass would run on the CPU, and its denormal handling would need checking. MLX is an array framework on Metal; its custom kernels (`mx.fast.metal_kernel`) suit elementwise code, not these DP kernels. On Apple, the CPU code would also need ARM NEON paths; its SIMD is x86 only (AVX2, GKL's AVX-512). |
 | Vulkan / WebGPU | poor | WGSL has no double precision, and subgroup operations are optional. |
 
-None of these has been tried. HIP for AMD datacenter GPUs is the natural first port.
+None of these ports has been attempted. HIP for AMD data-center GPUs would require the least work.

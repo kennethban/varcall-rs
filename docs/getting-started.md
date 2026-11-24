@@ -1,17 +1,18 @@
 # Getting started
 
-This tutorial takes you from a fresh build to germline and somatic calls in about ten minutes. It uses the small
-synthetic data set that the tests use, so there is nothing to download. Along the way you check the two promises
-varcall-rs makes: align-rs writes bwa-mem2's records, and variant-rs writes GATK's output.
+This tutorial covers alignment, germline calling and somatic calling with varcall-rs, starting from a completed
+build, and takes about ten minutes. It uses the small synthetic data set of the test suite, so no data need to be
+downloaded. Two comparisons are included: the records of align-rs against those of bwa-mem2, and the output of
+variant-rs against that of GATK.
 
-You need:
+Requirements:
 
-* varcall-rs built as in [building.md](building.md) (a GPU is optional);
-* the `varcall-rs` conda environment from `environment.yml` (it has bwa-mem2, samtools, bgzip and tabix);
-* for step 5 only, GATK 4.7.0.0 (the release zip from the
+* varcall-rs, built as described in [building.md](building.md) (a GPU is optional);
+* the `varcall-rs` conda environment from `environment.yml`, which provides bwa-mem2, samtools, bgzip and tabix;
+* for step 5 only, GATK 4.7.0.0 (the release archive from the
   [GATK releases page](https://github.com/broadinstitute/gatk/releases/tag/4.7.0.0)).
 
-## 1. Make the data
+## 1. Generate the data
 
 ```bash
 REPO=$PWD                                    # run from the varcall-rs checkout
@@ -20,11 +21,12 @@ python3 tests/synth/simulate.py ~/varcall-tutorial
 cd ~/varcall-tutorial
 ```
 
-`simulate.py` writes a 1.9 Mb genome with repeats, STRs and gaps; a germline sample sequenced on two lanes; and a
-tumor / normal pair with three somatic clones. It is seeded, so you get the same files as everyone else.
+`simulate.py` writes a 1.9 Mb genome that contains repeats, short tandem repeats and gaps, a germline sample
+sequenced on two lanes, and a tumor-normal pair with three somatic clones. The simulation is seeded and therefore
+produces the same files on every machine.
 
-Index the reference for bwa-mem2 (align-rs reads the same index), and compress and index the two VCFs that BQSR and
-Mutect2 use:
+The reference is then indexed for bwa-mem2 (align-rs reads the same index), and the two VCF files used by BQSR and
+Mutect2 are compressed and indexed:
 
 ```bash
 bwa-mem2 index ref.fa
@@ -38,13 +40,16 @@ RG='@RG\tID:GERM.L1\tSM:GERM\tPL:ILLUMINA\tLB:GERM\tPU:FCGERM1.1'
 align-rs mem -t 8 -K 100000000 -Y --gpu -R "$RG" -o GERM.L1.bam ref.fa germline_L1_R1.fq.gz germline_L1_R2.fq.gz
 ```
 
-These are bwa-mem2's options. `-K` matters: bwa-mem2's output depends on the batch size, so use the value your
-reference run used (GATK's and nf-core's pipelines use `-K 100000000`). `--gpu` uses the GPU when there is one and
-the CPU otherwise. With `-o x.bam`, align-rs writes the coordinate-sorted BAM and its index itself, as
-`bwa-mem2 mem | samtools sort` and `samtools index` would.
+The options are those of bwa-mem2:
 
-A sample's other lanes can go through one process, which loads the index once. Each line of the lanes file gives an
-output BAM, a read group and the FASTQ files:
+* `-K` sets the batch size. The output of bwa-mem2 depends on this value, so it should equal the value used in the
+  run that is being reproduced. The pipelines of GATK and nf-core use `-K 100000000`.
+* `--gpu` uses the GPU when one is present and the CPU otherwise.
+* `-o x.bam` makes align-rs write the coordinate-sorted BAM and its index directly, with the result that
+  `bwa-mem2 mem | samtools sort` followed by `samtools index` would give.
+
+The remaining lanes of a sample can be aligned by a single process, which loads the index once. Each line of the
+lanes file specifies an output BAM, a read group and the FASTQ files:
 
 ```bash
 rg() { printf '@RG\\tID:%s\\tSM:%s\\tPL:ILLUMINA\\tLB:%s\\tPU:%s' $1 $2 $2 $3; }
@@ -55,7 +60,8 @@ printf '%s\t%s\t%s\t%s\n' \
 align-rs mem -t 8 -K 100000000 -Y --gpu --lanes lanes.tsv ref.fa
 ```
 
-**Check it against bwa-mem2.** Align the first lane with bwa-mem2 and samtools, and compare the records:
+**Comparison with bwa-mem2.** The first lane is aligned with bwa-mem2 and samtools, and the records of the two BAM
+files are compared:
 
 ```bash
 bwa-mem2 mem -t 8 -K 100000000 -Y -R "$RG" ref.fa germline_L1_R1.fq.gz germline_L1_R2.fq.gz 2> /dev/null \
@@ -65,7 +71,8 @@ cmp <(samtools view GERM.L1.bam) <(samtools view bwa.GERM.L1.bam) && echo identi
 
 ## 3. Call germline variants
 
-variant-rs takes GATK's command lines. Mark duplicates over both lanes, recalibrate base qualities, and call:
+variant-rs accepts the command lines of GATK. The following commands mark duplicates across both lanes,
+recalibrate the base qualities and call variants:
 
 ```bash
 variant-rs MarkDuplicates -I GERM.L1.bam -I GERM.L2.bam -O GERM.md.bam -M GERM.md.metrics
@@ -74,13 +81,14 @@ variant-rs ApplyBQSR -R ref.fa -I GERM.md.bam --bqsr-recal-file GERM.recal.table
 variant-rs HaplotypeCaller -R ref.fa -I GERM.recal.bam -O GERM.vcf.gz
 ```
 
-Add `-ERC GVCF` to HaplotypeCaller for a GVCF, then `variant-rs GenotypeGVCFs` as with GATK. HaplotypeCaller can
-also apply the recalibration table while it reads (`--bqsr-recal-file GERM.recal.table` on `GERM.md.bam`), which
-saves writing the recalibrated BAM; the pipeline does that.
+Adding `-ERC GVCF` to HaplotypeCaller produces a GVCF, which `variant-rs GenotypeGVCFs` then genotypes as GATK
+does. HaplotypeCaller can also apply the recalibration table while it reads the input
+(`--bqsr-recal-file GERM.recal.table` with `GERM.md.bam`), which avoids writing the recalibrated BAM. The pipeline
+uses this form.
 
 ## 4. Call somatic variants
 
-The same preprocessing for the tumor and the normal, then GATK's somatic Best Practices:
+The tumor and the normal sample are preprocessed in the same way, and the somatic Best Practices of GATK follow:
 
 ```bash
 for s in TUMOR NORMAL; do
@@ -101,20 +109,20 @@ variant-rs FilterMutectCalls -R ref.fa -V somatic.vcf.gz --contamination-table c
 
 ## 5. Compare with GATK
 
-With GATK 4.7.0.0 installed, run the same command with `gatk` and compare the records. A VCF's header differs only
-in the command-line line, so compare the data lines:
+With GATK 4.7.0.0 installed, the same command can be run with `gatk` and the records compared. The header of a VCF
+file differs only in the line that records the command, so the comparison is made on the data lines:
 
 ```bash
 gatk HaplotypeCaller -R ref.fa -I GERM.recal.bam -O gatk.GERM.vcf.gz 2> /dev/null
 cmp <(zgrep -v '^#' GERM.vcf.gz) <(zgrep -v '^#' gatk.GERM.vcf.gz) && echo identical
 ```
 
-Any step works the same way. `tests/selftest.sh` runs this whole tutorial, compares 34 outputs with GATK's, and does
-it once with the CPU PairHMM and once with the GPU one.
+Any other step can be compared in the same way. `tests/selftest.sh` runs the whole of this tutorial and compares 34
+outputs with those of GATK, once with the CPU PairHMM and once with the GPU PairHMM.
 
-## What next
+## Next steps
 
-* Run a whole sample from FASTQ with the [Nextflow pipeline](../pipeline/README.md), or put variant-rs into
-  nf-core/sarek: [how-to.md](how-to.md).
-* Every tool, option and environment variable: [reference.md](reference.md).
-* How the outputs are checked at scale: [validation.md](validation.md).
+* The [Nextflow pipeline](../pipeline/README.md) processes a whole sample from FASTQ files, and
+  [how-to.md](how-to.md) describes the use of variant-rs within nf-core/sarek.
+* [reference.md](reference.md) lists every tool, option and environment variable.
+* [validation.md](validation.md) describes how the outputs are checked on complete genomes.

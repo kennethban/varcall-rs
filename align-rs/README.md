@@ -1,8 +1,10 @@
 # align-rs
 
-`bwa-mem2 mem` 2.2.1 in Rust and CUDA: the same records as bwa-mem2, with seeding, SA lookups, seed extension and
-mate rescue on the GPU, and the coordinate-sorted BAM + `.bai` written directly (records as `samtools sort`,
-index bytes as `samtools index`). One NA12878 30x lane: 124 s vs 587 s for bwa-mem2 + samtools sort + index.
+align-rs is a reimplementation of `bwa-mem2 mem` 2.2.1 in Rust and CUDA that produces the same records as
+bwa-mem2. Seeding, SA lookups, seed extension and mate rescue run on the GPU. The coordinate-sorted BAM and its
+`.bai` are written directly, with the records in the order of `samtools sort` and an index byte-identical to that
+of `samtools index`. One lane of NA12878 at 30x takes 124 s, compared with 587 s for bwa-mem2 followed by
+`samtools sort` and `samtools index`.
 
 ```bash
 make -C cuda                      # GPU kernels (optional; without them align-rs runs on the CPU, same output)
@@ -26,5 +28,5 @@ align-rs tune -t 32 -K 100000000 ref.fa R1.fq.gz R2.fq.gz                # measu
 | `tests/` | edge cases vs bwa-mem2 (`badfq.sh`, `alt.sh`, `gpufail.sh`, `big_bucket.sh`, `cmp.sh`) |
 | `tools/` | timing scripts, lane digests |
 
-See [docs/reference.md](../docs/reference.md) (options, environment variables), [docs/architecture.md](../docs/architecture.md),
+Further documentation: [docs/reference.md](../docs/reference.md) (options and environment variables), [docs/architecture.md](../docs/architecture.md),
 [docs/optimizations.md](../docs/optimizations.md) and the [development notes](../docs/notes/align-rs.md).

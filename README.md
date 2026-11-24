@@ -3,56 +3,64 @@
 [![CI](https://github.com/kennethban/varcall-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/kennethban/varcall-rs/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Short-read alignment and germline / somatic variant calling in Rust and CUDA, with **outputs byte-identical to
-bwa-mem2 and GATK 4.7**: the same BAM records, VCF lines, metrics and tables. A 30x whole genome goes from FASTQ to a
-filtered VCF in 34 minutes on one workstation, instead of about 5 hours.
+varcall-rs is a GPU-accelerated reimplementation of bwa-mem2 2.2.1 and GATK 4.7.0.0 for short-read alignment and
+germline and somatic variant calling, written in Rust and CUDA. It produces the same BAM records, VCF records,
+metrics and recalibration tables as the reference tools when given the same arguments. On a workstation with one
+GPU, it processes a 30x human genome from FASTQ files to a filtered VCF in 34 minutes, compared with about 5 hours
+for the reference tools.
 
-* **align-rs** reimplements `bwa-mem2 mem` 2.2.1, plus `samtools sort` and `samtools index`. It runs seeding, SA
-  lookups, seed extension and mate rescue on the GPU.
-* **variant-rs** reimplements the GATK 4.7 / Picard tools of the GATK Best Practices: HaplotypeCaller, Mutect2 and
-  its filters, MarkDuplicates, BaseRecalibrator, ApplyBQSR, GenotypeGVCFs and [more](docs/reference.md#variant-rs).
-  Its PairHMM runs on the GPU, bit-exact with GATK's AVX-512 kernel.
+It consists of two programs:
 
-## Highlights
+* **align-rs** reimplements `bwa-mem2 mem` 2.2.1 together with `samtools sort` and `samtools index`. Seeding,
+  suffix-array lookups, seed extension and mate rescue run on the GPU.
+* **variant-rs** reimplements the GATK 4.7 and Picard tools of the GATK Best Practices, including HaplotypeCaller,
+  Mutect2 and its filters, MarkDuplicates, BaseRecalibrator, ApplyBQSR and GenotypeGVCFs
+  ([complete list](docs/reference.md#variant-rs)). Its PairHMM runs on the GPU and is bit-exact with the AVX-512
+  kernel that GATK uses.
 
-* **Identical, not approximately equal.** Every output is checked byte for byte against the reference tools: on
-  synthetic data in CI, and on whole genomes, exomes and tumor / normal pairs ([validation](docs/validation.md)).
-* **GATK's command lines.** `variant-rs HaplotypeCaller -R ref.fa -I x.bam -O x.vcf.gz` takes the same arguments as
-  `gatk`. An argument or input it does not reproduce exactly is refused with the reason, or passed to a real GATK.
-* **The same output as the same GATK runs.** GATK's output depends on how a genome is divided among separate runs,
-  because each run has its own random-number stream. variant-rs reproduces a given division (one run, WARP's shards,
-  sarek's intervals) in a single process ([how-to](docs/how-to.md#call-a-whole-genome-in-shards-in-one-process)).
-* **Drop-in for nf-core/sarek.** The variant-rs image replaces sarek's GATK image for the steps it reproduces.
-* **GPU optional.** Without a GPU everything runs on the CPU, with the same output.
-* **A FASTQ → VCF pipeline** in Nextflow, germline (per sample, or joint calling with VQSR) and tumor / normal, that
-  takes sarek's samplesheet.
+## Features
 
-## Speed
+* **Identical output.** Outputs are compared byte for byte with those of the reference tools, on synthetic data in
+  continuous integration and on public whole-genome, exome and tumor-normal data ([validation](docs/validation.md)).
+* **GATK command-line interface.** variant-rs accepts the arguments of `gatk`, for example
+  `variant-rs HaplotypeCaller -R ref.fa -I x.bam -O x.vcf.gz`. An argument or input that it cannot reproduce exactly
+  is refused with an explanation, or is passed to an installed GATK.
+* **Reproduction of scattered runs.** The output of GATK depends on how a genome is divided among separate runs,
+  because each run has its own random-number stream. variant-rs reproduces a given division (a single run, the
+  shards of WARP, or the intervals of nf-core/sarek) within one process
+  ([how-to](docs/how-to.md#call-a-whole-genome-in-shards-in-one-process)).
+* **Use within nf-core/sarek.** The variant-rs container image replaces the GATK image of sarek for the steps that
+  variant-rs reproduces.
+* **Optional GPU.** Without a GPU, all steps run on the CPU and give the same output.
+* **A FASTQ-to-VCF pipeline.** A Nextflow pipeline covers germline calling (per sample, or joint calling with VQSR)
+  and tumor-normal somatic calling, and accepts the samplesheet format of sarek.
 
-The first two tables were measured on one workstation: a 16-core Ryzen 9 9950X3D (32 threads), one RTX 5070 Ti
-(16 GB), and Linux under WSL2 with 48 GB of RAM. In every row, the varcall-rs output is identical to that of the
+## Performance
+
+The first two tables were measured on a workstation with a 16-core Ryzen 9 9950X3D (32 threads), one RTX 5070 Ti
+(16 GB), and Linux under WSL2 with 48 GB of RAM. In every row, the output of varcall-rs is identical to that of the
 reference tools.
 
-| Whole pipeline | Data | Reference tools | varcall-rs | |
+| Whole pipeline | Data | Reference tools | varcall-rs | Speed-up |
 |---|---|---|---:|---:|
-| germline: FASTQ → filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **34.0 min** | **9.2×** |
-| somatic: BAMs → filtered Mutect2 calls (+ HaplotypeCaller on the normal) | SEQC2 exome tumor / normal | nf-core/sarek with GATK: 46.5 min | **2.8 min** | **17×** |
+| Germline, FASTQ to filtered VCF | NA12878 30x whole genome, 12 lanes | bwa-mem2 + samtools + GATK: ~5.2 h | **34.0 min** | **9.2×** |
+| Somatic, BAMs to filtered Mutect2 calls (with HaplotypeCaller on the normal) | SEQC2 exome tumor-normal pair | nf-core/sarek with GATK: 46.5 min | **2.8 min** | **17×** |
 
-| Single step | Data | Reference tool | varcall-rs | |
+| Single step | Data | Reference tool | varcall-rs | Speed-up |
 |---|---|---|---:|---:|
-| align, sort, index | NA12878 30x, one lane (31.5 M pairs) | bwa-mem2 + samtools: 587 s | **124 s** | **4.7×** |
+| Alignment, sorting and indexing | NA12878 30x, one lane (31.5 M pairs) | bwa-mem2 + samtools: 587 s | **124 s** | **4.7×** |
 | HaplotypeCaller, VCF | NA12878 30x whole genome, 23 shards | GATK, 5 JVMs × 2 threads: 2 h 11 min | **6.2 min** | **21×** |
-| HaplotypeCaller, GVCF | same | GATK: 2 h 23 min | **9.3 min** | **15×** |
+| HaplotypeCaller, GVCF | as above | GATK: 2 h 23 min | **9.3 min** | **15×** |
 | MarkDuplicates | HG002 30x whole genome | Picard: 42 min | **3.1 min** | **13×** |
-| BaseRecalibrator | same | GATK: 99 min | **65 s** | **91×** |
-| ApplyBQSR | same | GATK: 1 h 47 min | **4.4 min** | **24×** |
+| BaseRecalibrator | as above | GATK: 99 min | **65 s** | **91×** |
+| ApplyBQSR | as above | GATK: 1 h 47 min | **4.4 min** | **24×** |
 
-The germline time is the mean of three runs (34.0 ± 0.2 min); with memory held to 30 GB the run takes 41.6 min.
-Its baseline was not run end to end. It is the sum of measured steps: bwa-mem2 + samtools on one lane, times 12,
-and sarek's GATK steps on the same genome.
+The germline time is the mean of three runs (34.0 ± 0.2 min); with memory limited to 30 GB, the run takes 41.6 min.
+The germline baseline was not run end to end. It is the sum of measured steps: bwa-mem2 and samtools on one lane,
+multiplied by 12, and the GATK steps of sarek on the same genome.
 
-The same germline pipeline on a server (2 × EPYC 9654 with 384 threads, 2.2 TiB of RAM, NVMe, L40S GPUs with 48 GB
-each):
+The same germline pipeline was run on a server with two EPYC 9654 processors (384 threads), 2.2 TiB of RAM, NVMe
+storage and L40S GPUs (48 GB each):
 
 | GPUs | Threads | varcall-rs | NVIDIA Parabricks `germline` |
 |---:|---:|---:|---:|
@@ -61,82 +69,81 @@ each):
 | 4 | 128 | **9.3 min** (three runs) | 16.8 min |
 | 6 | 384 | **6.8 min** | |
 
-Parabricks writes its own outputs, which are close to GATK's but not identical to them. How each pipeline number was
-measured: [pipeline/README.md](pipeline/README.md#benchmarks).
+The output of Parabricks is concordant with that of GATK but is not identical to it. The measurement of each
+pipeline result is described in [pipeline/README.md](pipeline/README.md#benchmarks).
 
-## Getting started
+## Quick start
 
 ```bash
 conda env create -f environment.yml && conda activate varcall-rs   # Rust, htslib, CUDA compiler, bwa-mem2, samtools
-make -C align-rs/cuda && make -C variant-rs/cuda-pairhmm           # GPU code (skip for a CPU-only build)
+make -C align-rs/cuda && make -C variant-rs/cuda-pairhmm           # GPU code (omit for a CPU-only build)
 RUSTFLAGS="-C target-cpu=native" cargo build --release              # target/release/align-rs, target/release/variant-rs
-tests/selftest.sh                                                   # ~1 min: synthetic data vs bwa-mem2 and GATK
+tests/selftest.sh                                                   # ~1 min: synthetic data against bwa-mem2 and GATK
 
-# align a lane: bwa-mem2's options, a sorted and indexed BAM out
+# Align one lane with the options of bwa-mem2; the output is a sorted and indexed BAM
 align-rs mem -t 32 -K 100000000 -Y --gpu -R '@RG\tID:L1\tSM:S1' -o S1.L1.bam ref.fa R1.fq.gz R2.fq.gz
-# GATK's command lines
+# Run the GATK steps with the arguments of GATK
 variant-rs MarkDuplicates -I S1.L1.bam -O S1.md.bam -M S1.md.metrics
 variant-rs BaseRecalibrator -R ref.fa -I S1.md.bam --known-sites dbsnp.vcf.gz -O S1.recal.table
 variant-rs HaplotypeCaller -R ref.fa -I S1.md.bam --bqsr-recal-file S1.recal.table -O S1.vcf.gz
 ```
 
-The [tutorial](docs/getting-started.md) walks through germline and somatic calling on the test data and compares
-the results with bwa-mem2 and GATK.
+The [tutorial](docs/getting-started.md) covers germline and somatic calling on the test data and shows how to
+compare the results with those of bwa-mem2 and GATK.
 
 ## Installation
 
-* **From source:** Linux x86-64, Rust 1.99, htslib, and the CUDA toolkit for the GPU code
-  ([building.md](docs/building.md)). `environment.yml` installs all of them.
-* **Hardware:** for a 30x genome, 32 threads, 48 GB of RAM and an NVIDIA GPU with 16 GB give the times above; a GPU
-  is optional, and 30 GB of RAM works, more slowly ([memory and GPU per step](docs/building.md#hardware)).
-* **Docker:** two images built from this repository: `align-rs`, and `variant-rs`, a drop-in `gatk` for sarek
-  ([containers/](containers/README.md)).
+* **From source.** varcall-rs builds on Linux x86-64 with Rust 1.99 and htslib, and requires the CUDA toolkit for
+  the GPU code ([building.md](docs/building.md)). The file `environment.yml` installs all of these.
+* **Hardware.** For a 30x genome, 32 threads, 48 GB of RAM and an NVIDIA GPU with 16 GB of memory give the times
+  reported above. A GPU is optional, and 30 GB of RAM is sufficient at a lower speed
+  ([memory and GPU requirements per step](docs/building.md#hardware)).
+* **Docker.** Two images are built from this repository: `align-rs`, and `variant-rs`, which replaces `gatk` in
+  sarek ([containers/](containers/README.md)).
 
 ## Documentation
 
 | | |
 |---|---|
-| **Tutorial** | [Getting started](docs/getting-started.md): from a build to germline and somatic calls, checked against bwa-mem2 and GATK |
-| **How-to guides** | [How-to](docs/how-to.md): align a sample's lanes, use variant-rs as `gatk`, run it in sarek, run the pipeline, shard a genome, joint-call · [Building](docs/building.md) · [Containers](containers/README.md) · [Pipeline](pipeline/README.md) |
+| **Tutorial** | [Getting started](docs/getting-started.md): germline and somatic calling on the test data, with a comparison against bwa-mem2 and GATK |
+| **How-to guides** | [How-to](docs/how-to.md): aligning the lanes of a sample, using variant-rs as `gatk`, running it in sarek, running the pipeline, calling a genome in shards, joint calling · [Building](docs/building.md) · [Containers](containers/README.md) · [Pipeline](pipeline/README.md) |
 | **Reference** | [Reference](docs/reference.md): commands, options, supported GATK arguments, environment variables, exit status · [Changelog](CHANGELOG.md) |
-| **Explanation** | [Architecture](docs/architecture.md) · [Optimizations](docs/optimizations.md): fast without changing an output bit · [Validation](docs/validation.md): how "identical" is checked, known differences · [Development notes](docs/README.md#background) |
+| **Explanation** | [Architecture](docs/architecture.md) · [Optimizations](docs/optimizations.md): how each optimization preserves the output · [Validation](docs/validation.md): the definition of identity, the tests and the known differences · [Development notes](docs/README.md#background) |
 
 ## Limitations
 
-varcall-rs is the wrong tool if:
-
-* **you need other GATK or bwa-mem2 versions.** The outputs are those of GATK 4.7.0.0 (Picard 3.5.0, htsjdk 5.0.0)
-  and bwa-mem2 2.2.1. Other versions can give other outputs.
-* **you need GATK tools or arguments it does not cover.** It covers each tool's defaults plus the arguments that WARP
-  and nf-core/sarek pass ([tool by tool](docs/gatk-arguments.md)). HaplotypeCaller is diploid only; there is no
-  CNN filtering, CNV / SV calling or RNA-seq ([what it does not cover](docs/reference.md#what-it-does-not-cover)).
-  Everything else is refused, or passed to GATK with `GATK_FALLBACK`.
-* **you run something other than Linux on x86-64**, or want one align-rs process to use several GPUs (the
-  [pipeline](docs/how-to.md#use-several-gpus) spreads a sample's lanes over them; variant-rs's PairHMM uses every
-  visible GPU).
-
-It has been tested on two GPU models: RTX 5070 Ti (sm_120) and L40S (sm_89). The GPU code is built for sm_70 (sm_75
-for align-rs) through sm_120, but has not run on other GPUs yet; reports are welcome. It is CUDA only; what a port to
-AMD, Intel or Apple GPUs would need is in [architecture.md](docs/architecture.md#other-gpu-vendors).
+* **Versions.** The outputs are those of GATK 4.7.0.0 (Picard 3.5.0, htsjdk 5.0.0) and bwa-mem2 2.2.1. Other
+  versions of the reference tools may give different outputs.
+* **Coverage of GATK.** variant-rs supports the default arguments of each tool and the arguments that WARP and
+  nf-core/sarek pass ([per-tool list](docs/gatk-arguments.md)). HaplotypeCaller is limited to diploid calling, and
+  CNN filtering, copy-number and structural variant calling and RNA-seq are not supported
+  ([unsupported features](docs/reference.md#what-it-does-not-cover)). Any other tool or argument is refused, or is
+  passed to GATK when `GATK_FALLBACK` is set.
+* **Platform.** Only Linux on x86-64 is supported, and the GPU code requires CUDA. The requirements of a port to
+  AMD, Intel or Apple GPUs are discussed in [architecture.md](docs/architecture.md#other-gpu-vendors).
+* **Multiple GPUs.** One align-rs process uses one GPU. The [pipeline](docs/how-to.md#use-several-gpus) distributes
+  the lanes of a sample over several GPUs, and the PairHMM of variant-rs uses every visible GPU.
+* **Tested hardware.** varcall-rs has been tested on two GPU models, the RTX 5070 Ti (sm_120) and the L40S (sm_89).
+  The GPU code is built for sm_70 (sm_75 for align-rs) to sm_120 but has not been run on other models.
 
 ## Contributing
 
-Bug reports and pull requests are welcome. An output that differs from bwa-mem2's or GATK's is a bug: please
-[report it](CONTRIBUTING.md#reporting-a-difference) with an input that shows it. [CONTRIBUTING.md](CONTRIBUTING.md)
-describes the tests a change needs.
+Bug reports and pull requests are welcome. Any output that differs from that of bwa-mem2 or GATK is treated as a
+bug and should be [reported](CONTRIBUTING.md#reporting-a-difference) with an input that reproduces it.
+[CONTRIBUTING.md](CONTRIBUTING.md) describes the tests that a change requires.
 
 ## Authors
 
-varcall-rs is written by Kenneth Ban, with Claude (Anthropic's AI model, through Claude Code) as a contributor.
-Much of the code, tests and documentation was written with Claude's assistance; commits it helped with carry a
-`Co-Authored-By: Claude` trailer. All outputs are checked against bwa-mem2 and GATK as described in
-[validation.md](docs/validation.md).
+varcall-rs is written by Kenneth Ban, with Claude (the AI model of Anthropic, through Claude Code) as a
+contributor. Much of the code, tests and documentation was written with the assistance of Claude, and the commits
+to which it contributed carry a `Co-Authored-By: Claude` trailer. All outputs are checked against bwa-mem2 and GATK
+as described in [validation.md](docs/validation.md).
 
-## Citing
+## Citation
 
-If you use varcall-rs, please cite this repository ([CITATION.cff](CITATION.cff); GitHub's "Cite this repository"
-formats it), and the tools whose results it reproduces: bwa-mem2 (Vasimuddin et al., IPDPS 2019) and GATK
-(Van der Auwera & O'Connor, *Genomics in the Cloud*, O'Reilly 2020).
+If you use varcall-rs, please cite this repository ([CITATION.cff](CITATION.cff); the "Cite this repository" button
+on GitHub formats the entry) and the tools whose results it reproduces: bwa-mem2 (Vasimuddin et al., IPDPS 2019)
+and GATK (Van der Auwera & O'Connor, *Genomics in the Cloud*, O'Reilly 2020).
 
 ## Acknowledgements
 
@@ -144,16 +151,16 @@ varcall-rs reimplements algorithms of [bwa-mem2](https://github.com/bwa-mem2/bwa
 [GATK](https://github.com/broadinstitute/gatk), [Picard](https://github.com/broadinstitute/picard),
 [htsjdk](https://github.com/samtools/htsjdk), [GKL](https://github.com/IntelLabs/GKL),
 [GenomicsDB](https://github.com/GenomicsDB/GenomicsDB) and Apache Commons Math, and links
-[htslib](https://github.com/samtools/htslib); their licenses are listed in [NOTICE](NOTICE). The test data come
+[htslib](https://github.com/samtools/htslib). Their licenses are listed in [NOTICE](NOTICE). The test data come
 from Genome in a Bottle, the 1000 Genomes Project, the SEQC2 consortium, the ICGC-TCGA DREAM challenge and the GATK
 resource bundle ([tests/harness/README.md](tests/harness/README.md)).
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+varcall-rs is distributed under the MIT license ([LICENSE](LICENSE)).
 
 ## Disclaimer
 
-varcall-rs is not affiliated with or endorsed by the Broad Institute, Intel or the bwa-mem2 authors. GATK and
-Picard are named only to say which outputs it reproduces. It is research software, not a medical device, and is not
-intended for clinical use.
+varcall-rs is not affiliated with or endorsed by the Broad Institute, Intel or the authors of bwa-mem2. GATK and
+Picard are named only to identify the outputs that varcall-rs reproduces. varcall-rs is research software. It is
+not a medical device and is not intended for clinical use.

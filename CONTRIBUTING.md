@@ -1,14 +1,14 @@
 # Contributing
 
-Contributions are welcome: speed-ups, new GATK arguments or tools, other GPUs, bug reports with an input that
-shows the difference.
+Contributions are welcome, including optimizations, support for further GATK arguments or tools, support for other
+GPUs, and bug reports with an input that reproduces the problem.
 
-## The one rule
+## Requirement: identical output
 
-**Outputs stay identical to the reference tool**: bwa-mem2 2.2.1 for align-rs, GATK 4.7.0.0 / Picard 3.5.0 for
-variant-rs. A change that is faster but moves one QUAL by 0.01, or swaps two records with equal keys, is a bug.
-If you cannot make something exact, variant-rs refuses that case with the reason, as it does today for arguments
-it does not reproduce.
+Every output must remain identical to that of the reference tool: bwa-mem2 2.2.1 for align-rs, and GATK 4.7.0.0
+with Picard 3.5.0 for variant-rs. A change that improves speed but alters a single QUAL value by 0.01, or exchanges
+two records with equal keys, is treated as a bug. Where a case cannot be reproduced exactly, variant-rs should
+refuse it with an explanation, as it currently does for the arguments that it does not reproduce.
 
 ## Reporting a difference
 
@@ -20,7 +20,8 @@ open an issue with the **Output differs** form. Include:
   a few FASTQ records, or a public data set and the region;
 * the varcall-rs commit, and whether the CPU path differs too (align-rs without `--gpu`, variant-rs `--pairhmm cpu`).
 
-Other bugs (crashes, errors, a refused command that should run) go in a **Bug report**. Security problems: see
+Other defects (crashes, errors, or a refused command that should run) should be filed with the **Bug report**
+form. Security problems: see
 [SECURITY.md](SECURITY.md).
 
 ## Before opening a pull request
@@ -32,9 +33,9 @@ Other bugs (crashes, errors, a refused command that should run) go in a **Bug re
    ```
    Both must pass. `tests/selftest.sh` exits with the number of differences. CI runs both (CPU only) on every
    pull request; with a GPU, run them locally too.
-2. If you changed a path that the synthetic data does not exercise, run the harness area that does
-   (`tests/harness/<area>/cmp*.sh`; data: [tests/harness/README.md](tests/harness/README.md)). Or describe the
-   check you ran. Say which in the PR.
+2. If the change affects a code path that the synthetic data do not exercise, run the corresponding area of the
+   harness (`tests/harness/<area>/cmp*.sh`; data: [tests/harness/README.md](tests/harness/README.md)) or describe
+   the check that was run instead, and state this in the pull request.
 3. **Bug fixes** come with a test that fails before the fix: a unit test, a case in `tests/synth`, or a harness
    script with its truth command.
 4. **Optimizations** come with before / after timings: `ALIGN_RS_PROFILE=1`, `VARIANT_RS_TRACE_STAGES=1`, or the
@@ -47,9 +48,9 @@ Other bugs (crashes, errors, a refused command that should run) go in a **Bug re
 
 ## Code
 
-* Rust 2021, the workspace's release profile. The code is not formatted with rustfmt (long lines), so don't
-  reformat files you aren't otherwise changing; keep diffs to what the change needs.
-* Comments say *why*, and name the reference code being reproduced (`mem_matesw`,
+* The code uses Rust 2021 and the release profile of the workspace. It is not formatted with rustfmt (lines are
+  long), so files should not be reformatted, and a diff should contain only what the change requires.
+* Comments explain the reason for the code and name the reference code being reproduced (`mem_matesw`,
   `ReadThreadingAssembler.runLocalAssembly`, ...). Quirks of the reference that are reproduced on purpose are
   marked as such.
 * No new runtime dependencies without discussion. The CPU path must keep building without CUDA.

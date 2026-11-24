@@ -1,7 +1,8 @@
 # Reference
 
-Commands, options and environment variables of align-rs and variant-rs. For a walk-through see
-[getting-started.md](getting-started.md); for recipes, [how-to.md](how-to.md).
+This page documents the commands, options and environment variables of align-rs and variant-rs.
+[getting-started.md](getting-started.md) gives an introduction, and [how-to.md](how-to.md) gives procedures for
+common tasks.
 
 * [align-rs](#align-rs): [environment variables](#align-rs-environment-variables)
 * [variant-rs](#variant-rs): [GATK tools](#gatk-command-lines), [native options](#native-options-and-subcommands),
@@ -15,21 +16,23 @@ align-rs mem [-t N] [-K N] [-Y] [-l level] [--gpu] --lanes LANES.tsv ref.fa
 align-rs tune [-t N] [-K N] ref.fa R1.fq[.gz] [R2.fq[.gz]]
 ```
 
-* **`mem`** aligns reads as `bwa-mem2 mem` does and gives the same records. It takes the four bwa-mem2 options
-  shown (`-t`, `-K`, `-Y`, `-R`); every other option stays at bwa-mem2's default, and giving one stops the run
-  ([what it does not cover](#what-it-does-not-cover)). The reference index is bwa-mem2's own
-  (`bwa-mem2 index ref.fa`).
-  * `-o x.bam` writes a coordinate-sorted BAM and its `.bai`. The records are in the order `samtools sort` gives,
-    and the index is byte-identical to that of `samtools index`. `-l` sets the compression level (default 1).
-  * `-o x.sam`, or no `-o`, writes bwa-mem2's SAM.
-  * `--gpu` runs seeding, SA lookups, extension and mate rescue on the GPU, or on the CPU when there is none.
-* **`-K`** is bwa-mem2's batch size in bases. bwa-mem2's output depends on it (insert-size statistics are per batch),
-  not on the thread count. Use the value the reference run used. GATK's and nf-core's pipelines use `-K 100000000`.
-* **`--lanes FILE`**: several lanes of a sample in one process (the index loads once). One line per lane:
-  `out.bam<TAB>@RG\tID:...<TAB>R1.fq.gz[<TAB>R2.fq.gz]`. Each lane's BAM is byte-identical to aligning that lane on
-  its own. Two lanes cannot share an output file.
-* **`tune`** measures the GPU settings below on the GPU at hand (~35 s plus the index load) and saves them for
-  `mem`. No setting changes the output.
+* **`mem`** aligns reads as `bwa-mem2 mem` does and produces the same records. It accepts four options of
+  bwa-mem2 (`-t`, `-K`, `-Y` and `-R`). Every other option remains at the default of bwa-mem2, and specifying one
+  stops the run ([unsupported features](#what-it-does-not-cover)). The reference index is the one built by
+  `bwa-mem2 index ref.fa`.
+  * `-o x.bam` writes a coordinate-sorted BAM and its `.bai`. The records are in the order produced by
+    `samtools sort`, and the index is byte-identical to that of `samtools index`. `-l` sets the compression level
+    (default 1).
+  * `-o x.sam`, or the absence of `-o`, writes the SAM output of bwa-mem2.
+  * `--gpu` runs seeding, SA lookups, extension and mate rescue on the GPU, or on the CPU when no GPU is present.
+* **`-K`** is the batch size of bwa-mem2 in bases. The output of bwa-mem2 depends on this value, because
+  insert-size statistics are estimated for each batch, and does not depend on the number of threads. The value
+  should equal that of the run being reproduced. The pipelines of GATK and nf-core use `-K 100000000`.
+* **`--lanes FILE`** aligns several lanes of a sample in one process, which loads the index once. The file has one
+  line per lane, of the form `out.bam<TAB>@RG\tID:...<TAB>R1.fq.gz[<TAB>R2.fq.gz]`. The BAM file of each lane is
+  byte-identical to the file obtained by aligning that lane on its own. Two lanes cannot share an output file.
+* **`tune`** measures the GPU settings listed below on the GPU at hand, which takes about 35 s in addition to
+  loading the index, and saves them for `mem`. None of these settings changes the output.
 
 ### align-rs environment variables
 
@@ -50,8 +53,9 @@ align-rs tune [-t N] [-K N] ref.fa R1.fq[.gz] [R2.fq[.gz]]
 | `ALIGN_RS_REPLAY_CHECK=1` | runs bwa's linear scan beside the optimized replay lookup and stops if they disagree |
 | `ALIGN_RS_GPU_FAIL_GROW=N` | test hook: device allocations after the first N fail (exercises the CPU fallback) |
 
-The rest (`ALIGN_RS_DUMP_*`, `ALIGN_RS_KSW_EMULATE`, `ALIGN_RS_SLACK*`, `ALIGN_RS_MI_*`, `ALIGN_RS_PTRACER`) are
-debugging and measurement switches, described where they are read in `align-rs/src`.
+The remaining variables (`ALIGN_RS_DUMP_*`, `ALIGN_RS_KSW_EMULATE`, `ALIGN_RS_SLACK*`, `ALIGN_RS_MI_*`,
+`ALIGN_RS_PTRACER`) are switches for debugging and measurement. They are documented in `align-rs/src` at the points
+where they are read.
 
 ## variant-rs
 
@@ -76,26 +80,29 @@ variant-rs <Tool> --help                   # which arguments are mapped, ignored
 | VariantRecalibrator, ApplyVQSR | SNP, INDEL and BOTH modes; WARP's and sarek's arguments (`--resource:name,known=...,training=...,truth=...,prior=...`, tranches, `--max-gaussians`, `--trust-all-polymorphic`) |
 | ReblockGVCF, MergeVcfs, SortSam (coordinate), GatherBamFiles | |
 
-Every GATK argument of a tool is in one of three groups:
+Every GATK argument of a tool belongs to one of three groups:
 
-* **mapped:** variant-rs implements it;
-* **ignored:** it cannot change the output (logging, temporary directories, `--java-options`,
-  `--native-pair-hmm-threads`, ...);
-* **accepted at GATK's default value only.**
+* **mapped:** variant-rs implements the argument;
+* **ignored:** the argument cannot change the output (logging, temporary directories, `--java-options`,
+  `--native-pair-hmm-threads` and similar);
+* **default only:** the argument is accepted only at the default value of GATK.
 
-Everything else is refused with the reason, exit status 2: other values, unknown arguments, inputs variant-rs
-cannot reproduce. The tables are in `variant-rs/gatkargs/`, generated from GATK 4.7's `--help`; the three groups of
-every tool are listed in [gatk-arguments.md](gatk-arguments.md).
+Any other value, any unknown argument and any input that variant-rs cannot reproduce is refused with an
+explanation and exit status 2. The argument tables are in `variant-rs/gatkargs/` and were generated from the
+`--help` output of GATK 4.7. The three groups are listed for every tool in [gatk-arguments.md](gatk-arguments.md).
 
-* `GATK_FALLBACK=/path/to/gatk`: a refused command runs the real GATK instead, with the original arguments. This is
-  what makes the variant-rs image a drop-in `gatk` ([containers/variant-rs](../containers/variant-rs/README.md)).
-* `VARIANT_RS_DRY_RUN=1`: prints what would run (variant-rs, with its translated options, or GATK and why) and exits.
-* Threads: all CPUs the process may use (cgroup quotas included). Outputs do not depend on the thread count.
+* `GATK_FALLBACK=/path/to/gatk` causes a refused command to be run by GATK instead, with its original arguments.
+  The variant-rs image uses this mechanism to replace `gatk`
+  ([containers/variant-rs](../containers/variant-rs/README.md)).
+* `VARIANT_RS_DRY_RUN=1` prints the command that would run (variant-rs with its translated options, or GATK with
+  the reason) and exits.
+* variant-rs uses all CPUs that the process is permitted to use, including cgroup quotas. The outputs do not depend
+  on the number of threads.
 
 ### Native options and subcommands
 
-The GATK tools translate into variant-rs's own options, which can also be given directly. Two things exist only
-there:
+The GATK command lines are translated into the native options of variant-rs, which can also be given directly.
+Two functions are available only in this form:
 
 ```bash
 # HaplotypeCaller over many shard files in one process, each equal to its own GATK run
@@ -104,13 +111,13 @@ variant-rs -I x.bam -R ref.fa --shard s/shard00.intervals ... --shard s/shard22.
 variant-rs plan -I x.bam -R ref.fa -o plan96 --pieces 96
 ```
 
-* **`--pairhmm cuda|cpu|auto`** chooses the PairHMM. Both give GATK's results.
-* **`--threads`, `--contig-workers`** size the parallelism (contig workers by default: half the threads up to 8, a
-  quarter of them beyond, up to 32).
-* **`-L file --scatter-intervals`** calls every interval as its own GATK run, as sarek scatters HaplotypeCaller.
+* **`--pairhmm cuda|cpu|auto`** selects the PairHMM implementation. Both implementations give the results of GATK.
+* **`--threads`, `--contig-workers`** set the degree of parallelism. The default number of contig workers is half
+  the number of threads up to 8, and a quarter of the number of threads beyond that, up to 32.
+* **`-L file --scatter-intervals`** calls every interval as a separate GATK run, as sarek scatters HaplotypeCaller.
 
-See [notes/variant-rs.md](notes/variant-rs.md) for the full option table and for how shards relate to GATK's
-random-number streams.
+[notes/variant-rs.md](notes/variant-rs.md) contains the complete option table and describes the relation between
+shards and the random-number streams of GATK.
 
 ### variant-rs environment variables
 
@@ -136,34 +143,36 @@ random-number streams.
 
 ## What it does not cover
 
-Each item below is refused with the reason, never run differently. A refused variant-rs command exits with status
-2, or runs the real GATK under `GATK_FALLBACK`. Only the reference versions are reproduced: bwa-mem2 2.2.1, GATK
-4.7.0.0, Picard 3.5.0, htsjdk 5.0.0.
+Each item in this section is refused with an explanation and is never run with a different result. A refused
+variant-rs command exits with status 2, or is run by GATK when `GATK_FALLBACK` is set. Only the reference versions
+are reproduced: bwa-mem2 2.2.1, GATK 4.7.0.0, Picard 3.5.0 and htsjdk 5.0.0.
 
 ### align-rs
 
-* **Other `bwa-mem2 mem` options.** align-rs takes `-t`, `-K`, `-R`, `-Y` and its own output options; any other
-  (scoring `-A -B -O -E -L -U`, `-k`, `-w`, `-r`, `-c`, `-T`, `-M`, `-a`, `-C`, `-p`, `-I`, `-x` presets, ...)
-  stops it with "unsupported option". Without them it runs bwa-mem2's defaults, as GATK's and nf-core's pipelines
-  do.
-* **Other bwa-mem2 commands.** Build the index with `bwa-mem2 index`.
-* **Reads over 65,535 bases** (the run stops with the read's name).
+* **Other options of `bwa-mem2 mem`.** align-rs accepts `-t`, `-K`, `-R`, `-Y` and its own output options. Any
+  other option (the scoring options `-A -B -O -E -L -U`, `-k`, `-w`, `-r`, `-c`, `-T`, `-M`, `-a`, `-C`, `-p`, `-I`,
+  the `-x` presets and others) stops the run with the message "unsupported option". Without these options, align-rs
+  uses the defaults of bwa-mem2, as the pipelines of GATK and nf-core do.
+* **Other commands of bwa-mem2.** The index must be built with `bwa-mem2 index`.
+* **Reads longer than 65,535 bases.** The run stops and reports the name of the read.
 
 ### variant-rs: GATK tools it does not have
 
-It has the 23 tools in the [table above](#gatk-command-lines). Notable tools it does not have:
+variant-rs provides the 23 tools listed in the [table above](#gatk-command-lines). The following tools are among
+those that it does not provide:
 
 * **Model-based filtering other than VQSR:** CNNScoreVariants / NVScoreVariants, FilterVariantTranches, VETS
   (ExtractVariantAnnotations, TrainVariantAnnotationsModel, ScoreVariantAnnotations).
-* **SelectVariants.** `variant-rs filter` (the pipeline's HARDFILTER step) gives the result of GATK's Best Practices
-  single-sample hard filtering (SelectVariants → VariantFiltration → MergeVcfs) in one pass.
+* **SelectVariants.** The command `variant-rs filter` (the HARDFILTER step of the pipeline) gives, in one pass, the
+  result of the single-sample hard filtering of the GATK Best Practices (SelectVariants → VariantFiltration →
+  MergeVcfs).
 * **RNA-seq** (SplitNCigarReads), **annotation** (Funcotator), **copy number and structural variants**, and
   **Picard's metrics** tools (CollectWgsMetrics, ...).
 
 ### variant-rs: modes of the tools it has
 
-Each tool covers GATK's defaults plus the arguments that WARP and nf-core/sarek pass; every tool's list is in
-[gatk-arguments.md](gatk-arguments.md). Notable modes it refuses:
+Each tool supports the default arguments of GATK and the arguments that WARP and nf-core/sarek pass. The list for
+every tool is in [gatk-arguments.md](gatk-arguments.md). The following modes are among those that are refused:
 
 * **HaplotypeCaller:** ploidy other than 2 (`-ploidy`); `--dragen-mode`; flow-based calling (`--flow-mode`);
   `--linked-de-bruijn-graph`; force-calling given alleles (`--alleles`); a non-default `--pcr-indel-model` or
