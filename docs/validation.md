@@ -10,6 +10,16 @@
 The reference outputs come from bwa-mem2 2.2.1 (+ samtools 1.25 sort / index) and GATK 4.7.0.0 (Picard 3.5.0,
 htsjdk 5.0.0).
 
+**The reference is a set of runs, not only a version.** Two things change the output of the reference tools
+themselves, so every comparison uses the same values for both tools:
+
+* bwa-mem2's records depend on the batch size `-K`, because insert-size statistics are estimated per batch. They do
+  not depend on the thread count.
+* HaplotypeCaller's records depend on how the genome is divided among separate GATK runs, because each run has its
+  own random-number stream for downsampling and for the QD jitter. A genome called in one run, in WARP's shards and
+  in sarek's intervals gives three VCFs from GATK that agree on nearly every call but differ in many records, mostly
+  in the QD annotation alone. variant-rs is compared with each division it is asked to reproduce ([how-to](how-to.md#call-a-whole-genome-in-shards-in-one-process)).
+
 ## Test tiers
 
 | Tier | Command | Data | Time |
@@ -30,15 +40,21 @@ on every push and pull request: CPU only, as GitHub's runners have no GPU.
 * three somatic clones;
 * Illumina-like quality profiles, adapters, and PCR and optical duplicates.
 
-It is aligned by bwa-mem2 and by align-rs (4 lanes; GPU and CPU paths). Then variant-rs runs GATK's command lines
-for MarkDuplicates, BQSR, HaplotypeCaller (VCF and GVCF), GenotypeGVCFs (from a GVCF and through a GenomicsDB workspace), Mutect2 and its filters, a panel of normals, VQSR
-(VariantRecalibrator, ApplyVQSR) and VariantFiltration / MakeSitesOnlyVcf, with the CPU and the GPU PairHMM. 34
-outputs per PairHMM are compared with GATK's. The truth in `tests/truth` comes from GATK's release jar
-(`gatk-package-4.7.0.0-local.jar` from `gatk-4.7.0.0.zip` on GitHub, SHA-256 `882e1807…3861365`);
-`tests/make_truth.sh` regenerates it.
+The test has two parts:
 
-**Full harness.** These are the comparisons that were run, at full scale, during development. All are in
-`regress.sh` or the harness folders:
+1. The four lanes are aligned by bwa-mem2 and by align-rs, on the GPU and on the CPU, and the records are compared.
+2. variant-rs runs GATK's command lines, once with the CPU PairHMM and once with the GPU one, and 34 outputs per
+   PairHMM are compared with GATK's. The commands cover MarkDuplicates, BQSR, HaplotypeCaller (VCF and GVCF),
+   GenotypeGVCFs (from a GVCF and through a GenomicsDB workspace), Mutect2 and its filters, a panel of normals,
+   VQSR (VariantRecalibrator, ApplyVQSR) and VariantFiltration / MakeSitesOnlyVcf.
+
+The GATK outputs are committed in `tests/truth`. They come from GATK's release jar
+(`gatk-package-4.7.0.0-local.jar` from `gatk-4.7.0.0.zip` on GitHub, SHA-256 `882e1807…3861365`), and
+`tests/make_truth.sh` regenerates them.
+
+**Full harness.** `regress.sh` runs 50 checks in about 75 minutes. To fit in that time it uses subsets and slices
+of the data, argument variants and edge cases. The comparisons of complete genomes and exomes take hours of GATK
+time each, so they were run separately, with the scripts in the harness folders. The table lists both kinds:
 
 | Tool | Data | Result |
 |---|---|---|
@@ -119,7 +135,8 @@ What the review found, by kind:
   hash-keyed maps but not in others.
 * Inputs or arguments outside what is listed in [reference.md](reference.md) are refused, or handed to GATK under
   `GATK_FALLBACK`. They never silently give a different result.
-* The full harness has run on one GPU model (RTX 5070 Ti, sm_120) and one CPU (16-core Zen 5, with AVX-512). On a
-  server with L40S GPUs (sm_89) and EPYC 9654 CPUs, the pipeline's tests, NA12878 30x from FASTQ on 1 and 6 GPUs, and
-  the SEQC2 exome pair gave the same outputs as on the workstation. The CPU PairHMM without AVX-512 is checked by the self-contained test (`VARIANT_RS_NO_AVX512=1`, and CI runners
-  without AVX-512).
+* **Hardware tested.** The full harness has run on one GPU model (RTX 5070 Ti, sm_120) and one CPU (16-core Zen 5,
+  with AVX-512). On a server with L40S GPUs (sm_89) and EPYC 9654 CPUs, three things were run and gave the same
+  outputs as on the workstation: the pipeline's tests, NA12878 30x from FASTQ on 1 and 6 GPUs, and the SEQC2 exome
+  pair. The CPU PairHMM without AVX-512 is checked by the self-contained test, with `VARIANT_RS_NO_AVX512=1` and on
+  CI runners that lack AVX-512.

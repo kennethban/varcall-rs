@@ -181,17 +181,20 @@ per 65,536 jobs on an L40S, 31 → 18 on the RTX 5070 Ti. `ALIGN_RS_MSW=striped`
 
 bwa-mem3 found two places where bwa's DP provably gives what a cheaper computation gives:
 
-* **Ungapped extension.** When the seed diagonal's total loss (a − score per cell) stays below the cheaper gap
-  open + extend, every gapped path scores at least 2 below the diagonal in its row and column, so ksw_extend2's
-  row maxima, new maxima and gscore are the diagonal's. Conditions as derived for this code: tlen >= qlen, every
-  diagonal value > 0, no z-drop on the diagonal. The walk runs on the GPU in the key kernel before the size sort;
-  a quarter of the jobs take it and skip the DP (extension kernel −12% on the L40S). `ALIGN_RS_UNGAPPED=check`
-  runs the DP as well and aborts on a difference: none in 229.8 M shortcut jobs of a 30x lane.
-* **Certified CIGAR band.** For equal-length regions, any path more than kc cells off the diagonal scores below the
-  ungapped score, kc = (amax·len − o_ins − o_del − su) / (amax + e_ins + e_del), su the ungapped score. Band
-  min(w, kc) gives ksw_global2 the same score and the same direction bits along the backtrack. Half the CIGAR
-  stage's band cells (22.4 G → 10.9 G on 5 M pairs), its CPU 140 → 96 thread-s; kc = 0 skips the DP.
-  `ALIGN_RS_CIGAR_BAND=check` compares.
+* **Ungapped extension.** Suppose the total loss along the seed's diagonal (a − score, summed over its cells) stays
+  below the cost of the cheaper gap (open + extend). Then every gapped path scores at least 2 below the diagonal in
+  its row and column, so the row maxima, new maxima and gscore that ksw_extend2 reports are those of the diagonal.
+  The shortcut is taken only when three further conditions hold, as derived for this code: tlen >= qlen, every
+  value on the diagonal is positive, and no z-drop occurs on the diagonal. The diagonal is walked on the GPU, in
+  the key kernel that runs before the size sort. A quarter of the jobs take the shortcut and skip the DP
+  (extension kernel −12% on the L40S). `ALIGN_RS_UNGAPPED=check` runs the DP as well and stops on a difference:
+  there was none in the 229.8 M shortcut jobs of a 30x lane.
+* **Certified CIGAR band.** When the read and reference segments have equal length, any path more than kc cells
+  off the diagonal scores below the ungapped score su, where
+  kc = (amax·len − o_ins − o_del − su) / (amax + e_ins + e_del). A band of min(w, kc) therefore gives ksw_global2
+  the same score and the same direction bits along the backtrack, and kc = 0 skips the DP altogether. This halves
+  the band cells of the CIGAR stage (22.4 G → 10.9 G on 5 M pairs) and takes its CPU time from 140 to 96 thread-s.
+  `ALIGN_RS_CIGAR_BAND=check` runs both bands and stops on a difference.
 
 ### CPU: exact shortcuts in bwa's algorithms
 
@@ -473,7 +476,7 @@ pub struct Counts {
 }
 ```
 
-Whole genome: 95 s vs GATK's 99 min.
+Whole genome: 65 s vs GATK's 99 min.
 
 #### Parallel contigs, sequential random numbers
 
@@ -593,7 +596,7 @@ it first.
 
 * **MarkDuplicates:** pass 1 runs over 2 Mb chunks in parallel. Read ends go to on-disk buckets keyed by
   (contig, position), and buckets are grouped in parallel with Picard's comparator. Pass 2 rewrites records in
-  parallel and appends them in order. Whole genome: 6 min vs Picard's 42 min. The ends on disk are packed
+  parallel and appends them in order. Whole genome: 3.1 min vs Picard's 42 min. The ends on disk are packed
   (35 bytes a fragment, 50 a pair) and read straight into their arrays.
 * **ApplyBQSR:** rewrites each record's quality bytes in place and re-encodes the tags as htsjdk does.
 * **BGZF:** compressed and decompressed in parallel with libdeflate everywhere. The `.bai` / `.tbi` are built while

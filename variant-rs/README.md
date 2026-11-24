@@ -12,9 +12,13 @@ variant-rs <Tool> --help                       # what is supported for that tool
 GATK_FALLBACK=/path/to/gatk variant-rs ...     # anything not reproduced exactly runs the real GATK
 ```
 
-Tools: HaplotypeCaller, Mutect2, FilterMutectCalls, LearnReadOrientationModel, GetPileupSummaries,
-GatherPileupSummaries, CalculateContamination, MergeMutectStats, BaseRecalibrator, ApplyBQSR, GatherBQSRReports,
-MarkDuplicates, GenotypeGVCFs (files and GenomicsDB), ReblockGVCF, MergeVcfs, SortSam, GatherBamFiles.
+It has 23 tools ([what each supports](../docs/reference.md#gatk-command-lines)):
+
+* **Preprocessing:** MarkDuplicates, BaseRecalibrator, ApplyBQSR, GatherBQSRReports, SortSam, GatherBamFiles.
+* **Germline:** HaplotypeCaller, ReblockGVCF, GenomicsDBImport, GenotypeGVCFs (GVCF files and GenomicsDB
+  workspaces), VariantRecalibrator, ApplyVQSR, VariantFiltration, MakeSitesOnlyVcf, MergeVcfs.
+* **Somatic:** Mutect2, CreateSomaticPanelOfNormals, FilterMutectCalls, LearnReadOrientationModel,
+  GetPileupSummaries, GatherPileupSummaries, CalculateContamination, MergeMutectStats.
 
 | | |
 |---|---|

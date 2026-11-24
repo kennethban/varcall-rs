@@ -15,11 +15,14 @@ align-rs mem [-t N] [-K N] [-Y] [-l level] [--gpu] --lanes LANES.tsv ref.fa
 align-rs tune [-t N] [-K N] ref.fa R1.fq[.gz] [R2.fq[.gz]]
 ```
 
-* **`mem`** takes these of bwa-mem2 `mem`'s options (the others stay at bwa-mem2's defaults: see
-  [what it does not cover](#what-it-does-not-cover)) and gives its records. `-o x.bam` writes a coordinate-sorted BAM and its
-  `.bai`: records as `samtools sort` orders them, the index byte-identical to `samtools index`. `-o x.sam` (or no
-  `-o`) writes bwa-mem2's SAM. `--gpu` runs seeding, SA lookups, extension and mate rescue on the GPU (the CPU when
-  there is none). The index is bwa-mem2's (`bwa-mem2 index ref.fa`).
+* **`mem`** aligns reads as `bwa-mem2 mem` does and gives the same records. It takes the four bwa-mem2 options
+  shown (`-t`, `-K`, `-Y`, `-R`); every other option stays at bwa-mem2's default, and giving one stops the run
+  ([what it does not cover](#what-it-does-not-cover)). The reference index is bwa-mem2's own
+  (`bwa-mem2 index ref.fa`).
+  * `-o x.bam` writes a coordinate-sorted BAM and its `.bai`. The records are in the order `samtools sort` gives,
+    and the index is byte-identical to that of `samtools index`. `-l` sets the compression level (default 1).
+  * `-o x.sam`, or no `-o`, writes bwa-mem2's SAM.
+  * `--gpu` runs seeding, SA lookups, extension and mate rescue on the GPU, or on the CPU when there is none.
 * **`-K`** is bwa-mem2's batch size in bases. bwa-mem2's output depends on it (insert-size statistics are per batch),
   not on the thread count. Use the value the reference run used. GATK's and nf-core's pipelines use `-K 100000000`.
 * **`--lanes FILE`**: several lanes of a sample in one process (the index loads once). One line per lane:

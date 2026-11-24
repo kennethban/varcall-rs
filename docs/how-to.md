@@ -92,33 +92,55 @@ All parameters: [pipeline/README.md](../pipeline/README.md).
 
 ## Use several GPUs
 
-An align-rs process uses one GPU. A variant-rs process spreads its PairHMM over every visible GPU
-(`VARIANT_RS_GPUS=N` for at most N), though HaplotypeCaller on one sample gains little beyond 2. The pipeline uses
-several: `pipeline/run.sh` takes the GPUs no
-process is using (`VARCALL_GPUS=N` for at most N), or list them yourself when you launch. Each alignment task gets
-the machine's threads divided by the GPUs (`--align_cpus`), the steps after it the machine's (`--cpus`, at most 128).
+The two programs use GPUs differently:
+
+* An **align-rs** process uses one GPU.
+* A **variant-rs** process spreads its PairHMM over every GPU it can see (`VARIANT_RS_GPUS=N` for at most N).
+  HaplotypeCaller on one sample gains little beyond 2 GPUs.
+
+The pipeline puts both to work. `pipeline/run.sh` takes the GPUs that no process is using (`VARCALL_GPUS=N` for at
+most N), or you can list them yourself:
 
 ```bash
 VARCALL_GPUS=4 pipeline/run.sh -params-file my.yaml
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 pipeline/run.sh -params-file my.yaml
 ```
 
-Each sample's lanes are split over one align-rs task per GPU; HaplotypeCaller runs each sample on up to 2 GPUs
-(`--hc_gpus`) and Mutect2 each tumor on one. The outputs are the same as with one GPU. Memory and other details:
-[pipeline/README.md](../pipeline/README.md#several-gpus). Outside the pipeline, run one align-rs process per GPU
-with `CUDA_VISIBLE_DEVICES=N` (per lane or per sample), and give variant-rs the GPUs it should share.
+With several GPUs, the pipeline divides the work as follows, and the outputs are the same as with one GPU:
+
+| Step | GPUs | Threads |
+|---|---|---|
+| Alignment | each sample's lanes are split over one align-rs task per GPU | the machine's threads divided by the GPUs (`--align_cpus`) |
+| HaplotypeCaller | up to 2 per sample (`--hc_gpus`) | the machine's threads, at most 128 (`--cpus`) |
+| Mutect2 | 1 per tumor | as HaplotypeCaller |
+
+Memory and other details: [pipeline/README.md](../pipeline/README.md#several-gpus).
+
+Outside the pipeline, run one align-rs process per GPU with `CUDA_VISIBLE_DEVICES=N` (one per lane or per sample),
+and give variant-rs the GPUs it should share.
 
 ## Call a whole genome in shards, in one process
 
-Pipelines such as WARP call a genome as many separate GATK runs, one per shard. Their output depends on the
-sharding, because each GATK run has its own random-number stream. variant-rs reproduces this in one process:
+Pipelines such as WARP and sarek call a genome as many separate GATK runs, one per shard (a set of intervals),
+and join the results. GATK's output depends on that division, because each run has its own random-number stream:
+the same genome called in one run and called in 23 shards gives VCFs that agree on nearly every call but differ
+in many records, mostly in the QD annotation alone.
+
+variant-rs can reproduce either result in one process. Without the options below it reproduces a single GATK run
+over the whole input. With them it treats each shard as its own GATK run, runs the shards side by side, and writes
+one output:
 
 ```bash
-# one output, equal to concatenating 23 separate GATK runs over the shard files
+# WARP's form: one output, equal to concatenating 23 separate GATK runs over the shard files
 variant-rs -I S1.bam -R ref.fa --shard s/shard00.intervals ... --shard s/shard22.intervals -O S1.vcf.gz
 # sarek's form: one interval list, each interval its own GATK run
 variant-rs HaplotypeCaller -R ref.fa -I S1.bam -L intervals.bed --scatter-intervals -O S1.vcf.gz
-# new shard files, balanced from the BAM index alone
+```
+
+To compare with an existing GATK result, use the shard files or the interval list that produced it. For a new
+analysis, `plan` writes load-balanced shard files, from the BAM index alone:
+
+```bash
 variant-rs plan -I S1.bam -R ref.fa -o plan96 --pieces 96
 ```
 

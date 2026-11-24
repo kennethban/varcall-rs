@@ -41,8 +41,10 @@ lane FASTQs ──> read + gunzip (one thread per file; kseq_read ported byte fo
   SAM and mate rescue get their own rayon pools, so that they overlap instead of taking turns.
 * **Final pass** (`bam.rs`): the sort, the compression, the write and the `.bai` run on their own threads, window
   by window. Records are stored as `bam_write1` writes them, blocks are cut by htslib's rule and compressed with
-  its `bgzf_compress`, and the index comes from `hts_idx_push`: the records are `samtools sort`'s, and the `.bai` is
-  the one `samtools index` builds for the BAM (each window ends its last block, so block boundaries differ). With `--lanes`, a lane's final pass overlaps the next lane's alignment.
+  its `bgzf_compress`, and the index comes from `hts_idx_push`. The records are therefore those of `samtools sort`,
+  and the `.bai` is the one `samtools index` builds for this BAM. The compressed file itself differs from
+  samtools's, because each window ends its last block and the block boundaries fall elsewhere. With `--lanes`, a
+  lane's final pass overlaps the next lane's alignment.
 * **GPU** (`gpu.rs`, `cuda/aln_ext.cu`): what the reference index puts on the device depends on free memory. The
   2-bit `.pac` is needed for extension and mate rescue, the FM-index checkpoints for seeding, and the SA samples
   for SA lookups. Each batch's reads go to the device once and are shared by the kernels.

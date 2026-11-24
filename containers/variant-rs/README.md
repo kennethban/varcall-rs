@@ -1,11 +1,14 @@
 # variant-rs container: a drop-in `gatk` for nf-core/sarek
 
-The image is sarek's own GATK 4.7.0.0 + samtools image (`community.wave.seqera.io/library/gatk4-lite_samtools:9b6806e26dd32afe`,
-what its MarkDuplicates and ApplyBQSR modules use, since they convert to CRAM with samtools in the same task; the other
-GATK modules use the same GATK without samtools) with variant-rs added. The `gatk` wrapper takes the place of the image's `gatk`, and the real launcher
-becomes `gatk.real` beside it. A `PATH` entry would not work: the image's entrypoint (`/shell-hook.sh`, which
-Nextflow keeps) resets `PATH`, and every command would then quietly run in GATK. GATK (Java) stays in the image only
-as the fallback; the commands variant-rs runs use no Java.
+The image is sarek's own GATK 4.7.0.0 + samtools image with variant-rs added. The base is
+`community.wave.seqera.io/library/gatk4-lite_samtools:9b6806e26dd32afe`, which sarek's MarkDuplicates and ApplyBQSR
+modules use because they convert to CRAM with samtools in the same task. Its other GATK modules use the same GATK
+without samtools, so one image serves them all.
+
+A `gatk` wrapper takes the place of the image's `gatk`, and the real launcher becomes `gatk.real` beside it. Putting
+the wrapper earlier on `PATH` would not work: the image's entrypoint (`/shell-hook.sh`, which Nextflow keeps) resets
+`PATH`, and every command would then quietly run in GATK. GATK and its Java stay in the image only as the fallback;
+the commands that variant-rs runs use no Java.
 
 * `gatk <Tool> ...`: variant-rs runs every command it reproduces byte for byte. Everything else goes to the image's
   real `gatk` launcher (`GATK_FALLBACK`), with the original arguments (`--java-options` included): unsupported

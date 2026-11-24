@@ -1,8 +1,8 @@
-# variant-rs FASTQ -> VCF pipeline (Nextflow)
+# varcall-rs FASTQ → VCF pipeline (Nextflow)
 
-Germline (HaplotypeCaller, per sample or jointly over a cohort) and somatic (Mutect2) short variants from FASTQ, in
-GATK Best Practices order, with variant-rs for every GATK step. Each step's output is GATK 4.7's (`test/compare.py`
-against `test/truth.sh`).
+This pipeline calls germline short variants (HaplotypeCaller, per sample or jointly over a cohort) and somatic ones
+(Mutect2) from FASTQ files. It follows the order of the GATK Best Practices, with align-rs for alignment and
+variant-rs for every GATK step. Each step's output is the one GATK 4.7 gives for the same input ([Tests](#tests)).
 
 ```
 per sample   align-rs mem (bwa-mem2 2.2.1's alignments, GPU)      a sorted BAM + index per lane, written directly
@@ -16,23 +16,22 @@ somatic      ApplyBQSR -> Mutect2 (tumor + matched normal, or tumor only, with F
              GetPileupSummaries -> CalculateContamination; LearnReadOrientationModel -> FilterMutectCalls
 ```
 
-What makes it faster than nf-core/sarek with the same variant-rs (measured in end-to-end sarek runs whose notes are not
-in this repository):
+It is faster than nf-core/sarek even when sarek runs variant-rs (15.3 min against 2.8 min on the somatic exome
+below), for these reasons:
 
-* **No external scatter.** Each step runs once per sample on the whole genome and takes the machine (`--cpus`,
-  default 16); variant-rs parallelises inside (threads, contig workers, GPU PairHMM). Sarek splits the genome into ~350
-  intervals and runs 2-CPU tasks per interval, each reloading the reference and resources, then gathers the pieces.
+* **No external scatter.** Each step runs once per sample on the whole genome and takes the machine (`--cpus`);
+  variant-rs parallelises inside (threads, contig workers, GPU PairHMM). Sarek splits the genome into ~350 intervals
+  and runs a 2-CPU task per interval, each of which reloads the reference and resources, then gathers the pieces.
   HaplotypeCaller still treats each interval as its own GATK run (`scatter_intervals`), so its output is sarek's.
-* **No recalibrated BAM for germline calling.** HaplotypeCaller applies the recal table while reading.
-* **BAM throughout, multi-threaded writers.** No single-threaded samtools CRAM step.
-* MarkDuplicates gets indexed lane BAMs (no in-memory indexing).
-* **Alignment on the GPU** (`aligner = 'align-rs'`, default): [`align-rs`](../align-rs), a port of bwa-mem2 2.2.1 `mem` whose
-  records are bwa-mem2's (checked record for record on a 30x lane), with seeding, extension and mate rescue on the
-  GPU, writing the coordinate-sorted BAM and `.bai` itself (records as `samtools sort` gives them, index bytes as
-  `samtools index`). One task per sample (`--lanes`): the index loads once and each lane's final BAM pass overlaps
-  the next lane's alignment; each lane's BAM is the one aligning it alone gives. A 30x lane: 124 s, sorting and
-  indexing included, vs 572 s for bwa-mem2 | samtools sort, + 16 s samtools index. Without a GPU it runs on the CPU;
-  `aligner = 'bwa-mem2'` runs bwa-mem2 | samtools sort | samtools index per lane instead.
+* **No recalibrated BAM for germline calling.** HaplotypeCaller applies the recalibration table while it reads.
+* **BAM throughout, with multi-threaded writers.** There is no single-threaded samtools CRAM step.
+* **Indexed lane BAMs for MarkDuplicates,** so nothing is indexed in memory.
+* **Alignment on the GPU** (`aligner = 'align-rs'`, the default). [align-rs](../align-rs) gives bwa-mem2 2.2.1's
+  records and writes the coordinate-sorted BAM and its `.bai` itself. One task aligns all lanes of a sample
+  (`--lanes`): the index loads once, and each lane's final BAM pass overlaps the next lane's alignment. A 30x lane
+  takes 124 s, sorting and indexing included, against 572 s for `bwa-mem2 | samtools sort` plus 16 s for
+  `samtools index`. Without a GPU, align-rs runs on the CPU. `aligner = 'bwa-mem2'` runs
+  `bwa-mem2 | samtools sort | samtools index` per lane instead.
 
 ## Run
 
@@ -41,31 +40,48 @@ in this repository):
 ./run.sh -params-file my.yaml
 ```
 
-`run.sh` runs `nextflow run main.nf` with your arguments, after choosing the GPUs: unless `CUDA_VISIBLE_DEVICES` is
-set (by you, or by a scheduler such as SLURM), the GPUs no process is using (`VARCALL_GPUS=N` for at most N).
-`nextflow run main.nf` directly works too, with `CUDA_VISIBLE_DEVICES` to list the GPUs (see below).
+`run.sh` chooses the GPUs and then runs `nextflow run main.nf` with your arguments. `nextflow run main.nf` works
+directly too, with `CUDA_VISIBLE_DEVICES` to list the GPUs ([Several GPUs](#several-gpus)).
 
-Threads follow the machine and the GPUs in use. align-rs runs one task per GPU at once, so each gets the machine's
-threads divided by the GPUs (at most 64, `--align_cpus`); the steps after it run one sample at a time, so each gets
-the machine's threads (at most 128, `--cpus`). The caps are where the measured gains stopped on a 30x genome (L40S
-server): MarkDuplicates 75 s at 64 threads, 56 at 128; BaseRecalibrator 30, 19, 16 at 64, 128, 192; HaplotypeCaller
-121, 118 at 64, 128; one alignment measured up to 64.
+### What you need
 
-Rerunning with `-resume <session id>` (`nextflow log` lists them; a bare `-resume` takes the last run launched from
-this directory, whichever it was) takes unchanged steps, the alignments above all, from the work directory. Each
-variant-rs command carries the binary's build time (`VARIANT_RS_BUILD=...`), so a rebuilt variant-rs reruns the variant-rs steps
-and only them. [`tests/harness/regress.sh`](../tests/harness/regress.sh) runs the tests this way: 2.5 min instead of ~12 with the 40 alignments cached.
+* **The binaries**, built for the machine (`RUSTFLAGS="-C target-cpu=native"`, and `make -C align-rs/cuda` from the
+  repository root for align-rs's kernels). `--variant_rs` and `--align_rs` point at them.
+* **The reference** with its `.fai`, `.dict` and bwa-mem2 index beside it. align-rs reads bwa-mem2's index files.
+* **A samplesheet** (`--input`) in nf-core/sarek's format: `patient,sample,status,lane,fastq_1,fastq_2`. Status 0 is
+  normal and 1 is tumor; an empty `fastq_2` is a single-end lane.
 
-The reference needs `.fai`, `.dict` and the bwa-mem2 index beside it (align-rs reads the same index files). variant-rs
-and align-rs are built for the machine (`RUSTFLAGS="-C target-cpu=native"`; align-rs's kernels: `make -C
-align-rs/cuda` from the repository root first); `--variant_rs` / `--align_rs` point at the binaries. align-rs's commands carry its build time
-too (`ALIGN_RS_BUILD=...`), so a rebuilt align-rs realigns.
+To start from coordinate-sorted BAMs instead, give `--step markduplicates` and a samplesheet of
+`patient,sample,status,bam[,bai]`, one row per BAM. MarkDuplicates merges a sample's BAMs, and a BAM without an
+index is indexed in memory.
 
-Samplesheet (`--input`), as nf-core/sarek's: `patient,sample,status,lane,fastq_1,fastq_2`. Status 0 is normal, 1 is
-tumor; an empty `fastq_2` is a single-end lane. `--step markduplicates` starts from coordinate-sorted BAMs instead:
-`patient,sample,status,bam[,bai]`, one row per BAM (a sample's BAMs are merged by MarkDuplicates; a BAM without an
-index is indexed in memory). HaplotypeCaller runs on the normal samples, Mutect2 once per tumor
-(with the patient's normal when there is one).
+HaplotypeCaller runs on the normal samples, and Mutect2 once per tumor, with the patient's normal when there is one.
+
+### GPUs and threads
+
+`run.sh` uses the GPUs that no process is using (`VARCALL_GPUS=N` for at most N), unless `CUDA_VISIBLE_DEVICES` is
+already set, by you or by a scheduler such as SLURM. Threads follow the machine and the GPUs in use:
+
+| Step | Runs | Threads per task |
+|---|---|---|
+| align-rs | one task per GPU, side by side | the machine's threads divided by the GPUs, at most 64 (`--align_cpus`) |
+| the steps after it | one sample at a time | the machine's threads, at most 128 (`--cpus`) |
+
+The two caps are where the measured gains stopped on a 30x genome on the L40S server: MarkDuplicates took 75 s at 64
+threads and 56 s at 128; BaseRecalibrator 30, 19 and 16 s at 64, 128 and 192; HaplotypeCaller 121 and 118 s at 64
+and 128. One alignment was measured up to 64 threads.
+
+### Resuming
+
+`-resume <session id>` takes unchanged steps from the work directory, the alignments above all (`nextflow log` lists
+the session ids). A bare `-resume` takes the last run launched from this directory, whichever it was.
+
+Each command carries its binary's build time (`VARIANT_RS_BUILD=...`, `ALIGN_RS_BUILD=...`). A rebuilt variant-rs
+therefore reruns the variant-rs steps and only them, and a rebuilt align-rs realigns.
+[`tests/harness/regress.sh`](../tests/harness/regress.sh) runs the pipeline tests this way: 2.5 min instead of ~12
+with the 40 alignments cached.
+
+### Parameters
 
 | parameter | |
 |---|---|
@@ -114,49 +130,111 @@ identical to the one-GPU run's, and the SEQC2 exome pair identical to the workst
 [Benchmarks](#benchmarks)). On a machine with one GPU, listing more (`CUDA_VISIBLE_DEVICES=0,1,2,3`) is harmless: the
 tasks given GPUs that do not exist fall back to the CPU, with the same outputs.
 
-Outputs: `preprocessing/<sample>/` (MarkDuplicates BAM + metrics, recal table), `germline/<sample>/` (VCF, filtered
-VCF; the GVCF with `joint_germline`), `germline/joint/` (`joint_germline.vcf.gz`, the VQSR recal files (indexed) and tranches,
-`joint_germline_recalibrated.vcf.gz`), `somatic/<tumor>_vs_<normal>/` (Mutect2 VCF + stats, F1R2, priors,
-contamination, segments, filtered VCF), `somatic/pileups/`.
+## Outputs
+
+| Folder in `outdir` | Contents |
+|---|---|
+| `preprocessing/<sample>/` | MarkDuplicates BAM and metrics, recalibration table |
+| `germline/<sample>/` | VCF and filtered VCF; the GVCF with `joint_germline` |
+| `germline/joint/` | `joint_germline.vcf.gz`, the VQSR recal files (indexed) and tranches, `joint_germline_recalibrated.vcf.gz` |
+| `somatic/<tumor>_vs_<normal>/` | Mutect2 VCF and stats, F1R2 counts, priors, contamination, segments, filtered VCF |
+| `somatic/pileups/` | GetPileupSummaries tables |
+
+## Tests
+
+The pipeline's own tests compare every output file with GATK's (first run on 2026-11-16). Three scripts do it:
+
+* `test/make_fastq.sh` makes the inputs;
+* `test/truth.sh germline|somatic|somatic_bam|joint` runs the same chain of steps with GATK 4.7, starting from the
+  pipeline's own lane BAMs, since alignment is not a GATK step;
+* `test/compare.py <test>` compares the two sets of outputs.
+
+| test | input | result |
+|---|---|---|
+| germline | NA12878 chr20:10-15M, 1.19M pairs cut into 2 lanes; HaplotypeCaller on two intervals (`test/germline.intervals`, chr20:10-12.5M and 12.5-15M; truth: one GATK run per interval, records concatenated) (also from the 2 lane BAMs, `--step markduplicates`: same outputs) | 5 files identical: MarkDuplicates BAM (1,192,285 records) and metrics, recal table, VCF (8,039 records), filtered VCF |
+| somatic_bam | SEQC2 HCC1395 exome pair, chr22 (2.2M / 1.6M reads), from BAMs whose read-group SM (`WES_FD_*`) is not the samplesheet's sample name; the real target BED's chr22 part (6,644 regions, duplicated and overlapping ones included); Mutect2 on the pair, HaplotypeCaller on the normal | 17 files identical: both samples' MarkDuplicates BAMs, metrics and tables; Mutect2 VCF (94 records) and stats, F1R2, priors, pileups, contamination, segments, filtered VCF; HaplotypeCaller VCF (2,299 records) and filtered VCF |
+| somatic | HCC1143 tumor / normal (GATK somatic workshop, hg38 chr17), one FASTQ per read group: normal 16 paired lanes, tumor 18 paired + 4 single-end lanes | 17 files identical: both samples' MarkDuplicates and recalibrated BAMs, metrics and tables; Mutect2 VCF (359 records) and stats, F1R2 counts, priors, pileups, contamination, segments, filtered VCF |
+| joint (2026-11-21) | NA12878 (the germline test's 2 lane BAMs) and HCC1143_normal (the somatic test's 16), `--step markduplicates`, `joint_germline` over chr17:7-9.5M and the germline test's two chr20 intervals, `--dbsnp`, VQSR with the HapMap / Omni / 1000G / dbSNP and Mills / dbSNP resources | 14 files identical: both samples' MarkDuplicates BAMs, metrics, recal tables and GVCFs (805,650 and 58,712 records); the joint VCF (8,400 records), both recal files and tranches, the VQSR-filtered VCF. The joint steps take 3-4 s each |
+
+The F1R2 alt histograms are compared by column name: GATK writes their columns in an order that follows Java identity
+hash codes (a HashMap keyed by enum pairs), which differs between GATK runs; the counts are identical and
+LearnReadOrientationModel reads them by name.
+
+Somatic test: 10.6 min wall with bwa-mem2, most of it the 38 alignments (each loads the whole-genome index, 15-27 s
+per lane); with align-rs 2.9 min (2.5 s per lane: the mapped index stays in the page cache), lane BAMs' records
+identical to bwa-mem2's (all 40 test lanes, `test/log/lanes.bwamem2.md5`); germline test 36 s. With one ALIGN
+task per sample (2026-11-17): somatic 103 s, germline 22 s, outputs unchanged. The GATK steps
+take seconds (MarkDuplicates 6 s, BaseRecalibrator 14-25 s, Mutect2 9 s) where GATK took 20-40 s each and 109 s for
+Mutect2.
+
+Found on the way: the pipeline's test data first had empty tumor FASTQs (the workshop's tumor BAM is single-end),
+which exposed a variant-rs crash on an empty lane BAM, now fixed ([`tests/harness/markdup/edge/run.sh`](../tests/harness/markdup/edge/run.sh)).
 
 ## Benchmarks
 
-Nothing cached; outputs identical to the earlier runs' in the measurement log below (germline: VCF 4,951,704 records,
-4,944,053 after filtering; somatic exome: all 17 outputs, Mutect2 5,485 records, 1,321 PASS).
+Every run started with nothing cached. The outputs are identical from run to run: for the germline genome, a VCF of
+4,951,704 records (4,944,053 after filtering); for the somatic exome, all 17 outputs (Mutect2: 5,485 records, 1,321
+PASS). The first table of each machine gives the current numbers, and the [measurement log](#measurement-log) says
+how each was taken.
 
-**Workstation**: 16-core Ryzen 9 9950X3D (32 threads), one RTX 5070 Ti (16 GB), Windows 11 with WSL2 (48 GB of RAM
-given to Linux; ext4 on WSL2's virtual disk):
+### Workstation
 
-| Run | Input | Wall | Steps | Reference |
-|---|---|---:|---|---|
-| germline whole genome, three runs (2026-11-23, at 736009f) | same | **34.0 min** (2030, 2055, 2036 s) | ALIGN 23.5 min, MarkDuplicates 3.4, BaseRecalibrator 1.3, HaplotypeCaller 5.6; every output identical to 7d6ffa6's | |
-| germline whole genome (2026-11-22, at 7d6ffa6) | NA12878 30x, 12 FASTQ lanes, Broad hg38 | **34.3 min** | ALIGN 23.6 min (peak 32.5 GB), MarkDuplicates 3.5, BaseRecalibrator 1.3, HaplotypeCaller 5.7, hard filters 0.1 (earlier on 2026-11-22: 36.9 and 40.1 min; 2026-11-19: 44.6 min) | stock tools on the same machine: ~5.2 h (bwa-mem2 + samtools ~117 min, sarek's stock GATK steps ~196 min) |
-| same, memory held to 30 GB (a cgroup, 16 GB of swap; Nextflow told 30 GB) | same | **41.6 min** | ALIGN 31.0 min (peak 26.9 GB, swap at most 0.9 GB: the hg38 index's pages are dropped and re-read), BaseRecalibrator 1.4, the rest as above; VCF identical | |
-| somatic exome (2026-11-22; 166 s on 2026-11-19) | SEQC2 HCC1395 tumor / normal BAMs | **2.8 min** (167 s) | MarkDuplicates 0.2 min, BaseRecalibrator 0.1-0.15, ApplyBQSR 0.3-0.4, HaplotypeCaller 0.5, Mutect2 0.5, the rest seconds (peak 5.1 GB, Mutect2); all 17 outputs identical to 2026-11-19's | nf-core/sarek: 46.5 min with stock GATK, 15.3 min with variant-rs |
+16-core Ryzen 9 9950X3D (32 threads), one RTX 5070 Ti (16 GB), Windows 11 with WSL2 (48 GB of RAM given to Linux;
+ext4 on WSL2's virtual disk).
 
-**Server**: 2 x AMD EPYC 9654 (192 cores, 384 threads, 2 NUMA nodes), 2.2 TiB of RAM, 8 x NVIDIA L40S (48 GB; two of
-them in use by another job), NVMe SSD, Ubuntu 24.04;
-germline whole genome as above, `pipeline/run.sh` with its defaults unless noted:
+| Run | Wall | Steps | Reference tools |
+|---|---:|---|---|
+| **Germline whole genome**: NA12878 30x, 12 FASTQ lanes, Broad hg38; three runs (2026-11-23, at 736009f) | **34.0 min** (2030, 2055, 2036 s) | ALIGN 23.5 min, MarkDuplicates 3.4, BaseRecalibrator 1.3, HaplotypeCaller 5.6; every output identical to 7d6ffa6's | stock tools on the same machine: ~5.2 h (bwa-mem2 + samtools ~117 min, sarek's stock GATK steps ~196 min) |
+| The same, one run (2026-11-22, at 7d6ffa6) | 34.3 min | ALIGN 23.6 min (peak 32.5 GB), MarkDuplicates 3.5, BaseRecalibrator 1.3, HaplotypeCaller 5.7, hard filters 0.1 (earlier on 2026-11-22: 36.9 and 40.1 min; 2026-11-19: 44.6 min) | |
+| The same, memory held to 30 GB (a cgroup, 16 GB of swap; Nextflow told 30 GB) | **41.6 min** | ALIGN 31.0 min (peak 26.9 GB, swap at most 0.9 GB: the hg38 index's pages are dropped and re-read), BaseRecalibrator 1.4, the rest as above; VCF identical | |
+| **Somatic exome**: SEQC2 HCC1395 tumor / normal BAMs (2026-11-22; 166 s on 2026-11-19) | **2.8 min** (167 s) | MarkDuplicates 0.2 min, BaseRecalibrator 0.1-0.15, ApplyBQSR 0.3-0.4, HaplotypeCaller 0.5, Mutect2 0.5, the rest seconds (peak 5.1 GB, Mutect2); all 17 outputs identical to 2026-11-19's | nf-core/sarek: 46.5 min with stock GATK, 15.3 min with variant-rs |
 
-| Run (2026-11-19 unless noted) | Wall | Steps |
+### Server
+
+2 x AMD EPYC 9654 (192 cores, 384 threads, 2 NUMA nodes), 2.2 TiB of RAM, 8 x NVIDIA L40S (48 GB; two of them in
+use by another job), NVMe SSD, Ubuntu 24.04.
+
+**Germline whole genome** (the same input as on the workstation), on GPUs 4-7 and the 128 threads of their socket
+(`taskset`: 64 cores + SMT), with 128 threads for each step after alignment and HaplotypeCaller on 2 GPUs:
+
+| GPUs | Wall | Steps |
 |---|---:|---|
-| as the next row, three runs (2026-11-23, at 736009f) | **9.3 min** (567, 552, 558 s) | ALIGN 5.4 min, MarkDuplicates 1.0, BaseRecalibrator 0.5, HaplotypeCaller 2.2; every output identical to 7b3df92's |
-| the same on 2 GPUs (4-5; 64 threads per alignment task) | 11.1 min (667 s) | ALIGN 6.8 min (2 tasks of 6 lanes), MarkDuplicates 1.1, BaseRecalibrator 0.5, HaplotypeCaller 2.5 |
-| the same on 1 GPU (4; one alignment task of 128 threads) | 17.6 min (1053 s) | ALIGN 12.7 min, MarkDuplicates 1.2, BaseRecalibrator 0.6, HaplotypeCaller 2.8 |
-| 4 GPUs (4-7) and 128 threads of their socket (`taskset`: 64 cores + SMT), 32 threads per alignment task, 128 per other step, HaplotypeCaller on 2 GPUs (2026-11-22, at 7b3df92) | **9.3 min** (555 s) | ALIGN 5.2 min (4 tasks of 3 lanes, side by side; peak ~36 GB each, GPUs 46% busy), MarkDuplicates 1.0, BaseRecalibrator 0.5, HaplotypeCaller 2.3, hard filters 0.1 |
+| 4 (32 threads per alignment task), three runs (2026-11-23, at 736009f) | **9.3 min** (567, 552, 558 s) | ALIGN 5.4 min, MarkDuplicates 1.0, BaseRecalibrator 0.5, HaplotypeCaller 2.2; every output identical to 7b3df92's |
+| 4, one run (2026-11-22, at 7b3df92) | 9.3 min (555 s) | ALIGN 5.2 min (4 tasks of 3 lanes, side by side; peak ~36 GB each, GPUs 46% busy), MarkDuplicates 1.0, BaseRecalibrator 0.5, HaplotypeCaller 2.3, hard filters 0.1 |
+| 2 (GPUs 4-5; 64 threads per alignment task) | 11.1 min (667 s) | ALIGN 6.8 min (2 tasks of 6 lanes), MarkDuplicates 1.1, BaseRecalibrator 0.5, HaplotypeCaller 2.5 |
+| 1 (GPU 4; one alignment task of 128 threads) | 17.6 min (1053 s) | ALIGN 12.7 min, MarkDuplicates 1.2, BaseRecalibrator 0.6, HaplotypeCaller 2.8 |
+
+**NVIDIA Parabricks 4.8.0-1 `germline`** on the same genome. Parabricks writes its own outputs, not GATK's:
+
+| Resources | Wall | Steps and output |
+|---|---:|---|
+| GPUs 4-7 and the same 128 threads as varcall-rs (`--cpuset-cpus`; 2026-11-22) | 16.8 min | BWA + sort 5.9 min (64 CPU worker threads, its auto-configuration), MarkDuplicates + BQSR 3.0, HaplotypeCaller 6.8. Against the GATK-identical VCF: 99.85% of sites with the same alleles, 99.98% of those the same genotype, 3.18% identical records (SNVs 0.55%, indels 14.65%); QD, PL and QUAL differ in 81-85% of shared records |
+| 4 GPUs, 64 threads (2026-11-18) | 16.3 min | 99.8% of its calls have the same site, alleles and genotype as GATK's, 3% are identical records |
+
+**Germline whole genome with `run.sh`'s defaults**, which use the 6 free GPUs and all 384 threads (2026-11-19
+unless noted). The later rows are earlier configurations, kept to show what each change gained:
+
+| Configuration | Wall | Steps |
+|---|---:|---|
 | 6 GPUs, 64 threads per alignment task, 128 per other step, HaplotypeCaller on 2 GPUs (the defaults; 2026-11-22) | **6.8 min** (409 s) | ALIGN 3.7-3.8 min (6 tasks of 2 lanes, side by side; peak 37 GB each), MarkDuplicates 0.8, BaseRecalibrator 0.3, HaplotypeCaller 1.7, hard filters 0.1 |
 | the same on 2026-11-19 | 7.8 min (465 s) | ALIGN 4.0-4.6 min, MarkDuplicates 0.9, BaseRecalibrator 0.3, HaplotypeCaller 1.7 |
-| same, HaplotypeCaller on 1 GPU | 8.1 min (484 s) | HaplotypeCaller 1.9 |
+| the same, HaplotypeCaller on 1 GPU | 8.1 min (484 s) | HaplotypeCaller 1.9 |
 | 6 GPUs, 64 threads every step | 8.4 min (505 s) | MarkDuplicates 1.2, BaseRecalibrator 0.5, HaplotypeCaller 2.0 |
 | 6 GPUs, 64 threads every step, before the HaplotypeCaller GPU engine pool | 9.9 min (593 s) | HaplotypeCaller 3.5 |
 | 1 GPU, 64 threads every step, before the engine pool | 20.9 min | ALIGN 15.3 min (12 lanes, one task), MarkDuplicates 1.3, BaseRecalibrator 0.5, HaplotypeCaller 3.5 |
-| NVIDIA Parabricks 4.8.0-1 `germline`, 4 GPUs, 64 threads (2026-11-18) | 16.3 min | its own outputs: 99.8% of its calls have the same site, alleles and genotype as GATK's, 3% are identical records |
-| same, on GPUs 4-7 and the same 128 threads as varcall-rs (`--cpuset-cpus`; 2026-11-22) | 16.8 min | BWA + sort 5.9 min (64 CPU worker threads, its auto-configuration), MarkDuplicates + BQSR 3.0, HaplotypeCaller 6.8. Against the GATK-identical VCF: 99.85% of sites with the same alleles, 99.98% of those the same genotype, 3.18% identical records (SNVs 0.55%, indels 14.65%); QD, PL and QUAL differ in 81-85% of shared records |
-| joint germline, CEPH trio (NA12878, NA12891, NA12892; 30x each, 36 FASTQ lanes) with VQSR (2026-11-21) | **~34 min** | ALIGN 13.7 min (18 tasks of 2 lanes); GVCFs done at 21 min (per sample: MarkDuplicates 1.8 min, BaseRecalibrator 0.5-0.9, HaplotypeCaller 4.6-5.2); GenomicsDBImport 5.1, GenotypeGVCFs 5.0, VariantRecalibrator 1.9 (SNP) / 0.5 (INDEL) side by side, ApplyVQSR 1.0; all 18 outputs identical to GATK (`tests/harness/m3`) |
-| somatic exome, SEQC2 tumor / normal BAMs (the defaults on GPUs 2-7: 128 threads per step; 2026-11-19) | **63 s** | MarkDuplicates 11 s, BaseRecalibrator 3.5, ApplyBQSR 11-12, Mutect2 9.8, HaplotypeCaller on the normal 41.9; all 17 outputs identical to the workstation's |
-| same, 4 GPUs (4-7) and 128 threads of their socket (`taskset`, `--cpus 128`; 2026-11-22) | **109 s** | MarkDuplicates 4.2-4.5 s, BaseRecalibrator 3.4-3.7, ApplyBQSR 10-11, Mutect2 10.3, HaplotypeCaller on the normal 37.2: each step as fast or faster, but with 128 CPUs Nextflow runs one 128-thread step at a time, where 384 ran the tumor's and the normal's side by side; all 17 outputs identical |
 
-The sections that follow are the measurement log: how each number was taken, and what changed between runs.
+**Other runs:**
+
+| Run | Wall | Steps |
+|---|---:|---|
+| Joint germline, CEPH trio (NA12878, NA12891, NA12892; 30x each, 36 FASTQ lanes) with VQSR (2026-11-21) | **~34 min** | ALIGN 13.7 min (18 tasks of 2 lanes); GVCFs done at 21 min (per sample: MarkDuplicates 1.8 min, BaseRecalibrator 0.5-0.9, HaplotypeCaller 4.6-5.2); GenomicsDBImport 5.1, GenotypeGVCFs 5.0, VariantRecalibrator 1.9 (SNP) / 0.5 (INDEL) side by side, ApplyVQSR 1.0; all 18 outputs identical to GATK (`tests/harness/m3`) |
+| Somatic exome, SEQC2 tumor / normal BAMs (the defaults on GPUs 2-7: 128 threads per step; 2026-11-19) | **63 s** | MarkDuplicates 11 s, BaseRecalibrator 3.5, ApplyBQSR 11-12, Mutect2 9.8, HaplotypeCaller on the normal 41.9; all 17 outputs identical to the workstation's |
+| The same, 4 GPUs (4-7) and 128 threads of their socket (`taskset`, `--cpus 128`; 2026-11-22) | **109 s** | MarkDuplicates 4.2-4.5 s, BaseRecalibrator 3.4-3.7, ApplyBQSR 10-11, Mutect2 10.3, HaplotypeCaller on the normal 37.2. Each step is as fast or faster, but with 128 CPUs Nextflow runs one 128-thread step at a time, where 384 ran the tumor's and the normal's side by side; all 17 outputs identical |
+
+## Measurement log
+
+The sections that follow were written as the measurements were made. They record how each number was taken and
+what changed between runs, and they are partly historical: later sections supersede earlier numbers.
 
 ### Server, from FASTQ (2026-11-19)
 
@@ -197,33 +275,7 @@ summed stage seconds; the small chromosomes at the end of the file finish last).
 the same 39.6-41.0 s, VCF identical, with 32 to 128 threads, 8 to 28 contig workers, 8 or 16 GPU engines (GPU 2%
 busy). `scatter_intervals true` calls each target on its own (as sarek, and GATK per interval), in parallel.
 
-## Tests (2026-11-16)
-
-`test/make_fastq.sh` makes the inputs; `test/truth.sh germline|somatic|somatic_bam|joint` runs the same chain with
-GATK 4.7 from the pipeline's own lane BAMs (alignment is not a GATK step); `test/compare.py <test>` compares.
-
-| test | input | result |
-|---|---|---|
-| germline | NA12878 chr20:10-15M, 1.19M pairs cut into 2 lanes; HaplotypeCaller on two intervals (`test/germline.intervals`, chr20:10-12.5M and 12.5-15M; truth: one GATK run per interval, records concatenated) (also from the 2 lane BAMs, `--step markduplicates`: same outputs) | 5 files identical: MarkDuplicates BAM (1,192,285 records) and metrics, recal table, VCF (8,039 records), filtered VCF |
-| somatic_bam | SEQC2 HCC1395 exome pair, chr22 (2.2M / 1.6M reads), from BAMs whose read-group SM (`WES_FD_*`) is not the samplesheet's sample name; the real target BED's chr22 part (6,644 regions, duplicated and overlapping ones included); Mutect2 on the pair, HaplotypeCaller on the normal | 17 files identical: both samples' MarkDuplicates BAMs, metrics and tables; Mutect2 VCF (94 records) and stats, F1R2, priors, pileups, contamination, segments, filtered VCF; HaplotypeCaller VCF (2,299 records) and filtered VCF |
-| somatic | HCC1143 tumor / normal (GATK somatic workshop, hg38 chr17), one FASTQ per read group: normal 16 paired lanes, tumor 18 paired + 4 single-end lanes | 17 files identical: both samples' MarkDuplicates and recalibrated BAMs, metrics and tables; Mutect2 VCF (359 records) and stats, F1R2 counts, priors, pileups, contamination, segments, filtered VCF |
-| joint (2026-11-21) | NA12878 (the germline test's 2 lane BAMs) and HCC1143_normal (the somatic test's 16), `--step markduplicates`, `joint_germline` over chr17:7-9.5M and the germline test's two chr20 intervals, `--dbsnp`, VQSR with the HapMap / Omni / 1000G / dbSNP and Mills / dbSNP resources | 14 files identical: both samples' MarkDuplicates BAMs, metrics, recal tables and GVCFs (805,650 and 58,712 records); the joint VCF (8,400 records), both recal files and tranches, the VQSR-filtered VCF. The joint steps take 3-4 s each |
-
-The F1R2 alt histograms are compared by column name: GATK writes their columns in an order that follows Java identity
-hash codes (a HashMap keyed by enum pairs), which differs between GATK runs; the counts are identical and
-LearnReadOrientationModel reads them by name.
-
-Somatic test: 10.6 min wall with bwa-mem2, most of it the 38 alignments (each loads the whole-genome index, 15-27 s
-per lane); with align-rs 2.9 min (2.5 s per lane: the mapped index stays in the page cache), lane BAMs' records
-identical to bwa-mem2's (all 40 test lanes, `test/log/lanes.bwamem2.md5`); germline test 36 s. With one ALIGN
-task per sample (2026-11-17): somatic 103 s, germline 22 s, outputs unchanged. The GATK steps
-take seconds (MarkDuplicates 6 s, BaseRecalibrator 14-25 s, Mutect2 9 s) where GATK took 20-40 s each and 109 s for
-Mutect2.
-
-Found on the way: the pipeline's test data first had empty tumor FASTQs (the workshop's tumor BAM is single-end),
-which exposed a variant-rs crash on an empty lane BAM, now fixed ([`tests/harness/markdup/edge/run.sh`](../tests/harness/markdup/edge/run.sh)).
-
-## Whole genome (2026-11-16): NA12878 30x from its 41 GB BAM, as the sarek `wgs_germline` run
+### Whole genome (2026-11-16): NA12878 30x from its 41 GB BAM, as the sarek `wgs_germline` run
 
 `profile/run_profiled.sh wgs/na12878.yaml NAME` (the profiling scripts in `profile/` and the run configurations and logs
 in `wgs/` and `wes/` were development files, not in the repository): same reference, known sites and HaplotypeCaller intervals as sarek;
@@ -249,7 +301,7 @@ the per-contig reading thread (chr20: 19.0 s without BQSR, 31.5-32.4 s with it).
 on a small pool of their own, several batches in flight, while parsing and the rest stay in file order: chr20 with
 BQSR 20.1-20.8 s, the same as without; output identical ([`tests/harness/regress.sh`](../tests/harness/regress.sh) all identical).
 
-### HaplotypeCaller per interval (`scatter_intervals`, default since 2026-11-16)
+#### HaplotypeCaller per interval (`scatter_intervals`, default since 2026-11-16)
 
 One GATK run draws from one random generator (`java.util.Random`, seed 47382911) in genome order: downsampling at
 start positions with more than 50 reads (16,256 of them here) and the QD jitter. variant-rs reproduces that order, so in
@@ -279,7 +331,7 @@ removes the chain:
 MarkDuplicates (2026-11-16, after run 3): 247 -> 196 s on this BAM (the dense small contigs split, pass 2 pipelined;
 see [docs/notes/variant-rs.md](../docs/notes/variant-rs.md)), under 16 busy threads 20% of its time instead of 45%. Whole run estimate: ~12 min.
 
-### From FASTQ with align-rs (2026-11-17)
+#### From FASTQ with align-rs (2026-11-17)
 
 `wgs/na12878_fastq.yaml`: the 12 lanes as FASTQ (extracted from the BAM by [`tests/harness/wgs/fastq/extract_all.sh`](../tests/harness/wgs/fastq/extract_all.sh)), Broad
 hg38 (`ref_hg38`, which has the bwa-mem2 index), same known sites and intervals. **81 min wall**: 12 ALIGN tasks
@@ -288,7 +340,7 @@ after a full disk stopped the first run at MarkDuplicates) MarkDuplicates over t
 BaseRecalibrator 1.2, HaplotypeCaller 6.7, hard filters 0.1. VCF 4,951,704 records (4,944,053 after filtering).
 Stock tools on this machine, same steps: ~5.2 h (bwa-mem2 + samtools ~117 min, sarek's stock GATK spans ~196 min).
 
-### From FASTQ again, after the aligner speed work (2026-11-17)
+#### From FASTQ again, after the aligner speed work (2026-11-17)
 
 `wgs/na12878_fastq2.yaml` (same inputs, one ALIGN task for all 12 lanes): **48.8 min wall** (2,925 s), one run,
 nothing cached. ALIGN 36.1 min (index load, 12 lanes at ~2.0 s per batch, each lane's final BAM pass overlapping
@@ -296,7 +348,7 @@ the next lane), MarkDuplicates 4.1, BaseRecalibrator 1.2, HaplotypeCaller 7.0, h
 identical to the first FASTQ run's: VCF data lines (4,951,704; 4,944,053 after filtering) and the duplicate
 metrics. Against the first run (81 min) 1.66x; against stock tools on this machine (~5.2 h) ~6.4x.
 
-## Somatic exome (2026-11-16): SEQC2 HCC1395 tumor/normal, as the sarek `wes_somatic` run
+### Somatic exome (2026-11-16): SEQC2 HCC1395 tumor/normal, as the sarek `wes_somatic` run
 
 `profile/run_profiled.sh wes/seqc2.yaml wes_seqc2`: the sarek run's inputs and resources (GRCh38.d1.vd1, ~70M reads
 per sample from BAMs, 295k-region target BED, af-only gnomAD, 1000G PoN), HaplotypeCaller on the normal, Mutect2 on

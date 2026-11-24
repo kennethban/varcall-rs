@@ -19,6 +19,9 @@ filtered VCF in 34 minutes on one workstation, instead of about 5 hours.
   synthetic data in CI, and on whole genomes, exomes and tumor / normal pairs ([validation](docs/validation.md)).
 * **GATK's command lines.** `variant-rs HaplotypeCaller -R ref.fa -I x.bam -O x.vcf.gz` takes the same arguments as
   `gatk`. An argument or input it does not reproduce exactly is refused with the reason, or passed to a real GATK.
+* **The same output as the same GATK runs.** GATK's output depends on how a genome is divided among separate runs,
+  because each run has its own random-number stream. variant-rs reproduces a given division (one run, WARP's shards,
+  sarek's intervals) in a single process ([how-to](docs/how-to.md#call-a-whole-genome-in-shards-in-one-process)).
 * **Drop-in for nf-core/sarek.** The variant-rs image replaces sarek's GATK image for the steps it reproduces.
 * **GPU optional.** Without a GPU everything runs on the CPU, with the same output.
 * **A FASTQ → VCF pipeline** in Nextflow, germline (per sample, or joint calling with VQSR) and tumor / normal, that
@@ -26,8 +29,9 @@ filtered VCF in 34 minutes on one workstation, instead of about 5 hours.
 
 ## Speed
 
-One workstation: 16-core Ryzen 9 9950X3D (32 threads), RTX 5070 Ti (16 GB), Linux (WSL2 with 48 GB; held to 30 GB the
-germline run takes 41.6 min). The output is identical in every row.
+The first two tables were measured on one workstation: a 16-core Ryzen 9 9950X3D (32 threads), one RTX 5070 Ti
+(16 GB), and Linux under WSL2 with 48 GB of RAM. In every row, the varcall-rs output is identical to that of the
+reference tools.
 
 | Whole pipeline | Data | Reference tools | varcall-rs | |
 |---|---|---|---:|---:|
@@ -43,12 +47,22 @@ germline run takes 41.6 min). The output is identical in every row.
 | BaseRecalibrator | same | GATK: 99 min | **65 s** | **91×** |
 | ApplyBQSR | same | GATK: 1 h 47 min | **4.4 min** | **24×** |
 
-The germline time is the mean of three runs (34.0 ± 0.2 min). The baseline adds up measured steps: bwa-mem2 + samtools
-on one lane times 12, and sarek's GATK steps on the same genome. On a server (2 × EPYC 9654, 384 threads, 2.2 TiB of
-RAM, NVMe; L40S GPUs with 48 GB) with 6 L40S and 384 threads, the germline pipeline takes **6.8 min**; with 4 L40S and
-128 threads, **9.3 min** (three runs; 11.1 min on 2 GPUs and 17.6 on 1 with the same threads; NVIDIA Parabricks
-`germline`: 16.8 min on the same 4 GPUs and 128 threads, and its own outputs, not GATK's). How each pipeline number
-was measured: [pipeline/README.md](pipeline/README.md#benchmarks).
+The germline time is the mean of three runs (34.0 ± 0.2 min); with memory held to 30 GB the run takes 41.6 min.
+Its baseline was not run end to end. It is the sum of measured steps: bwa-mem2 + samtools on one lane, times 12,
+and sarek's GATK steps on the same genome.
+
+The same germline pipeline on a server (2 × EPYC 9654 with 384 threads, 2.2 TiB of RAM, NVMe, L40S GPUs with 48 GB
+each):
+
+| GPUs | Threads | varcall-rs | NVIDIA Parabricks `germline` |
+|---:|---:|---:|---:|
+| 1 | 128 | 17.6 min | |
+| 2 | 128 | 11.1 min | |
+| 4 | 128 | **9.3 min** (three runs) | 16.8 min |
+| 6 | 384 | **6.8 min** | |
+
+Parabricks writes its own outputs, which are close to GATK's but not identical to them. How each pipeline number was
+measured: [pipeline/README.md](pipeline/README.md#benchmarks).
 
 ## Getting started
 
@@ -128,7 +142,7 @@ formats it), and the tools whose results it reproduces: bwa-mem2 (Vasimuddin et 
 
 varcall-rs reimplements algorithms of [bwa-mem2](https://github.com/bwa-mem2/bwa-mem2),
 [GATK](https://github.com/broadinstitute/gatk), [Picard](https://github.com/broadinstitute/picard),
-[htsjdk](https://github.com/samtools/htsjdk), [GKL](https://github.com/Intel-HLS/GKL),
+[htsjdk](https://github.com/samtools/htsjdk), [GKL](https://github.com/IntelLabs/GKL),
 [GenomicsDB](https://github.com/GenomicsDB/GenomicsDB) and Apache Commons Math, and links
 [htslib](https://github.com/samtools/htslib); their licenses are listed in [NOTICE](NOTICE). The test data come
 from Genome in a Bottle, the 1000 Genomes Project, the SEQC2 consortium, the ICGC-TCGA DREAM challenge and the GATK
