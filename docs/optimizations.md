@@ -9,19 +9,19 @@ Unless an L40S is named (a server with 2 × EPYC 9654), the numbers were measure
 workstation with an RTX 5070 Ti. The **`mid` set** is a 30x subset of NA12878 (~1/5 of a lane) that is used for
 quick A/B runs, and a **lane** is one of the 12 FASTQ lane pairs of the genome (~64 M records).
 
-* [The method: exact first, then fast](#the-method-exact-first-then-fast)
+* [Method](#method)
 * [align-rs](#align-rs)
-  * [The pipeline, and what paces it](#the-pipeline-and-what-paces-it)
+  * [Pipeline stages and throughput](#pipeline-stages-and-throughput)
   * [GPU kernels](#gpu-kernels)
-  * [CPU: exact shortcuts in bwa's algorithms](#cpu-exact-shortcuts-in-bwas-algorithms)
+  * [CPU optimizations](#cpu-optimizations)
   * [Memory and allocation](#memory-and-allocation)
   * [BAM output](#bam-output)
-  * [Measured and dropped](#measured-and-dropped)
-  * [Open candidates](#open-candidates)
+  * [Rejected optimizations](#rejected-optimizations)
+  * [Candidate optimizations](#candidate-optimizations)
 * [variant-rs](#variant-rs)
 * [Proposing an optimization](#proposing-an-optimization)
 
-## The method: exact first, then fast
+## Method
 
 Each component is first ported line by line from the reference. A faster version replaces part of a port only
 after it has been shown to give the same result, which is done in three steps:
@@ -52,15 +52,15 @@ The same patterns recur throughout the code:
 
 | Pattern | Example | Where |
 |---|---|---|
-| Fast path, port as fallback for ties | region sorts | [Sorts](#sorts-a-fast-path-with-a-fallback-for-ties) |
-| Index instead of scan, same answer | replay lookup, `pos2rid` table | [Replay](#the-replays-skip-test-a-lookup-instead-of-a-scan), [pos2rid](#pos2rid-by-a-table-of-blocks) |
-| Incremental, exact by an invariant | mate rescue dedup | [Dedup](#mate-rescue-an-incremental-dedup) |
-| Exact by an order (monotone test) | chain filter by group | [Chain filter](#chain-filter-by-group-of-read-interval) |
-| A proof that a cheaper computation gives the same | ungapped extension, CIGAR band | [Shortcuts](#exact-shortcuts-from-bwa-mem3) |
-| Same arithmetic, reorganized | SIMD CIGAR fill, GPU kernels | [SIMD](#cigar-dp-8-cells-at-a-time), [GPU](#gpu-kernels) |
-| Integer sums in any order | BaseRecalibrator tables | [variant-rs](#integers-where-gatk-sums-floating-point) |
-| Bit-exact floating point | GPU PairHMM | [PairHMM](#a-bit-exact-gpu-pairhmm) |
-| One sequential stream shared in order | GATK's random numbers | [Shared generator](#parallel-contigs-sequential-random-numbers) |
+| Fast path, port as fallback for ties | region sorts | [Sorts](#region-sorts) |
+| Index instead of scan, same answer | replay lookup, `pos2rid` table | [Replay](#skip-test-of-the-replay), [pos2rid](#block-table-for-pos2rid) |
+| Incremental, exact by an invariant | mate rescue dedup | [Dedup](#incremental-deduplication-in-mate-rescue) |
+| Exact by an order (monotone test) | chain filter by group | [Chain filter](#chain-filter-grouped-by-read-interval) |
+| A proof that a cheaper computation gives the same | ungapped extension, CIGAR band | [Shortcuts](#shortcuts-adopted-from-bwa-mem3) |
+| Same arithmetic, reorganized | SIMD CIGAR fill, GPU kernels | [SIMD](#vectorized-cigar-alignment), [GPU](#gpu-kernels) |
+| Integer sums in any order | BaseRecalibrator tables | [variant-rs](#integer-counts-in-baserecalibrator) |
+| Bit-exact floating point | GPU PairHMM | [PairHMM](#gpu-pairhmm) |
+| One sequential stream shared in order | GATK's random numbers | [Shared generator](#random-number-order-across-parallel-contigs) |
 
 Each optimization started from a measurement, for which the following means are available:
 
@@ -72,7 +72,7 @@ Each optimization started from a measurement, for which the following means are 
 
 ## align-rs
 
-### The pipeline, and what paces it
+### Pipeline stages and throughput
 
 align-rs processes a lane as a pipeline of stages, each of which works on a different batch of reads at the same
 time. The stages share the CPU threads and one GPU:
@@ -90,24 +90,25 @@ flowchart LR
 
 In steady state, the slowest stage determines the throughput. On a lane that took 122 s, the stages were busy for
 the following times: extension 104 s, mate rescue 104 s, SA + chaining 93 s, seeding 92 s, read 65 s, SAM 51 s
-and write 39 s. This has two consequences:
+and write 39 s.
 
-* **Reducing the cost of one stage may not reduce the elapsed time of one lane.** The threads that are freed go to
-  the other stages, which then run ahead and wait. Because Rayon workers spin before they sleep, even the total
-  CPU time may hardly decrease. The chain filter described below reduced the user CPU time of a lane by 5% and
-  left its elapsed time unchanged.
-* **It does reduce the elapsed time of a whole genome.** The pipeline aligns the 12 lanes of a sample in one
-  process and overlaps the final pass of each lane with the next lane, so that all 32 threads stay busy and CPU
-  time saved becomes elapsed time saved. The mate rescue dedup reduced the alignment of the genome from 29.7 to
-  26.4 minutes. The chain filter, the B-tree search and the SIMD CIGAR fill, which hardly changed the time of one
-  lane, reduced it further from 26.4 to 23.6.
+For a single lane, reducing the cost of one stage may therefore leave the elapsed time unchanged. The threads that
+are freed go to the other stages, which then run ahead and wait, and because Rayon workers spin before they sleep,
+the total CPU time may hardly decrease either. The chain filter described below reduced the user CPU time of a lane
+by 5% and left its elapsed time unchanged.
+
+For a whole genome, the same saving does reduce the elapsed time. The pipeline aligns the 12 lanes of a sample in
+one process and overlaps the final pass of each lane with the alignment of the next, so all 32 threads stay busy
+and a reduction in CPU time shortens the run. The mate rescue dedup reduced the alignment of the genome from 29.7
+to 26.4 minutes. The chain filter, the B-tree search and the SIMD CIGAR fill, which hardly changed the time of one
+lane, reduced it further from 26.4 to 23.6.
 
 On the workstation, the GPU was busy for 60-70% of a lane (`nvidia-smi`; kernels ~83 of ~105 s, with seeding,
 extension and mate SW at 25-27 s each) and idle during the final pass.
 
 ### GPU kernels
 
-#### Seeding: a group of lanes per read
+#### Seeding with a group of lanes per read
 
 With one thread per read, only 3 of the 32 lanes of a warp were busy, because a few repetitive reads in each warp
 run ~10× longer than the others. The kernel `k_smem_g<G>` gives each read G lanes instead. The forward walks run in
@@ -128,7 +129,7 @@ for (;;) {
 
 This reduced the seeding kernel time from 1.22 to 0.68 s on 1M pairs (G = 4).
 
-#### Seed extension: one memory word per DP cell
+#### Seed extension with one memory word per DP cell
 
 The banded Smith-Waterman extension (`ksw_extend2`) runs one job per thread. The DP row of each thread is held in
 local memory, and Nsight Compute showed that the kernel was limited by L2 traffic. H, E and the query base are
@@ -156,7 +157,7 @@ Three further changes were made at the same time:
 
 Together these reduced the kernel time from 6.9 to 4.7 s on 1/6 of a lane.
 
-#### Mate rescue: occupancy, then a wavefront
+#### Mate rescue kernels
 
 The mate SW kernel emulates the striped SSE `ksw_u8` of bwa with a half-warp per job. Because it waits on shuffles
 and votes, its speed depends on the number of resident warps. The following changes increased its throughput from
@@ -186,7 +187,7 @@ few rows earlier, a bound that the shuffles carry at no additional cost. Every r
 of the striped kernel on a chunk of a lane and on 600,000 synthetic jobs. The time per 65,536 jobs decreased from
 21 to 12 ms on an L40S and from 31 to 18 on the RTX 5070 Ti. `ALIGN_RS_MSW=striped` selects the earlier kernel.
 
-#### Exact shortcuts from bwa-mem3
+#### Shortcuts adopted from bwa-mem3
 
 bwa-mem3 identified two cases in which the DP of bwa provably gives the same result as a cheaper computation:
 
@@ -205,7 +206,7 @@ bwa-mem3 identified two cases in which the DP of bwa provably gives the same res
   the band cells of the CIGAR stage (22.4 G → 10.9 G on 5 M pairs) and takes its CPU time from 140 to 96 thread-s.
   `ALIGN_RS_CIGAR_BAND=check` runs both bands and stops on a difference.
 
-### CPU: exact shortcuts in bwa's algorithms
+### CPU optimizations
 
 After seeding, extension and mate SW had been moved to the GPU, the 32 threads of the workstation became the
 limiting resource. A samply profile of the `mid` set showed how the CPU time was distributed, and each component
@@ -224,7 +225,7 @@ same records):
 
 The shares in the last column refer to a smaller total, so the share of a component that did not change is larger.
 
-#### Sorts: a fast path with a fallback for ties
+#### Region sorts
 
 bwa-mem2 sorts regions with `ks_introsort` of klib, which is not stable: regions with equal keys are left in an
 order that only this algorithm produces. When no two *different* regions have equal keys, any sort gives the same
@@ -249,7 +250,7 @@ integers, and the regions are permuted in place by cycles. `ALIGN_RS_SORT_CHECK=
 of `a_idx_sort`, and the two were equal in the ~300 M sorts of a lane. The user CPU time on the `mid` set decreased
 by 7%.
 
-#### The replay's skip test: a lookup instead of a scan
+#### Skip test of the replay
 
 After extension, bwa-mem2 replays the skip test of bwa: for every seed, it scans the kept regions in order and
 stops at the first region that contains the seed. Only *whether* a region contains the seed affects the result, so
@@ -271,13 +272,13 @@ if replay_check() {
 
 The replay decreased from 37.9 to 15.1 thread-s on 1/6 of a lane.
 
-#### Mate rescue: an incremental dedup
+#### Incremental deduplication in mate rescue
 
 In mate rescue, bwa-mem2 runs `mem_sort_dedup_patch` on the regions of the mate after each of the four
 orientations. Each call performs two sorts and an overlap loop over every region, although at most one region has
 been added. Because of reads with hundreds of regions, this accounted for 18% of the CPU time on the workstation.
 
-The optimization rests on an invariant. The regions of a mate are **clean** when their ends differ, the overlap
+The optimization relies on the following invariant. The regions of a mate are **clean** when their ends differ, the overlap
 loop (by end) would drop none of them, and their final keys differ. The window of the loop for a region is the run
 of regions immediately before it (by end) that are within reach. Adding a region b can only end such runs earlier,
 so on a clean set only the tests that involve b can drop a region. `dedup_add` runs only those tests and inserts b
@@ -302,7 +303,7 @@ of a 30x lane, of which 74% were incremental and 17% were skipped. Together with
 time of the lane from 149.5 to 138.8 s and its CPU time by 21%, and the time of the whole genome on the
 workstation from 40.1 to 36.9 min.
 
-#### Chain filter by group of read interval
+#### Chain filter grouped by read interval
 
 `mem_chain_flt` of bwa-mem2 tests each chain, heaviest first, against every chain kept before it, until it finds
 one that has a large overlap with it on the read and also outweighs it enough to drop it. On repetitive reads this
@@ -335,7 +336,7 @@ The loop of bwa is retained for reads with fewer than 16 chains. `ALIGN_RS_CHAIN
 grouped version on every call, and the results were equal on the `mid` set and on a whole lane. Seeding and
 chaining decreased from 168-185 to 141-148 thread-s, and the user CPU time of a lane by 5%.
 
-#### The chaining B-tree: a node search without branches
+#### Branch-free node search in the chaining B-tree
 
 Chaining keeps the chains in the B-tree of bwa (kbtree), ordered by position. The tree itself must be retained,
 because the chain that it returns among chains at equal positions depends on its shape. The search inside a node
@@ -351,7 +352,7 @@ for i in 0..KB_N {
 
 Seeding and chaining decreased from 141.6 to 136.1 thread-s on the `mid` set.
 
-#### `pos2rid` by a table of blocks
+#### Block table for `pos2rid`
 
 `bns_pos2rid`, which finds the reference sequence that holds a position, is a binary search over the 3,366 contigs
 of hg38. It runs for every seed in chaining and again in SAM and mate rescue. It returns the last reference that
@@ -366,11 +367,11 @@ if r >= 0 { return r; }
 self.pos2rid_search(pos)
 ```
 
-#### CIGAR DP, 8 cells at a time
+#### Vectorized CIGAR alignment
 
 `gen_cigar2` aligns the read and reference segments of each region end to end (`ksw_global2`, a banded global DP
-with a direction byte per cell for the traceback). Its row loop appears sequential, but only one quantity is
-carried along a row, namely F, the gap in the query direction, and the recurrence of F does not involve H:
+with a direction byte per cell for the traceback). Only one quantity is carried along a row of its loop, namely F, the
+gap in the query direction, and the recurrence of F does not involve H:
 
 ```text
 for target row i, query position k in the band:
@@ -403,8 +404,8 @@ to 405-439 thread-s (−28%), and the user CPU time of the lane by 3%.
   seed-to-region map of bwa is computed (`base_j + n_j − 1 − k`) instead of stored, and the seed orders of the
   chains form one vector with the same layout as the regions. With the `pos2rid` table, the time of a lane
   decreased from 135.3 to 122.4 s.
-* **Allocation size.** The size of an allocation matters as well as the number of allocations. When per-read
-  vectors were merged into fewer, larger ones (the left and right templates of extension as pairs, the arrays of
+* **Allocation size.** Reducing the number of allocations further increased their size, with no benefit. When
+  per-read vectors were merged into fewer, larger ones (the left and right templates of extension as pairs, the arrays of
   `chain_flt` as tuples), the allocation of a repetitive read fell into a larger mimalloc size class, whose pages
   were purged and faulted in again. Page faults increased ×3-5 and the run was no faster, so both were left as
   separate vectors.
@@ -441,7 +442,7 @@ flowchart LR
   from 113.6 to 108.5 s. Decompression uses one thread per FASTQ file, which reduced the read stage from 1.62 to
   1.05 s a batch.
 
-### Measured and dropped
+### Rejected optimizations
 
 Each of the following ideas was implemented or measured and then left out. The reason is recorded so that the
 idea can be evaluated again if circumstances change.
@@ -461,7 +462,7 @@ idea can be evaluated again if circumstances change.
 | LZ4 for the BAM spill | ratio 0.234 vs zlib-rs level 1's 0.224, 1.3× / 1.8× faster to compress / inflate | ~1.2% of the CPU, for a dependency; uncompressed would need ~23 GB a lane on disk |
 | Early exit from mate rescue's orientation scan | no change | the costly calls find no mate in range and scan all anyway |
 
-### Open candidates
+### Candidate optimizations
 
 * **Chaining on the GPU, for servers limited by the CPU.** Chaining takes ~16% of the CPU time (~500 thread-s a
   lane), and its seeds are already on the GPU. A kernel would use one thread per read and run the B-tree loop of
@@ -481,7 +482,7 @@ Each candidate is described in detail in [notes/align-rs.md](notes/align-rs.md).
 
 ### Determinism under parallel execution
 
-#### Integers where GATK sums floating point
+#### Integer counts in BaseRecalibrator
 
 Without BAQ, BaseRecalibrator counts each error as 0 or 1, so each table cell is a pair of integers. Integer sums
 do not depend on the order of summation, so tables computed per chunk can be summed in any order and still give
@@ -501,7 +502,7 @@ pub struct Counts {
 
 A whole genome takes 65 s, compared with 99 min for GATK.
 
-#### Parallel contigs, sequential random numbers
+#### Random number order across parallel contigs
 
 GATK draws the random numbers for downsampling and for the QD jitter from one global `java.util.Random`, in
 traversal order. To run contigs in parallel and still draw in that order, variant-rs passes the generator from
@@ -547,7 +548,7 @@ As a result, contigs without drawing groups, which are the majority, never wait.
 
 ### Bit-exact floating point
 
-#### A bit-exact GPU PairHMM
+#### GPU PairHMM
 
 The PairHMM of GATK is the AVX-512 kernel of Intel GKL. Its rounding determines PL and QUAL values, so a GPU
 kernel that is only approximately equal gives different VCF lines: an earlier CUDA version differed from GATK in
@@ -572,7 +573,7 @@ Pairs are batched across regions into one launch. In the first version, each war
 pair (whole genome: 23/23 shards identical, with the GPU busy for ~220 s of a ~12 min run). The float pass is now
 tiled, as in gpuPairHMM (Schmidt et al., arXiv 2411.11547): a few threads per pair each hold K read rows in
 registers and sweep the haplotype one step behind their neighbour, and the pairs are binned by read length. The
-operations per cell are the same, so the results are the same bits, at 2.4-2.8× the speed (282 → 663 GCUPS on
+operations per cell are the same, so the results are bit-identical, at 2.4-2.8× the speed (282 → 663 GCUPS on
 the L40S).
 
 The contig workers share a pool of engines (each a CUDA stream with its own buffers, 8 per GPU by default) instead
@@ -580,7 +581,7 @@ of one engine behind a lock, so that the copies of one worker overlap the kernel
 distributed over every visible GPU. For a 30x genome on an L40S at 64 threads, the time decreased from 190 to
 122 s, and on 2 GPUs from 115 to 98 s, where the longest calling interval (141 Mb of chr2) sets the lower limit.
 
-#### Java semantics as small, shared functions
+#### Java semantics
 
 A single incorrect tie-break or rounding changes a VCF line, so the behaviour of Java is reproduced in shared
 helper functions, each with a unit test. For example, `f64::total_cmp` sorts the NaN that `0.0/0.0` produces on
@@ -608,7 +609,7 @@ Other helpers of the same kind reproduce the following:
 
 ### Data movement
 
-#### No pileup objects
+#### Pileup accumulation
 
 GATK builds a pileup object for each locus. variant-rs instead traverses the CIGAR of each read once and adds its
 bases directly to a ring buffer of per-locus accumulators (`frontend.rs`, `Ring`). The reads are added in file
@@ -616,7 +617,7 @@ order, so the floating-point sums are accumulated in the same order as in GATK a
 adds reads to loci ahead of the frontier while another evaluates the loci behind it. When a read spans more loci
 than the ring holds, the ring is enlarged first.
 
-#### Streaming instead of re-reading
+#### Streaming input and output
 
 * **MarkDuplicates.** Pass 1 runs over 2 Mb chunks in parallel. Read ends are written to on-disk buckets keyed by
   (contig, position), and the buckets are grouped in parallel with the comparator of Picard. Pass 2 rewrites the
@@ -630,9 +631,9 @@ than the ring holds, the ring is enlarged first.
 ## Proposing an optimization
 
 1. **Profile first**, with the switches and the samply configuration described
-   [above](#the-method-exact-first-then-fast), and confirm that the component limits the throughput: on one lane,
+   [above](#method), and confirm that the component limits the throughput: on one lane,
    improving a stage that is not the slowest does not reduce the elapsed time (see
-   [the pipeline](#the-pipeline-and-what-paces-it)).
+   [the pipeline](#pipeline-stages-and-throughput)).
 2. **Count before writing code.** A few counters often show whether an idea can succeed. For the chain filter, the
    number of pairs showed that a lookup by position would remove almost none of them and that grouping would.
 3. **State why the change is exact.** Give the invariant or order that it preserves, and the fallback that is

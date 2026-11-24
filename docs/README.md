@@ -22,7 +22,7 @@ of the design.
 ## Reference
 
 * [Reference](reference.md): the commands of align-rs and variant-rs, the supported GATK tools and arguments,
-  environment variables, exit status and [unsupported features](reference.md#what-it-does-not-cover).
+  environment variables, exit status and [unsupported features](reference.md#unsupported-features).
 * [GATK arguments by tool](gatk-arguments.md): the GATK arguments of each tool that are implemented, ignored, or
   accepted only at their default value (generated from `variant-rs <Tool> --help`).
 * [Changelog](../CHANGELOG.md).

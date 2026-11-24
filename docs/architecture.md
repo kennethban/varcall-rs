@@ -7,7 +7,7 @@ wherever the output depends on their order: the B-tree and introsort of klib, th
 the unoptimized port, either by a check mode that runs both versions or by a comparison of complete outputs on
 real data ([optimizations.md](optimizations.md)).
 
-The repository is organised as follows:
+The repository has the following layout:
 
 ```
 Cargo.toml                    workspace: align-rs, variant-rs, variant-rs/crates/*
@@ -116,7 +116,7 @@ per contig (one GATK read shard), several contigs at a time:
 | ReblockGVCF, MergeVcfs, SortSam, GatherBamFiles | one file each | htsjdk's encoders and merge order |
 | BAM / VCF I/O | `bam.rs`, `bamwrite.rs`, `bgzf.rs`, `tabix.rs`, `cram.rs` + `csrc/cram_shim.c` | parallel BGZF (libdeflate); records re-encoded as htsjdk does; CRAM through htslib |
 
-### Exactness helpers
+### Shared functions for Java semantics
 
 Most of the differences from GATK that remained after the algorithms had been ported arose from the semantics of
 Java. The corresponding functions are each defined once and shared:

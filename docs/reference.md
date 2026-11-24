@@ -18,7 +18,7 @@ align-rs tune [-t N] [-K N] ref.fa R1.fq[.gz] [R2.fq[.gz]]
 
 * **`mem`** aligns reads as `bwa-mem2 mem` does and produces the same records. It accepts four options of
   bwa-mem2 (`-t`, `-K`, `-Y` and `-R`). Every other option remains at the default of bwa-mem2, and specifying one
-  stops the run ([unsupported features](#what-it-does-not-cover)). The reference index is the one built by
+  stops the run ([unsupported features](#unsupported-features)). The reference index is the one built by
   `bwa-mem2 index ref.fa`.
   * `-o x.bam` writes a coordinate-sorted BAM and its `.bai`. The records are in the order produced by
     `samtools sort`, and the index is byte-identical to that of `samtools index`. `-l` sets the compression level
@@ -141,7 +141,7 @@ shards and the random-number streams of GATK.
 | 2 | refused: a tool, argument value or input variant-rs does not reproduce exactly (the message says which); with `GATK_FALLBACK` set, GATK runs instead |
 | other | an error: unreadable or malformed input, a failed assembly (as in GATK), ... (101 for errors raised as Rust panics); no output is finalized |
 
-## What it does not cover
+## Unsupported features
 
 Each item in this section is refused with an explanation and is never run with a different result. A refused
 variant-rs command exits with status 2, or is run by GATK when `GATK_FALLBACK` is set. Only the reference versions
@@ -156,7 +156,7 @@ are reproduced: bwa-mem2 2.2.1, GATK 4.7.0.0, Picard 3.5.0 and htsjdk 5.0.0.
 * **Other commands of bwa-mem2.** The index must be built with `bwa-mem2 index`.
 * **Reads longer than 65,535 bases.** The run stops and reports the name of the read.
 
-### variant-rs: GATK tools it does not have
+### variant-rs: unsupported GATK tools
 
 variant-rs provides the 23 tools listed in the [table above](#gatk-command-lines). The following tools are among
 those that it does not provide:
@@ -169,7 +169,7 @@ those that it does not provide:
 * **RNA-seq** (SplitNCigarReads), **annotation** (Funcotator), **copy number and structural variants**, and
   **Picard's metrics** tools (CollectWgsMetrics, ...).
 
-### variant-rs: modes of the tools it has
+### variant-rs: unsupported modes of supported tools
 
 Each tool supports the default arguments of GATK and the arguments that WARP and nf-core/sarek pass. The list for
 every tool is in [gatk-arguments.md](gatk-arguments.md). The following modes are among those that are refused:

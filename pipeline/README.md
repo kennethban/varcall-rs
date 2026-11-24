@@ -5,8 +5,6 @@ somatic short variants (Mutect2) from FASTQ files. It follows the order of the G
 for alignment and variant-rs for every GATK step. The output of each step is identical to the output of GATK 4.7 for
 the same input ([Tests](#tests)).
 
-The steps of the pipeline are as follows:
-
 ```
 per sample   align-rs mem (bwa-mem2 2.2.1's alignments, GPU)      a sorted BAM + index per lane, written directly
 per sample   MarkDuplicates over all lanes -> BaseRecalibrator (whole genome)

@@ -86,8 +86,8 @@ following table lists both kinds of comparison.
 | Pipeline | NA12878 chr20 slice (2 lanes), HCC1143 tumor / normal, SEQC2 WES; joint calling of NA12878 and HCC1143_normal (GVCFs, GenomicsDBImport, GenotypeGVCFs, VQSR); each step vs GATK | identical |
 | Pipeline, whole-genome cohort | the CEPH trio NA12878, NA12891, NA12892 (30x each, 36 FASTQ lanes), joint calling with VQSR over the 356 calling regions; each step vs GATK from the pipeline's own input to it (`tests/harness/m3`) | all 18 outputs identical: MarkDuplicates BAMs (769-787 M records), metrics, recal tables, GVCFs (411-479 M records), joint VCF (6,744,875 records), VQSR recal files, tranches, filtered VCF |
 
-Accuracy follows from identity. On HG002 against the GIAB v4.2.1 benchmark (chr1–22), variant-rs and GATK give the
-same values: precision 0.9887, recall 0.9923 and F-measure 0.9905.
+Because the outputs are identical, the accuracy of variant-rs equals that of GATK. On HG002 against the GIAB v4.2.1
+benchmark (chr1 to chr22), both give precision 0.9887, recall 0.9923 and F-measure 0.9905.
 
 ## Adversarial review
 

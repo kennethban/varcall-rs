@@ -23,8 +23,8 @@ Without conda, `HTSLIB_PREFIX` must be set to an htslib installation (the direct
 
 ## Hardware
 
-The following table gives the peak memory of each step for a 30x human genome (NA12878, 12 lanes, hg38), as
-measured by Nextflow (`peak_rss`), and the elapsed time of the run:
+Peak memory of each step for a 30x human genome (NA12878, 12 lanes, hg38), as measured by Nextflow (`peak_rss`),
+and the elapsed time of the run:
 
 | Step | Workstation: 32 threads, one GPU | Server: 128 threads, 4 GPUs |
 |---|---:|---:|

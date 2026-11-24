@@ -117,7 +117,7 @@ compare the results with those of bwa-mem2 and GATK.
 * **Coverage of GATK.** variant-rs supports the default arguments of each tool and the arguments that WARP and
   nf-core/sarek pass ([per-tool list](docs/gatk-arguments.md)). HaplotypeCaller is limited to diploid calling, and
   CNN filtering, copy-number and structural variant calling and RNA-seq are not supported
-  ([unsupported features](docs/reference.md#what-it-does-not-cover)). Any other tool or argument is refused, or is
+  ([unsupported features](docs/reference.md#unsupported-features)). Any other tool or argument is refused, or is
   passed to GATK when `GATK_FALLBACK` is set.
 * **Platform.** Only Linux on x86-64 is supported, and the GPU code requires CUDA. The requirements of a port to
   AMD, Intel or Apple GPUs are discussed in [architecture.md](docs/architecture.md#other-gpu-vendors).
