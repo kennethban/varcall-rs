@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# align-rs vs bwa-mem2 2.2.1 on the subsampled lane sets (wgs/fastq/sub: tiny 20k pairs, small 1M, indel 3.4k
+# align-rs vs bwa-mem2 2.3 (reports itself as 2.2.1) on the subsampled lane sets (wgs/fastq/sub: tiny 20k pairs, small 1M, indel 3.4k
 # synthetic) and synthetic edge-case sets from tests/synth.py (longdel: 2x250 with a 75-100 bp deletion; smallref:
 # against tests/data/small.fa, a 5 Mb reference, with zero-length reads; longread: 700-3000 bp pairs): SAM records identical (header apart from @PG), and -o x.bam vs bwa-mem2 | samtools sort: records,
 # header apart from @PG, .bai bytes vs samtools index. Then --lanes (several lanes in one run, one without reads):

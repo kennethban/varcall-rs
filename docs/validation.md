@@ -74,7 +74,7 @@ following table lists both kinds of comparison.
 
 | Tool | Data | Result |
 |---|---|---|
-| align-rs | NA12878 30x lanes (63.8 M records each), 20 k / 1 M-pair subsets, synthetic indel and long-read sets, malformed FASTQ, `.alt` files | identical to bwa-mem2 |
+| align-rs | NA12878 30x lanes (63 to 65 M records each), 20 k / 1 M-pair subsets, synthetic indel and long-read sets, malformed FASTQ, `.alt` files | identical to bwa-mem2 |
 | HaplotypeCaller | NA12878 30x WGS (BAM and CRAM; 23 and 97 shards); HG002 35x WGS, HG002 PCR+ 30x WGS, HG002 exome | VCF and GVCF identical (e.g. NA12878: 5,064,948 VCF and 461,802,035 GVCF lines; HG002 PCR+: 583,697,036 GVCF lines) |
 | HaplotypeCaller, other arguments | WARP's command lines, `--dbsnp`, `-contamination`, interval padding, several inputs, joint calling of up to 11 samples | identical |
 | BaseRecalibrator / ApplyBQSR | HG002 PCR+ 30x WGS, NA12878 chr20 (16 read groups), WARP's `-OQ` / static quantization | table and 721,883,698 records identical |
