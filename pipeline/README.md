@@ -210,26 +210,91 @@ WSL2 (48 GB of RAM given to Linux; ext4 on the virtual disk of WSL2).
 The server has 2 x AMD EPYC 9654 (192 cores, 384 threads, 2 NUMA nodes), 2.2 TiB of RAM, 8 x NVIDIA L40S (48 GB; two
 of them in use by another job) and an NVMe SSD, and runs Ubuntu 24.04.
 
-**Germline whole genome with matched resources.** The input is the same as on the workstation. The runs used GPUs
-4-7 and the 128 threads of their socket (`taskset`: 64 cores + SMT), with 128 threads for each step after alignment
-and HaplotypeCaller on 2 GPUs.
+**Comparisons with other pipelines (2026-11-23 to 2026-11-27, commit 736009f).** Every run was held to one of three
+resource configurations on the NUMA node of GPUs 4-7: native processes in a systemd scope (memory limit, no swap)
+under `taskset`, containers with `--cpuset-cpus`, `--memory` and `--gpus`.
 
-| GPUs | Wall | Steps |
-|---|---:|---|
-| 4 (32 threads per alignment task), three runs | **9.3 min** (567, 552, 558 s) | ALIGN 5.4 min, MarkDuplicates 1.0, BaseRecalibrator 0.5, HaplotypeCaller 2.2; every output identical to that of commit 7b3df92 |
-| 2 (GPUs 4-5; 64 threads per alignment task) | 11.1 min (667 s) | ALIGN 6.8 min (2 tasks of 6 lanes), MarkDuplicates 1.1, BaseRecalibrator 0.5, HaplotypeCaller 2.5 |
-| 1 (GPU 4; one alignment task of 128 threads) | 17.6 min (1053 s) | ALIGN 12.7 min, MarkDuplicates 1.2, BaseRecalibrator 0.6, HaplotypeCaller 2.8 |
+| Configuration | GPUs | CPU threads | Memory |
+|---|---|---|---|
+| S | 1 (GPU 4) | 32 (16 cores + SMT) | 64 GB |
+| L | 4 (GPUs 4-7) | 128 (64 cores + SMT) | 256 GB |
+| C | none | as S | 64 GB |
 
-The three runs on 4 GPUs were made on 2026-11-23 at commit 736009f.
+varcall-rs and Parabricks were run three times and the CPU baselines once; times are wall times from start to the
+last output, without the identity checks. The commit and the checksums of the binaries were recorded after every run
+and did not change.
 
-**NVIDIA Parabricks 4.8.0-1 `germline`** on the same genome and the same resources. Parabricks produces outputs that
-differ from those of GATK, and the last column compares its VCF with the VCF that is identical to that of GATK.
+**Germline whole genome:** NA12878 30x, the 12 FASTQ lanes of the workstation runs, to the filtered VCF.
 
-| Resources | Wall | Steps | Output compared with GATK |
-|---|---:|---|---|
-| GPUs 4-7 and the same 128 threads as varcall-rs (`--cpuset-cpus`) | 16.8 min | BWA + sort 5.9 min (64 CPU worker threads, chosen by its auto-configuration), MarkDuplicates + BQSR 3.0, HaplotypeCaller 6.8 | 99.85% of sites with the same alleles, and 99.98% of those with the same genotype; 3.18% identical records (SNVs 0.55%, indels 14.65%); QD, PL and QUAL differ in 81-85% of shared records |
+| Pipeline | Config | Wall (s) | Mean |
+|---|---|---:|---:|
+| varcall-rs | L | 565.3 / 549.2 / 545.5 | **9.2 min** |
+| varcall-rs | S | 1,785.2 / 1,716.2 / 1,731.3 | **29.1 min** |
+| varcall-rs, CPU only | C | 10,997.3 | 3.1 h |
+| Parabricks 4.8.0-1 `germline` | L | 1,168.5 / 974.6 / 1,158.6 | 18.3 min |
+| Parabricks 4.8.0-1 `germline` | S | 3,158.3 / 3,170.5 / 3,157.0 | 52.7 min |
+| nf-core/sarek 3.12.0, stock GATK 4.7.0.0 | S | 27,834.5 | 7.7 h |
+| bwa-mem2 + samtools sort, then GATK MarkDuplicates, BaseRecalibrator, ApplyBQSR and HaplotypeCaller, one process each | C | 34,574.8 | 9.6 h |
 
-This run was made on 2026-11-22.
+* Every varcall-rs run gave the same duplicate-marked records, duplicate metrics, recalibration table, VCF and
+  filtered VCF as the GATK-identical reference.
+* Parabricks: the run script first gives `--memory-limit` half of the container's memory and retries with
+  `--low-memory` if the run is killed. On S all three runs needed `--low-memory`; on L runs 1 and 3 needed it (the run
+  without it took 974.6 s). The killed attempts are not included in the times. Its VCF, compared with the
+  GATK-identical one: 99.85% of sites with the same alleles, 99.98% of those with the same genotype, 3.18% identical
+  records. Its duplicate-marked BAM has the same 768,580,933 records and 81,398,021 duplicates as bwa-mem2 + GATK;
+  about 39,250 records (0.005%) carry the duplicate flag on another member of a group with equal scores.
+* sarek: one run from FASTQ with its stock task resources (`process_low` 2 CPUs and 12 GB; MarkDuplicates 8 CPUs and
+  30 GB; bwa-mem2 32 threads), without its QC-only tools and the CNN filter. It scatters alignment over 144 chunks and
+  BQSR and HaplotypeCaller over 356 intervals, so its VCF is not identical to an unscattered run (99.68% of sites with
+  the same alleles; it also passes dbSNP, which adds `DB`).
+* CPU baseline: bwa-mem2 2.3 (`mem -t 32 -K 100000000 -Y`) piped into `samtools sort -@ 16`, one lane after another
+  (7,300.3 s); MarkDuplicates 4,030.7 s, BaseRecalibrator 9,433.9 s and ApplyBQSR 8,284.0 s on those BAMs (classic
+  GATK, `-Xmx12g`); HaplotypeCaller 5,525.9 s from the single-step run, which used the GRCh38 analysis-set build of
+  the same reference. The duplicate-marked records, metrics and recalibration table are identical to those of
+  varcall-rs. Hard filtering is not included.
+
+GPU scaling, varcall-rs with the CPU threads and memory of L (three runs each; outputs identical in all nine):
+
+| GPUs | Wall (s) | Mean | vs 1 GPU |
+|---|---:|---:|---:|
+| 1 (GPU 4) | 986.2 / 987.2 / 1,002.0 | 16.5 min | 1.00× |
+| 2 (GPUs 4-5) | 621.1 / 633.1 / 617.3 | 10.4 min | 1.59× |
+| 4 (GPUs 4-7) | 565.3 / 549.2 / 545.5 | 9.2 min | 1.79× |
+
+**Somatic whole genome:** SEQC2 HCC1395 / HCC1395BL (Fudan replicate 1), the consortium's aligned BAMs (132 GB), from
+duplicate marking to the filtered Mutect2 VCF, with HaplotypeCaller on the normal; GATK WGS calling regions, af-only
+gnomAD, 1000G panel of normals. Config S.
+
+| Pipeline | Wall (s) | Mean |
+|---|---:|---:|
+| varcall-rs | 2,722.2 / 2,720.4 / 2,702.2 | **45.2 min** |
+| nf-core/sarek 3.12.0 with the variant-rs image | 10,581.1 | 2.9 h |
+| nf-core/sarek 3.12.0, stock GATK 4.7.0.0 | 33,913.1 | 9.4 h |
+
+* The two sarek runs gave identical published outputs (recalibration tables, the normal's VCF, pileup, contamination
+  and segmentation tables, Mutect2 VCF and statistics, filtered VCF) and identical CRAM records. The three varcall-rs
+  runs gave identical outputs.
+* CalculateContamination (about 340 s, single-threaded) is not accelerated.
+
+Mutect2 alone, on the recalibrated BAMs of the first varcall-rs run (config S):
+
+| Tool | Wall (s) | Mean |
+|---|---:|---:|
+| variant-rs `mutect2` | 532.5 / 535.1 / 533.0 | **8.9 min** |
+| Parabricks 4.8.0-1 `mutectcaller` (+ `postpon`, about 2 s) | 1,355.1 / 1,265.0 / 1,255.2 | 21.5 min |
+| GATK 4.7.0.0 Mutect2, one process (`--native-pair-hmm-threads 32`) | 45,913.0 | 12.8 h |
+
+* GATK's VCF, statistics and filtered VCF are identical to those of varcall-rs. Its F1R2 archive is identical with the
+  alt histogram's columns compared by name (see [Tests](#tests)). One GATK process uses about 8 of the 32 threads,
+  because only its PairHMM is multithreaded; pipelines scatter it, so this time is not a practical baseline.
+* Parabricks requires the panel of normals to have the reference's contigs. For Parabricks, the panel of normals and
+  the germline resource were rewritten with the reference's contig header, without the records on alternate contigs
+  (all outside the calling regions); variant-rs gives the same VCF with the original and the rewritten files.
+* Parabricks is based on GATK 4.3.0.0, whose Mutect2 writes ECNTH, NALOD and ECNT differently from 4.7.0.0, so none
+  of its records is byte-identical. It called 99.97% of the GATK sites with the same alleles; 99.67% of the shared
+  records are identical apart from those three fields, and the rest differ mainly in read counts and the likelihoods
+  computed from them. Its three runs gave identical VCFs.
 
 **Germline whole genome with the defaults of `run.sh`,** which used the 6 free GPUs and all 384 threads.
 

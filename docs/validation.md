@@ -13,7 +13,9 @@ Identity is assessed byte for byte:
 * **Indexes (`.bai`, `.tbi`):** either byte-identical, or returning identical answers to region queries.
 
 The reference outputs come from bwa-mem2 2.2.1 (with `sort` and `index` of samtools 1.25) and GATK 4.7.0.0
-(Picard 3.5.0, htsjdk 5.0.0).
+(Picard 3.5.0, htsjdk 5.0.0). bwa-mem2 2.3, the bioconda build in `environment.yml`, gives records identical to those
+of a 2.2.1 source build (a whole NA12878 lane of 63,787,017 records, and the `small` and `indel` test sets); its
+release still reports itself as 2.2.1 (`bwa-mem2 version` and the `@PG` line).
 
 The reference for a comparison is a particular set of runs and is not determined by the versions alone. Two
 settings change the output of the reference tools themselves, and every comparison therefore uses the same values

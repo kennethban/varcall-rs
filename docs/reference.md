@@ -145,7 +145,8 @@ shards and the random-number streams of GATK.
 
 Each item in this section is refused with an explanation and is never run with a different result. A refused
 variant-rs command exits with status 2, or is run by GATK when `GATK_FALLBACK` is set. Only the reference versions
-are reproduced: bwa-mem2 2.2.1, GATK 4.7.0.0, Picard 3.5.0 and htsjdk 5.0.0.
+are reproduced: bwa-mem2 2.2.1 (and 2.3, which gives the same alignments), GATK 4.7.0.0, Picard 3.5.0 and htsjdk
+5.0.0.
 
 ### align-rs
 

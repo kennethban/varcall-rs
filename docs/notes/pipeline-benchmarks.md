@@ -4,6 +4,49 @@ This log was written during development and records how each number in
 [pipeline/README.md](../../pipeline/README.md#benchmarks) was taken. It is partly historical, and later sections
 supersede the numbers of earlier ones.
 
+## Server comparisons (2026-11-23 to 2026-11-27, at 736009f)
+
+The results are in [pipeline/README.md](../../pipeline/README.md#server); this section adds what is not there. The
+runs are in `runs/platforms/` of the server's working area (one directory per run, each with a `done` file holding
+the exit status and wall time, and `identity.txt` where outputs were compared). Drivers ran the steps one after
+another and logged the commit, a clean tree and the binary checksums after each one.
+
+**Single steps on S** (varcall-rs, three runs; GATK one run, from the earlier single-step measurement). MarkDuplicates,
+BaseRecalibrator and ApplyBQSR on HG002 PCR-plus, HaplotypeCaller on NA12878 in 23 shards. Every output identical to
+GATK's in every run.
+
+| Step | GATK (s) | varcall-rs (s) | Mean (s) |
+|---|---:|---:|---:|
+| MarkDuplicates | 3,477.3 | 297.7 / 297.1 / 265.7 | 286.8 |
+| BaseRecalibrator | 8,843.4 | 86.7 / 94.4 / 90.7 | 90.6 |
+| ApplyBQSR | 7,242.0 | 340.2 / 404.2 / 406.2 | 383.5 |
+| HaplotypeCaller VCF | 5,525.9 | 515.9 / 438.6 / 478.7 | 477.7 |
+| HaplotypeCaller GVCF | 6,795.4 | 523.8 / 659.2 / 642.3 | 608.4 |
+
+The spread between these runs (9-26%) is larger than that of the whole pipeline runs (under 4%); the first run was
+made on 2026-11-24, the other two in the night of 2026-11-25. The cause was not investigated.
+
+**HaplotypeCaller on the CPU only** (C, three runs each, shards identical to GATK's): VCF 1,836.7 / 1,811.2 /
+1,837.9 s, GVCF 1,221.7 / 1,277.6 / 1,259.5 s. VCF mode is consistently about 46% slower than GVCF mode on the CPU;
+not investigated.
+
+**Mutect2 alone, inputs and checks.** The pipeline does not keep its recalibrated BAMs, so they were recreated from
+the first run's duplicate-marked BAMs and recalibration tables with variant-rs ApplyBQSR, and variant-rs Mutect2 on
+them gave the first run's VCF and statistics again. Each Parabricks, GATK and repeat run read the two BAMs (218 GB)
+once before its timer started. A single earlier standalone variant-rs run, made straight after the BAMs were
+written, took 644.8 s; the three repeats (532.5-535.1 s) and the run with the rewritten resources (536.4 s) show it
+was an outlier. The rewritten resources keep 2,536,803 of the panel's 2,609,566 records and 268,169,676 of gnomAD's
+268,225,276. GATK Mutect2 as one process: max RSS 8.4 GiB, 805% CPU; FilterMutectCalls 125.3 s.
+
+**CPU baseline, memory:** max RSS of MarkDuplicates 13.5 GiB, BaseRecalibrator 1.5 GiB, ApplyBQSR 0.8 GiB; the
+alignment's cgroup peak (page cache included) 49.3 GiB.
+
+**Other load on the server.** Another user's processes were on GPUs 0-1 throughout. An unrelated job of ours used
+NUMA node 0 and GPUs 2-3, and GPUs 5-7 during two periods: on 2026-11-25 until 16:50 (start not recorded; it also
+used some node-1 threads from 15:07 to 15:28, during the stock sarek somatic run, adding at most about 2% to it) and
+during the single-process GATK Mutect2 run, which used no GPU. GPUs 5-7 were empty for the GPU scaling, Parabricks
+Mutect2 and Mutect2 repeat runs.
+
 ## Earlier configurations
 
 These rows were superseded by the current results in [pipeline/README.md](../../pipeline/README.md#benchmarks). The

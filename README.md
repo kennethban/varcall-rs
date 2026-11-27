@@ -59,18 +59,30 @@ The germline time is the mean of three runs (34.0 ± 0.2 min); with memory limit
 The germline baseline was not run end to end. It is the sum of measured steps: bwa-mem2 and samtools on one lane,
 multiplied by 12, and the GATK steps of sarek on the same genome.
 
-The same germline pipeline was run on a server with two EPYC 9654 processors (384 threads), 2.2 TiB of RAM, NVMe
-storage and L40S GPUs (48 GB each):
+The comparisons with other pipelines were run on a server with two EPYC 9654 processors (384 threads), 2.2 TiB of
+RAM, NVMe storage and L40S GPUs (48 GB each). Each run was held to fixed resources on one NUMA node: **S** is 1 GPU,
+32 threads and 64 GB; **L** is 4 GPUs, 128 threads and 256 GB; **C** is 32 threads and 64 GB without a GPU.
 
-| GPUs | Threads | varcall-rs | NVIDIA Parabricks `germline` |
-|---:|---:|---:|---:|
-| 1 | 128 | 17.6 min | |
-| 2 | 128 | 11.1 min | |
-| 4 | 128 | **9.3 min** (three runs) | 16.8 min |
-| 6 | 384 | **6.8 min** | |
+| Germline, NA12878 30x, 12 FASTQ lanes to filtered VCF | S | L | C |
+|---|---:|---:|---:|
+| varcall-rs (three runs each on S and L) | **29.1 min** | **9.2 min** | 3.1 h |
+| NVIDIA Parabricks 4.8.0-1 `germline` (three runs each) | 52.7 min | 18.3 min | |
+| nf-core/sarek 3.12.0 with stock GATK | 7.7 h | | |
+| bwa-mem2 + samtools + GATK, one process per step, run one after another | | | 9.6 h |
 
-The output of Parabricks is concordant with that of GATK but is not identical to it. The measurement of each
-pipeline result is described in [pipeline/README.md](pipeline/README.md#benchmarks).
+| Somatic, SEQC2 HCC1395 whole-genome tumor-normal BAMs to filtered Mutect2 calls | S |
+|---|---:|
+| varcall-rs (three runs) | **45.2 min** |
+| nf-core/sarek 3.12.0 with the variant-rs image | 2.9 h |
+| nf-core/sarek 3.12.0 with stock GATK | 9.4 h |
+| Mutect2 alone on the same recalibrated BAMs: varcall-rs / Parabricks `mutectcaller` / GATK as one process | 8.9 min / 21.5 min / 12.8 h |
+
+With the CPU threads and memory of L, the germline run takes 16.5 min on 1 GPU, 10.4 min on 2 and 9.2 min on 4.
+Every output compared with GATK's was identical: all outputs of the germline genome; the Mutect2 VCF, its statistics
+and the filtered VCF of the somatic genome (against GATK Mutect2 run as one process); and all published outputs of
+sarek with the variant-rs image (against stock sarek). The outputs of Parabricks are concordant with those of GATK but
+not identical to them (99.85% of germline sites and 99.97% of Mutect2 sites with the same alleles). The conditions of
+each measurement, including which runs were repeated, are in [pipeline/README.md](pipeline/README.md#benchmarks).
 
 ## Quick start
 
@@ -112,8 +124,10 @@ compare the results with those of bwa-mem2 and GATK.
 
 ## Limitations
 
-* **Versions.** The outputs are those of GATK 4.7.0.0 (Picard 3.5.0, htsjdk 5.0.0) and bwa-mem2 2.2.1. Other
-  versions of the reference tools may give different outputs.
+* **Versions.** The outputs are those of GATK 4.7.0.0 (Picard 3.5.0, htsjdk 5.0.0) and bwa-mem2 2.2.1, whose source
+  align-rs was ported from. bwa-mem2 2.3 gives the same alignments; its release still reports itself as 2.2.1, and it
+  is the build that `environment.yml` installs and the server benchmarks used. Other versions of the reference tools may give
+  different outputs.
 * **Coverage of GATK.** variant-rs supports the default arguments of each tool and the arguments that WARP and
   nf-core/sarek pass ([per-tool list](docs/gatk-arguments.md)). HaplotypeCaller is limited to diploid calling, and
   CNN filtering, copy-number and structural variant calling and RNA-seq are not supported
