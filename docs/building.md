@@ -41,9 +41,9 @@ workstation, and 13.5 GB with 128 threads.
 * **Memory.** Alignment has the largest requirement. The hg38 index occupies 17 GB and is memory-mapped, and at 32
   threads the batches in progress occupy a further ~15 GB. Each alignment task requires this amount separately, so
   about 36 GB should be allowed per GPU when one task runs per GPU. The other steps run one at a time and use more
-  memory with more threads. 48 GB is sufficient for 32 threads. With 30 GB and 16 GB of swap, the genome was
-  processed with the same output in 41.6 min instead of 34 min, because pages of the index were dropped and read
-  again. For comparison, bwa-mem2 with `samtools sort` on one lane had a peak of 21 GB.
+  memory with more threads. 48 GB is sufficient for 32 threads. With 30 GB and 8 GB of swap (the default
+  of WSL2 on a computer with 64 GB), the genome was processed with the same output in 36.5 min instead of 34.0 min,
+  because less of the index stayed in memory during alignment. For comparison, bwa-mem2 with `samtools sort` on one lane had a peak of 21 GB.
 * **GPU.** An NVIDIA GPU of compute capability 7.5 or newer is required (7.0 for variant-rs). At start-up, align-rs
   checks the free device memory, reserves 2 GB for batches, and loads as many of the three parts of the index as
   fit. For hg38 these are:

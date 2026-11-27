@@ -59,7 +59,7 @@ lines = [
     "",
     "A refused command exits with status 2, or runs the real GATK under `GATK_FALLBACK=/path/to/gatk`.",
     "`VARIANT_RS_DRY_RUN=1 variant-rs <Tool> ...` shows which would happen. `variant-rs <Tool> --help` prints the same",
-    "lists. What variant-rs does not cover at all: [reference.md](reference.md#what-it-does-not-cover).",
+    "lists. What variant-rs does not cover at all: [reference.md](reference.md#unsupported-features).",
     "",
     " · ".join(f"[{t}](#{t.lower()})" for t in tools),
 ]

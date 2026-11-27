@@ -98,8 +98,8 @@ named in its entry; a change of reference version is a new minor version at leas
   drawing groups pass the generator on in order; GVCF: each contig's starting state is replayed from a pre-scan of the
   drawing groups. HG002 30x on 4 L40S: VCF 1064 -> 396 s, GVCF 1043 -> 235 s, outputs identical; harness check
   `hc_segments` (50 checks).
-* docs: the whole genome repeated three times at 736009f: 34.0 ± 0.2 min on the workstation, 9.3 ± 0.1 min on 4 GPUs
-  and 128 threads (11.1 on 2 GPUs, 17.6 on 1); single steps re-measured (MarkDuplicates 3.1 min, BaseRecalibrator
+* docs: the whole genome repeated three times at 736009f: 34.0 ± 0.2 min on the workstation, 9.2 min on 4 GPUs
+  and 128 threads (10.4 on 2 GPUs, 16.5 on 1); single steps re-measured (MarkDuplicates 3.1 min, BaseRecalibrator
   65 s, ApplyBQSR 4.4 min, HaplotypeCaller 6.2 / 9.3 min VCF / GVCF).
 
 ### Fixed

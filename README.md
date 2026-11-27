@@ -55,7 +55,8 @@ reference tools.
 | BaseRecalibrator | as above | GATK: 99 min | **65 s** | **91×** |
 | ApplyBQSR | as above | GATK: 1 h 47 min | **4.4 min** | **24×** |
 
-The germline time is the mean of three runs (34.0 ± 0.2 min); with memory limited to 30 GB, the run takes 41.6 min.
+The germline time is the mean of three runs (34.0 ± 0.2 min). With the default settings of WSL2, which give Linux half
+of the 64 GB of the workstation (30 GB, with 8 GB of swap), three runs took 36.5 ± 0.9 min.
 The germline baseline was not run end to end. It is the sum of measured steps: bwa-mem2 and samtools on one lane,
 multiplied by 12, and the GATK steps of sarek on the same genome.
 

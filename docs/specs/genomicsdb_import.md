@@ -319,7 +319,7 @@ written at the very end (section 1, step 7), same printer as 2.7.
 * **`stream_name`:**
   * default path: `<sample>_stream`;
   * `--bypass-feature-reader`: the VCF location exactly as given in the map, or the `-V` string (`URI.toString()`)
-    (ws_rb_bypass: `/home/kban/.../HG002.rb.g.vcf.gz`).
+    (ws_rb_bypass: the absolute path of `HG002.rb.g.vcf.gz`).
 
 ```
 {

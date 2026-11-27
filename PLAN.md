@@ -20,7 +20,7 @@ kernel (stage 4). Each machine is now held by something no small change moves:
   only lends its time to the others, so only less CPU work moves it. Mate rescue's region dedup was the largest
   piece (18% of the CPU) and is now mostly incremental (stage 8 item 3): a 30x lane 149.5 -> 138.8 s.
 
-Going further: the candidates measured on 2026-11-22 are in [stage 8](#stage-8-candidates-measured-2026-11-22--item-3-done);
+Going further: the candidates measured on 2026-11-22 are in [stage 8](#stage-8-candidates-measured-2026-11-22--item-3-done-the-workstations-cpu);
 on the workstation, CPU work saved anywhere counts.
 
 **Calling (variant-rs):** HaplotypeCaller's GPU engine pool (stage 1), several GPUs (M1) and a cohort (M3: a 30x

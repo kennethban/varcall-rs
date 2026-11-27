@@ -202,7 +202,7 @@ WSL2 (48 GB of RAM given to Linux; ext4 on the virtual disk of WSL2).
 | Run | Wall | Steps | Reference tools | Date, commit |
 |---|---:|---|---|---|
 | **Germline whole genome**: NA12878 30x, 12 FASTQ lanes, Broad hg38; three runs | **34.0 min** (2030, 2055, 2036 s) | ALIGN 23.5 min, MarkDuplicates 3.4, BaseRecalibrator 1.3, HaplotypeCaller 5.6; every output identical to that of commit 7d6ffa6 | stock tools on the same machine: ~5.2 h (bwa-mem2 + samtools ~117 min, stock GATK steps of nf-core/sarek ~196 min) | 2026-11-23, 736009f |
-| The same, with memory limited to 30 GB (a cgroup, 16 GB of swap; Nextflow told 30 GB) | **41.6 min** | ALIGN 31.0 min (peak 26.9 GB, swap at most 0.9 GB, because pages of the hg38 index are dropped and read again), BaseRecalibrator 1.4, the other steps as above; VCF identical | | |
+| The same, with the default settings of WSL2 (30 GB of RAM given to Linux, 8 GB of swap); three runs | **36.5 min** (2200, 2130, 2235 s) | ALIGN 25.7 min (peak 24.2-24.7 GB, against 29.9-34.8 GB with 48 GB; swap at most 3 GB), MarkDuplicates 3.4, BaseRecalibrator 1.3, HaplotypeCaller 5.7; every output identical | | 2026-11-27, 736009f |
 | **Somatic exome**: SEQC2 HCC1395 tumor / normal BAMs | **2.8 min** (167 s) | MarkDuplicates 0.2 min, BaseRecalibrator 0.1-0.15, ApplyBQSR 0.3-0.4, HaplotypeCaller 0.5, Mutect2 0.5, the other steps seconds (peak 5.1 GB, Mutect2); all 17 outputs identical to those of 2026-11-19 | nf-core/sarek: 46.5 min with stock GATK, 15.3 min with variant-rs | 2026-11-22 |
 
 ### Server
