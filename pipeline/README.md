@@ -238,6 +238,8 @@ and did not change.
 
 * Every varcall-rs run gave the same duplicate-marked records, duplicate metrics, recalibration table, VCF and
   filtered VCF as the GATK-identical reference.
+* Parabricks 4.8 documents a minimum of 100 GB of host memory and 24 CPU threads, also for a single GPU ("supported
+  but not recommended"). S (64 GB) is below that minimum and L meets it, so L is the main Parabricks comparison.
 * Parabricks: the run script first gives `--memory-limit` half of the container's memory and retries with
   `--low-memory` if the run is killed. On S all three runs needed `--low-memory`; on L runs 1 and 3 needed it (the run
   without it took 974.6 s). The killed attempts are not included in the times. Its VCF, compared with the
@@ -288,6 +290,8 @@ Mutect2 alone, on the recalibrated BAMs of the first varcall-rs run (config S):
 * GATK's VCF, statistics and filtered VCF are identical to those of varcall-rs. Its F1R2 archive is identical with the
   alt histogram's columns compared by name (see [Tests](#tests)). One GATK process uses about 8 of the 32 threads,
   because only its PairHMM is multithreaded; pipelines scatter it, so this time is not a practical baseline.
+* Config S is below Parabricks' documented minimum host memory (see the germline notes above). No Parabricks run was
+  killed, and none needed `--mutect-low-memory`.
 * Parabricks requires the panel of normals to have the reference's contigs. For Parabricks, the panel of normals and
   the germline resource were rewritten with the reference's contig header, without the records on alternate contigs
   (all outside the calling regions); variant-rs gives the same VCF with the original and the rewritten files.

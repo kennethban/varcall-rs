@@ -62,6 +62,8 @@ multiplied by 12, and the GATK steps of sarek on the same genome.
 The comparisons with other pipelines were run on a server with two EPYC 9654 processors (384 threads), 2.2 TiB of
 RAM, NVMe storage and L40S GPUs (48 GB each). Each run was held to fixed resources on one NUMA node: **S** is 1 GPU,
 32 threads and 64 GB; **L** is 4 GPUs, 128 threads and 256 GB; **C** is 32 threads and 64 GB without a GPU.
+NVIDIA documents at least 100 GB of host memory for Parabricks, also on a single GPU, so S is below its stated
+requirement and L meets it; L is the main Parabricks comparison. The Mutect2-alone comparison was run on S only.
 
 | Germline, NA12878 30x, 12 FASTQ lanes to filtered VCF | S | L | C |
 |---|---:|---:|---:|
