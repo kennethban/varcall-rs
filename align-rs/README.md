@@ -1,6 +1,6 @@
 # align-rs
 
-align-rs is a reimplementation of `bwa-mem2 mem` 2.2.1 in Rust and CUDA that produces the same records as
+align-rs is a reimplementation of `bwa-mem2 mem` 2.3 in Rust and CUDA that produces the same records as
 bwa-mem2. Seeding, SA lookups, seed extension and mate rescue run on the GPU. The coordinate-sorted BAM and its
 `.bai` are written directly, with the records in the order of `samtools sort` and an index byte-identical to that
 of `samtools index`. One lane of NA12878 at 30x takes 124 s, compared with 587 s for bwa-mem2 followed by

@@ -1,4 +1,4 @@
-# align-rs image: `align-rs mem` (bwa-mem2 2.2.1's records; seeding, extension and mate rescue on the GPU) with its
+# align-rs image: `align-rs mem` (bwa-mem2 2.3's records; seeding, extension and mate rescue on the GPU) with its
 # CUDA kernels and htslib. The index is bwa-mem2's (`bwa-mem2 index`, also in the image).
 #
 #   docker build -f containers/align-rs/Dockerfile -t align-rs:0.1.0 .        # from the repository root

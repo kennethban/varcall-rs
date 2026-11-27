@@ -300,7 +300,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
    several lanes a run, only the last lane's final pass is not overlapped by alignment. (`ALIGN_RS_TRACE` is not
    free: a traced lane took 99.6 s.)
 
-10. **Less CPU work per lane: tried and dropped (2026-11-19; PLAN.md stage 2).** On a workstation (RTX 5070 Ti, Ryzen 9
+10. **Less CPU work per lane: tried and dropped (2026-11-19; plan.md stage 2).** On a workstation (RTX 5070 Ti, Ryzen 9
     9950X3D, 32 threads) alignment looked CPU-bound (25 of 32 threads busy, GPU half busy). Thread-seconds per 30x
     lane (`ALIGN_RS_PROFILE=2`, inflated by its per-item timers): chaining 910, mate rescue's CPU part 828 (mostly
     its region dedup), CIGAR/NM/MD 587, extension setup 519. Two exact changes cut CPU but not wall clock, and were
@@ -321,7 +321,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     such machines; not done. Kept from this round: the profile-only size sums (`mbsz`) are evaluated only when
     printed.
 
-11. **Mate SW as one thread per alignment: prototyped, not pursued (2026-11-19; PLAN.md stage 4).** `k_matesw` runs
+11. **Mate SW as one thread per alignment: prototyped, not pursued (2026-11-19; plan.md stage 4).** `k_matesw` runs
     bwa's striped SSE ksw_u8 with 16 threads per alignment: per target row a shuffle, a 16-lane maximum and a vote
     (lazy F). The alternative tried: one thread per alignment, the plain recurrence over strips of the query held in
     registers, each row's boundary values (H, F, the row's maximum and its first position, all u8) passed between
@@ -341,7 +341,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     batch on the L40S, perhaps 5-8% of an alignment on one GPU (and nothing where alignment is CPU- or copy-bound),
     for a second kernel with its reverse pass and a fallback for long reads: not pursued.
 
-12. **Mate SW as a wavefront (2026-11-21; PLAN.md stage 7): the default.** `k_matesw_wave` keeps 16 threads per job and
+12. **Mate SW as a wavefront (2026-11-21; plan.md stage 7): the default.** `k_matesw_wave` keeps 16 threads per job and
     the striped layout (thread t holds query segment t in registers) but runs thread t one target row behind thread
     t-1 (CUDASW++4.0 / gpuPairHMM), so the row's boundary comes by shuffle: the final H at the segment's end, the F
     leaving it, the row maximum so far, and (only when the row may beat the best so far) the row's largest final H
@@ -364,7 +364,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     every run: workstation `mid` 1.60 -> 1.47 s per batch; one 30x lane on one L40S at 64 threads 86.2 / 86.9 ->
     80.7 / 84.1 s (two runs each, alternating). Runs: `$VARCALL_DATA/runs/stage7`, server `runs/stage7`.
 
-13. **Ungapped shortcut for extension (2026-11-22; PLAN.md stage 7): the default.** From bwa-mem3 (PRs #540, #544),
+13. **Ungapped shortcut for extension (2026-11-22; plan.md stage 7): the default.** From bwa-mem3 (PRs #540, #544),
     with the conditions derived for ksw_extend2 (`ext.rs` `ungapped_extend`): when the main diagonal's total loss
     (a - score per cell: a mismatch a + b, an N a + 1) stays below min(o_del + e_del, o_ins + e_ins), every path
     with a gap scores at least 2 below the diagonal in its row and in its column, so the row maxima, the new maxima
@@ -384,7 +384,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       (-12%); the lane 77.4 / 75.6 / 85.4 / 87.4 / 81.5 -> 92.8 / 76.9 / 75.7 / 79.5 / 72.0 s (the last three pairs
       -8 to -10 s; runs vary by ~10 s). Workstation `mid`: kernel 5.35 -> 4.1-4.5 s, 1.53-1.54 -> 1.55-1.57 s a batch
       (not paced by extension).
-14. **Certified band for the CIGAR's global alignment (2026-11-22; PLAN.md stage 7): the default.** From bwa-mem3
+14. **Certified band for the CIGAR's global alignment (2026-11-22; plan.md stage 7): the default.** From bwa-mem3
     (PR #575; `ext.rs` `cert_band`). gen_cigar2 runs ksw_global2 in a band of half-width w around the main diagonal.
     When the query and the reference span have equal lengths, a path with gaps has I >= 1 insertions and as many
     deletions, so it scores at most amax * len - o_ins - o_del - I * (amax + e_ins + e_del), and a path through a
@@ -405,7 +405,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
 
 15. **The dropper fell behind on full lanes (2026-11-22): fixed.** Large per-batch structures are handed to a
     dropper thread to free. On the workstation's first full 12-lane run since stage 7 (the pipeline rerun for
-    PLAN.md's time table), WSL went down twice ~6 minutes in: anonymous memory grew ~1 GB a batch until the 48 GB
+    plan.md's time table), WSL went down twice ~6 minutes in: anonymous memory grew ~1 GB a batch until the 48 GB
     were full. `ALIGN_RS_MEMLOG=2` on 4 lanes showed it: drops pending 1 -> 25 in 100 s, anon 18 -> 34 GB. On the
     `mid` set the one thread was already 74% busy (23.0 s of 31.0 s); the 11-19 code (2e455f7) under the same
     driver 48% (18.8 of 39.1 s): batches are ~20% faster since stage 7 and there is ~20% more to free, so on full
@@ -417,7 +417,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       (`runs/wgs5`), the largest the slowest (4m43). With the fix 37 GB each, all six 3m43-3m47, the germline
       pipeline 460 -> 409 s (`runs/wgs6`).
 
-16. **Idle lanes in the extension kernel: measured, not pursued (2026-11-22; PLAN.md stage 7 item 4).** `k_extend`
+16. **Idle lanes in the extension kernel: measured, not pursued (2026-11-22; plan.md stage 7 item 4).** `k_extend`
     runs one job per thread, size-sorted and grid-strided; a lane whose job ends early (m == 0, z-drop, a narrower
     band) waits for the warp's longest. Nsight Compute needs admin rights on the server, so a build with
     `-DEXT_WARPSTAT` counts, at every DP cell, row and job step, the warp's step and its active lanes. One 30x lane
@@ -431,7 +431,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     row is in local memory: its loads and stores, not issue slots), so idle lanes are nearly free: packing every
     lane (53% -> 100%, as k 17 -> 32) would save ~9% of the kernel before the refill's own cost, ~2 s of a lane on
     a GPU the 6-alignment server does not wait for. Not done.
-17. **Measured on the workstation, not taken (2026-11-22; PLAN.md stage 8).** RTX 5070 Ti, the `mid` set or its
+17. **Measured on the workstation, not taken (2026-11-22; plan.md stage 8).** RTX 5070 Ti, the `mid` set or its
     dumped extension call (`runs/stage7`); every result identical where a kernel ran.
     * **bwa-mem3's certified adaptive extension band** (bwamem.cpp `band_cert_ok`, its default): probe every
       extension at band w0 = 20 and keep the result when no alignment straying past w0 can reach S - pen_clip
@@ -463,7 +463,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       to fail (none of them passed; no score above its bound); the rows kept for the rest leave 67.5% of the
       chunk's cells, every alignment and second-best row inside them. About a third of the mate-SW kernel, which
       the GPU does not wait on either.
-18. **The workstation's CPU, profiled; mate rescue's dedup made incremental (2026-11-22; PLAN.md stage 8 item 3).**
+18. **The workstation's CPU, profiled; mate rescue's dedup made incremental (2026-11-22; plan.md stage 8 item 3).**
     * **Not paced by extension.** The extension pool runs nothing else, so its threads' CPU clocks, summed before
       and after each piece, give the piece's CPU time: setup ~50 thread-s, job build ~10, apply ~24, replay + dedup
       ~50 on the `mid` set (ALIGN_RS_PROFILE=2's per-item timers add a system call each under WSL and roughly double
@@ -499,7 +499,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       thread-s; a 30x lane 149.5 -> 138.8 s, user CPU 4163 -> 3298 s, records identical (md5 9b9c2839aed0).
     * The whole genome on the workstation (`wgs/stage8`, at 5a34a7d): 36.9 min (40.1 before), alignment 29.7 ->
       26.4 min (peak 34.6 -> 32.5 GB), VCF identical.
-19. **Fewer allocations, `pos2rid` by table (2026-11-22; PLAN.md stage 8 item 3).**
+19. **Fewer allocations, `pos2rid` by table (2026-11-22; plan.md stage 8 item 3).**
     * **Extension setup / replay.** `setup_read` pushes a chain's regions in descending (score, index) order of its
       seeds, so bwa's `seed_aln[j][srt[k]]` is base_j + n_j - 1 - k: computed in the replay, not stored. The chains'
       seed orders are one per-read vector laid out as `av` (the per-chain sort in a reused per-thread buffer). A read
@@ -518,7 +518,7 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
       alternating: user CPU 515-529 -> 490-505 s, the extension pool 124-129 -> 110-113 thread-s, seeding and
       chaining 187-196 -> 180-185. A 30x lane, 2 each alternating: 135.3, 135.4 -> 117.9, 126.9 s, user CPU 3302,
       3321 -> 3122, 3132 s.
-20. **Chaining: `chain_flt` by group, the B-tree's node search (2026-11-22; PLAN.md stage 8 item 3).**
+20. **Chaining: `chain_flt` by group, the B-tree's node search (2026-11-22; plan.md stage 8 item 3).**
     * Profile at ef6965b (samply, `mid` set, `runs/stage8/prof/samply/samp3*.txt`): 541 thread-s (762 at the
       first profile); chaining 21.5% (`chain_flt` 11.5%, `chain_seeds` 10.0%), extension's CPU side 21.8%, CIGAR
       10.4%, XA 7.6%, BAM spill and output ~7%, mate rescue 5.8% (its dedup 4.0%), mimalloc 11.4%.
@@ -555,8 +555,8 @@ call is redone on the CPU, with identical results; align-rs says so once per sta
     * GPU utilization on the workstation, one lane (`nvidia-smi`, 0.5 s): 60-70% while aligning (5-110 s),
       ~155 W; kernels (align-rs's counters) extension 27.4 s, seeding 25.4 s, mate SW 26.8 s, SA 3.1 s; extension
       copies 18.9 s in, 7.6 s out; idle during the final pass (9.1 s). Chaining on the GPU would have ~35 s a lane
-      for ~500 thread-s of CPU work (PLAN.md stage 8 item 4).
-21. **The CIGAR DP in AVX2 (2026-11-22; PLAN.md stage 8 item 3).**
+      for ~500 thread-s of CPU work (plan.md stage 8 item 4).
+21. **The CIGAR DP in AVX2 (2026-11-22; plan.md stage 8 item 3).**
     * `ksw_global2` (bwa's banded global DP with a direction byte per cell) was ~7% of the CPU (`samp4`): 3.9 M DP
       calls and 10.9 G band cells on the `mid` set (of 18.1 M `gen_cigar2` calls; 2.6 M in a certified narrower
       band, 1.2 M with unequal lengths).

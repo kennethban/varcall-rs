@@ -8,7 +8,7 @@ named in its entry; a change of reference version is a new minor version at leas
 
 ### Added
 
-* align-rs 0.1.0: `bwa-mem2 mem` 2.2.1 with seeding, SA lookups, extension and mate rescue on the GPU; sorted BAM and
+* align-rs 0.1.0: `bwa-mem2 mem` 2.3 with seeding, SA lookups, extension and mate rescue on the GPU; sorted BAM and
   `.bai` output identical to `samtools sort` / `samtools index` (1.25); several lanes per process (`--lanes`); `tune`.
 * variant-rs 0.1.0: GATK 4.7.0.0 / Picard 3.5.0 HaplotypeCaller (VCF, GVCF), Mutect2, FilterMutectCalls,
   LearnReadOrientationModel, GetPileupSummaries, GatherPileupSummaries, CalculateContamination, MergeMutectStats,

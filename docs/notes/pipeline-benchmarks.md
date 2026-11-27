@@ -87,7 +87,7 @@ calling intervals), GPUs 2-7. Each change was measured on the whole run, VCF dat
 * 484 s: `run.sh`'s defaults, 128 threads for the steps after alignment: MarkDuplicates 74 -> 57 s, BaseRecalibrator
   30 -> 19 s, HaplotypeCaller 120 -> 111 s. The alignment tasks' times vary by ~±10 s between runs (4m06-4m43 here).
 * 465 s: HaplotypeCaller's PairHMM on 2 GPUs (`hc_gpus`): 111 -> 103 s.
-* 460 s (2026-11-22, `runs/wgs5`, at 98e7200): the PairHMM tile kernel (PLAN.md stage 3) and the align-rs kernels
+* 460 s (2026-11-22, `runs/wgs5`, at 98e7200): the PairHMM tile kernel (plan.md stage 3) and the align-rs kernels
   of stage 7 (mate SW wavefront, ungapped extension, certified CIGAR band). Alignment 3m51-4m43, HaplotypeCaller
   98 s: the run is CPU-bound (GPUs 19-32% busy), so the faster kernels hardly show.
 * 409 s (2026-11-22, `runs/wgs6`, at 401e274): align-rs's bounded dropper queue (`docs/notes/align-rs.md` section

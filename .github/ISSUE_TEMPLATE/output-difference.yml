@@ -13,7 +13,7 @@ body:
     attributes:
       label: Tool
       options:
-        - align-rs (vs bwa-mem2 2.2.1)
+        - align-rs (vs bwa-mem2 2.3)
         - variant-rs HaplotypeCaller
         - variant-rs Mutect2 or its filters
         - variant-rs MarkDuplicates

@@ -2,7 +2,7 @@
 
 Most users have one GPU (a workstation, or one cloud GPU), so the stages below speed up that case first. Several
 GPUs (large servers, consortium runs) come after, built on the same pieces. Every stage keeps the outputs identical
-(the rule in [CONTRIBUTING.md](CONTRIBUTING.md)) and reports its timing and that check before the next one starts.
+(the rule in [CONTRIBUTING.md](../../CONTRIBUTING.md)) and reports its timing and that check before the next one starts.
 
 ## Status (2026-11-23)
 

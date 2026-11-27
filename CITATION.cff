@@ -5,7 +5,6 @@ type: software
 authors:
   - family-names: Ban
     given-names: Kenneth
-  - name: "Claude (Anthropic)"
 version: 0.1.0
 license: MIT
 repository-code: "https://github.com/kennethban/varcall-rs"

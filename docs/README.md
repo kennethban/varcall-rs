@@ -44,6 +44,7 @@ historical.
   of the reference tools was matched, the measurements, and the approaches that were tried and abandoned.
 * [Pipeline benchmarks: measurement log](notes/pipeline-benchmarks.md): how each pipeline timing was taken, and
   earlier configurations.
+* [Development plan](notes/plan.md): the stages of the speed work, with the status of each.
 * The stages of HaplotypeCaller, one crate each, with their own validation:
   [variant-rs/crates](../variant-rs/crates/README.md).
 * Specifications written for the reimplementation of GATK components: [GenomicsDB merge](specs/genomicsdb_merge.md),

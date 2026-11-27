@@ -3,7 +3,7 @@
 Every optimization described on this page keeps the output identical to that of the reference tool: the records
 of bwa-mem2, and the BAM files, tables and VCF files of Picard and GATK. The page explains what was done and why
 each change is exact, so that later optimizations can build on the same arguments. Measurements, profiles and
-approaches that were abandoned are recorded in [notes/](notes/), and the plan is in [PLAN.md](../PLAN.md).
+approaches that were abandoned are recorded in [notes/](notes/), and the plan is in [notes/plan.md](notes/plan.md).
 
 Unless an L40S is named (a server with 2 × EPYC 9654), the numbers were measured on one 16-core (32-thread)
 workstation with an RTX 5070 Ti. The **`mid` set** is a 30x subset of NA12878 (~1/5 of a lane) that is used for

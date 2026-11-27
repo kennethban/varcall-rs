@@ -3,7 +3,7 @@
 [![CI](https://github.com/kennethban/varcall-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/kennethban/varcall-rs/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-varcall-rs is a GPU-accelerated reimplementation of bwa-mem2 2.2.1 and GATK 4.7.0.0 for short-read alignment and
+varcall-rs is a GPU-accelerated reimplementation of bwa-mem2 2.3 and GATK 4.7.0.0 for short-read alignment and
 germline and somatic variant calling, written in Rust and CUDA. It produces the same BAM records, VCF records,
 metrics and recalibration tables as the reference tools when given the same arguments. On a workstation with one
 GPU, it processes a 30x human genome from FASTQ files to a filtered VCF in 34 minutes, compared with about 5 hours
@@ -11,7 +11,7 @@ for the reference tools.
 
 It consists of two programs:
 
-* **align-rs** reimplements `bwa-mem2 mem` 2.2.1 together with `samtools sort` and `samtools index`. Seeding,
+* **align-rs** reimplements `bwa-mem2 mem` 2.3 together with `samtools sort` and `samtools index`. Seeding,
   suffix-array lookups, seed extension and mate rescue run on the GPU.
 * **variant-rs** reimplements the GATK 4.7 and Picard tools of the GATK Best Practices, including HaplotypeCaller,
   Mutect2 and its filters, MarkDuplicates, BaseRecalibrator, ApplyBQSR and GenotypeGVCFs
@@ -127,8 +127,8 @@ compare the results with those of bwa-mem2 and GATK.
 
 ## Limitations
 
-* **Versions.** The outputs are those of GATK 4.7.0.0 (Picard 3.5.0, htsjdk 5.0.0) and bwa-mem2 2.2.1, whose source
-  align-rs was ported from. bwa-mem2 2.3 gives the same alignments; its release still reports itself as 2.2.1, and it
+* **Versions.** The outputs are those of GATK 4.7.0.0 (Picard 3.5.0, htsjdk 5.0.0) and bwa-mem2 2.3. The 2.3 release
+  still reports itself as 2.2.1; align-rs was ported from the 2.2.1 source, which gives the same alignments. 2.3
   is the build that `environment.yml` installs and the server benchmarks used. Other versions of the reference tools may give
   different outputs.
 * **Coverage of GATK.** variant-rs supports the default arguments of each tool and the arguments that WARP and

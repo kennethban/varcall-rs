@@ -5,14 +5,14 @@ GPUs, and bug reports with an input that reproduces the problem.
 
 ## Requirement: identical output
 
-Every output must remain identical to that of the reference tool: bwa-mem2 2.2.1 for align-rs, and GATK 4.7.0.0
+Every output must remain identical to that of the reference tool: bwa-mem2 2.3 for align-rs, and GATK 4.7.0.0
 with Picard 3.5.0 for variant-rs. A change that improves speed but alters a single QUAL value by 0.01, or exchanges
 two records with equal keys, is treated as a bug. Where a case cannot be reproduced exactly, variant-rs should
 refuse it with an explanation, as it currently does for the arguments that it does not reproduce.
 
 ## Reporting a difference
 
-If an output of align-rs or variant-rs differs from bwa-mem2 2.2.1's or GATK 4.7.0.0's for the same command, please
+If an output of align-rs or variant-rs differs from bwa-mem2 2.3's or GATK 4.7.0.0's for the same command, please
 open an issue with the **Output differs** form. Include:
 
 * both command lines, and the first differing records;
@@ -63,7 +63,7 @@ form. Security problems: see
   matched and what was measured.
 * Open items: testing on GPUs other than sm_120 and sm_89 and on more CPUs, more GATK arguments, one align-rs
   process on several GPUs (the pipeline spreads a sample's lanes over them instead). The speed plan and what was
-  tried: [PLAN.md](PLAN.md).
+  tried: [docs/notes/plan.md](docs/notes/plan.md).
 
 ## License
 
