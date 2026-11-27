@@ -58,7 +58,9 @@ VARIANT_RS_DRY_RUN=1 variant-rs HaplotypeCaller ...                 # print what
 
 ## Use variant-rs in nf-core/sarek
 
-Build the variant-rs image and add its configuration file to the sarek run:
+Build the variant-rs image and add its configuration file to the sarek run. To use the published image without a
+build, add `--variant_rs_container ghcr.io/kennethban/variant-rs:0.1.0-gatk4.7.0.0` to the sarek command in place
+of the first line:
 
 ```bash
 docker build -f containers/variant-rs/Dockerfile -t variant-rs:0.1.0-gatk4.7.0.0 .

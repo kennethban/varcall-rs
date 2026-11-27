@@ -8,6 +8,18 @@ limits the build context to the sources:
 | `align-rs:0.1.0` | `align-rs` with its CUDA kernels and htslib, `bwa-mem2` 2.2.1 (for `bwa-mem2 index`), on Ubuntu 22.04 | `docker build -f containers/align-rs/Dockerfile -t align-rs:0.1.0 .` |
 | `variant-rs:0.1.0-gatk4.7.0.0` | `variant-rs` with its CUDA PairHMM, added to nf-core/sarek's GATK 4.7.0.0 + samtools image as a replacement for `gatk` ([variant-rs/README.md](variant-rs/README.md)) | `docker build -f containers/variant-rs/Dockerfile -t variant-rs:0.1.0-gatk4.7.0.0 .` |
 
+Each release publishes both images, built and tested by
+[.github/workflows/release.yml](../.github/workflows/release.yml), so that they can be used without a build:
+
+```bash
+docker pull ghcr.io/kennethban/align-rs:0.1.0
+docker pull ghcr.io/kennethban/variant-rs:0.1.0-gatk4.7.0.0
+```
+
+The commands in this repository use the names of the local build (`align-rs:0.1.0`,
+`variant-rs:0.1.0-gatk4.7.0.0`); with a published image, use its full name, or give it the local name with
+`docker tag`.
+
 Both images are built for any x86-64 CPU with AVX2 (`-C target-cpu=x86-64-v3`) and contain GPU code for every
 NVIDIA architecture from Volta or Turing to Blackwell, together with PTX (build argument `CUDA_ARCH`). The option
 `--gpus all` (NVIDIA Container Toolkit) gives a container access to the GPU. Without this option, or without a

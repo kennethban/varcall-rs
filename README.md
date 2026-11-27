@@ -113,8 +113,8 @@ compare the results with those of bwa-mem2 and GATK.
 * **Hardware.** For a 30x genome, 32 threads, 48 GB of RAM and an NVIDIA GPU with 16 GB of memory give the times
   reported above. A GPU is optional, and 30 GB of RAM is sufficient at a lower speed
   ([memory and GPU requirements per step](docs/building.md#hardware)).
-* **Docker.** Two images are built from this repository: `align-rs`, and `variant-rs`, which replaces `gatk` in
-  sarek ([containers/](containers/README.md)).
+* **Docker.** Two images are built from this repository and published with each release: `align-rs`, and
+  `variant-rs`, which replaces `gatk` in sarek ([containers/](containers/README.md)).
 
 ## Documentation
 

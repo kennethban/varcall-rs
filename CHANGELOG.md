@@ -6,6 +6,10 @@ named in its entry; a change of reference version is a new minor version at leas
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
+The first release. Its outputs are those of bwa-mem2 2.3 (with samtools 1.25) and GATK 4.7.0.0 (Picard 3.5.0).
+
 ### Added
 
 * align-rs 0.1.0: `bwa-mem2 mem` 2.3 with seeding, SA lookups, extension and mate rescue on the GPU; sorted BAM and
@@ -124,4 +128,5 @@ named in its entry; a change of reference version is a new minor version at leas
 * variant-rs MergeVcfs: standard INFO / FORMAT header lines with a non-standard Number or Type (e.g. `AD` with
   `Number=.`, as in the 1000 Genomes calls) are repaired as htsjdk does on reading, as Picard's output has them.
 
-[Unreleased]: https://github.com/kennethban/varcall-rs/commits/main
+[Unreleased]: https://github.com/kennethban/varcall-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kennethban/varcall-rs/releases/tag/v0.1.0
