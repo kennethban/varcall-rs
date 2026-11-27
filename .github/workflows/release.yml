@@ -1,0 +1,89 @@
+# Container images for a release. A tag vX.Y.Z builds the two images from containers/*/Dockerfile, runs
+# containers/test_images.sh on them (tests/selftest.sh with the binaries of the images, on the CPU: GitHub's runners
+# have no GPU), and pushes them to the GitHub Container Registry only when every comparison is identical:
+#   ghcr.io/<owner>/align-rs:X.Y.Z      ghcr.io/<owner>/variant-rs:X.Y.Z-gatk4.7.0.0
+# Run by hand (workflow_dispatch) it builds and tests the images and pushes nothing, unless `push` is ticked.
+name: Release images
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to tag the images with (X.Y.Z)
+        required: true
+      push:
+        description: Push the images to ghcr.io
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  images:
+    name: Build, test and push the images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash -el {0}     # login shell: activates the micromamba environment
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version and image names
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          v="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a version: $v"; exit 1; }
+          grep -q "^version = \"$v\"" align-rs/Cargo.toml && grep -q "^version = \"$v\"" variant-rs/Cargo.toml \
+            || { echo "Cargo.toml versions are not $v"; exit 1; }
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "ALIGN_RS_IMAGE=ghcr.io/$owner/align-rs:$v" >> "$GITHUB_ENV"
+          echo "VARIANT_RS_IMAGE=ghcr.io/$owner/variant-rs:$v-gatk4.7.0.0" >> "$GITHUB_ENV"
+
+      - name: Free disk space for the CUDA build image
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      # the tools tests/selftest.sh compares with (bwa-mem2, samtools, bgzip, tabix)
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: .github/ci-environment.yml
+          cache-environment: true
+
+      - name: Build the images
+        run: |
+          label="--label org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.licenses=MIT"
+          docker build $label -f containers/align-rs/Dockerfile   -t "$ALIGN_RS_IMAGE" .
+          docker build $label -f containers/variant-rs/Dockerfile -t "$VARIANT_RS_IMAGE" .
+          docker images | grep -E 'align-rs|variant-rs'
+
+      - name: Test the images
+        run: containers/test_images.sh
+
+      - name: Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-test-logs
+          path: |
+            target/test_images/**/*.log
+          if-no-files-found: ignore
+
+      - name: Push the images
+        if: github.event_name == 'push' || inputs.push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$ALIGN_RS_IMAGE"
+          docker push "$VARIANT_RS_IMAGE"
+          docker inspect --format '{{index .RepoDigests 0}}' "$ALIGN_RS_IMAGE" "$VARIANT_RS_IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
