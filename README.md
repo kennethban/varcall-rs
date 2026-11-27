@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/kennethban/varcall-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/kennethban/varcall-rs/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24588153.svg)](https://doi.org/10.5281/zenodo.24588153)
 
 varcall-rs is a GPU-accelerated reimplementation of bwa-mem2 2.3 and GATK 4.7.0.0 for short-read alignment and
 germline and somatic variant calling, written in Rust and CUDA. It produces the same BAM records, VCF records,
@@ -159,7 +160,7 @@ as described in [validation.md](docs/validation.md).
 ## Citation
 
 If you use varcall-rs, please cite this repository ([CITATION.cff](CITATION.cff); the "Cite this repository" button
-on GitHub formats the entry) and the tools whose results it reproduces: bwa-mem2 (Vasimuddin et al., IPDPS 2019)
+on GitHub formats the entry; release 0.1.0 is archived at [doi:10.5281/zenodo.24588154](https://doi.org/10.5281/zenodo.24588154)) and the tools whose results it reproduces: bwa-mem2 (Vasimuddin et al., IPDPS 2019)
 and GATK (Van der Auwera & O'Connor, *Genomics in the Cloud*, O'Reilly 2020).
 
 ## Acknowledgements
