@@ -6,6 +6,12 @@ named in its entry; a change of reference version is a new minor version at leas
 
 ## [Unreleased]
 
+### Added
+
+* Pipeline: `-profile docker` runs align-rs and variant-rs from the published images, with the directories of the
+  reference and resource files mounted into the containers (`docker_gpus`, `docker_mounts`, `align_rs_container`,
+  `variant_rs_container`). Outputs as with locally built binaries; tested with one GPU.
+
 ## [0.1.0] - 2026-11-27
 
 The first release. Its outputs are those of bwa-mem2 2.3 (with samtools 1.25) and GATK 4.7.0.0 (Picard 3.5.0).

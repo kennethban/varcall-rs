@@ -48,6 +48,21 @@ exome described under [Benchmarks](#benchmarks)). Five differences in design acc
 be started directly with `nextflow run main.nf`, in which case `CUDA_VISIBLE_DEVICES` lists the GPUs
 ([Several GPUs](#several-gpus)).
 
+### With Docker
+
+```bash
+./run.sh -profile docker -params-file my.yaml
+```
+
+With `-profile docker`, align-rs and variant-rs run from the published images
+(`ghcr.io/kennethban/align-rs:0.1.0` and `ghcr.io/kennethban/variant-rs:0.1.0-gatk4.7.0.0`; parameters
+`align_rs_container` and `variant_rs_container`), so that neither has to be built. The host then requires only
+Nextflow, Docker and, for the GPU, the NVIDIA Container Toolkit; `--docker_gpus false` runs the containers without a
+GPU. The directories of the reference and resource files named in the parameters are mounted into the containers at
+the same paths, and `--docker_mounts /dir1,/dir2` adds further directories. The outputs are the same as those of
+locally built binaries. The profile was tested with one GPU; the assignment of several GPUs to concurrent tasks was
+not tested with containers.
+
 ### Requirements
 
 * **Binaries.** variant-rs and align-rs should be built for the machine on which they run
